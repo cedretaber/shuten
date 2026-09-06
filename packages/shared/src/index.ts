@@ -1,3 +1,5 @@
+export type { CheckInput, ContextWindow, TargetRange } from "./chunk/plan.ts";
+export { buildCheckInput, buildRecheckInput, planTargets } from "./chunk/plan.ts";
 export { findSentenceBoundaries } from "./chunk/sentence.ts";
 export {
   type ChunkSettings,
