@@ -34,7 +34,9 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 ### ワークスペース
 
 - pnpm 10 は依存パッケージのインストールスクリプトを既定で実行しない。
-  `pnpm-workspace.yaml` の `onlyBuiltDependencies` で `better-sqlite3` と `esbuild` を許可する。
+  better-sqlite3 13 はビルド済みバイナリ（win32-x64、linux-x64 など）を npm パッケージ内に同梱しているため、
+  ビルドを**許可しない**（`ignoredBuiltDependencies`）。許可すると node-gyp のソースビルドが走り、コンパイラのない
+  環境や node-gyp が Visual Studio を認識できない環境で失敗する。esbuild の postinstall だけを `onlyBuiltDependencies` で許可する。
 - `.gitattributes` で全体を `eol=lf` に正規化し、`packages/*/test/fixtures/` だけ `-text` にする。
   fixture は CRLF・単独 CR・BOM を意図的に含むため、git の改行変換を禁止する。
 - Biome も `lineEnding: lf` を明示し、fixture を除外する。
@@ -53,8 +55,9 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 
 - WSL（Linux、Node 24.8.0、pnpm 10.17.1）で `pnpm install`、型検査、Biome、テスト 11 件、web ビルド、
   サーバー起動と `/api/health` の応答、静的配信、127.0.0.1 での待ち受けを確認済み。
-- WSL では better-sqlite3 のビルド済みバイナリ取得に失敗し、node-gyp でのソースビルドにフォールバックした
-  （ビルド自体は成功）。Windows では別途確認が必要。手順は `docs/guides/windows-verification.md`。
+- 当初は `onlyBuiltDependencies` で better-sqlite3 のビルドを許可していたため、WSL でも CI の Windows でも node-gyp の
+  ソースビルドが走った（Windows の CI は Visual Studio の検出に失敗）。同梱のビルド済みバイナリを使う設定に改めてからは、
+  WSL と CI（Ubuntu / Windows）でビルドなしにバインディングを読み込めることを確認済み。手順は `docs/guides/windows-verification.md`。
 - `@types/node` はランタイムに合わせて 24.x に固定する（26.x ではランタイムに無い API を型が許してしまう）。
 - `drizzle-kit generate` が動作することを確認済み。生成物（`packages/server/drizzle/`）は仕様書 8.1 節の
   スキーマが入るまでコミットしない。
