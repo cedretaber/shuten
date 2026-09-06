@@ -72,14 +72,14 @@ temperature 0.7、max_tokens 600。seed 42 で 2 回とも同一の出力、seed
 
 2000 までの整数を書かせる長い生成を開始し、数秒後に接続を切って `lms ps` の状態と GPU 使用率を毎秒記録した。
 
-| 方法 | 切断前 | 切断後 1 秒 |
-| --- | --- | --- |
-| curl、`stream: true`、6 秒後に kill | GENERATING、GPU 83〜87% | IDLE、GPU 3% |
-| curl、`stream: false`、6 秒後に kill | GENERATING、GPU 84〜89% | IDLE、GPU 0〜1% |
-| Node 24 `fetch` + `AbortController.abort()`、3 秒後 | GENERATING | IDLE。`fetch` は `AbortError` で reject |
+| 方法 | 切断前 | 切断後の最初の観測 | 観測を続けた時間 |
+| --- | --- | --- | --- |
+| curl、`stream: true`、t+6s に kill | GENERATING、GPU 83〜87% | t+7s に IDLE、GPU 3% | t+17s まで IDLE |
+| curl、`stream: false`、t+6s に kill | GENERATING、GPU 84〜89% | t+7s に IDLE、GPU 0〜1% | t+27s まで IDLE |
+| Node 24 `fetch` + `AbortController.abort()`、t+3s | GENERATING | t+4s に IDLE。`fetch` は `AbortError` で reject | t+10s まで IDLE |
 
-3 通りとも切断から 1 秒以内に生成が止まり、その後 10〜25 秒観察しても再開しなかった。
-非ストリーミングでも、応答を書き出す前に切断を検知している。
+3 通りとも切断後の最初の観測で IDLE になり、以後再開しなかった。観測は `lms ps` の応答時間を含むため、
+停止時刻そのものは確定できない。非ストリーミングでも、応答を書き出す前に切断を検知している。
 
 ### 6. 実サイズの入力（`09`、`10`）
 
@@ -130,8 +130,8 @@ temperature 0.7、max_tokens 600。seed 42 で 2 回とも同一の出力、seed
 
 - 思考は qwen と同様に `reasoning_content` へ分離される。思考は英語。
 - `json_schema` strict は有効。seed は有効（seed 42 で 2 回同一）。
-- 切断実験（Node `fetch` abort、curl 非ストリーミング）はいずれも切断から 1 秒以内に GENERATING → IDLE、
-  GPU 使用率 92% → 3%。生成開始前には `PROCESSINGPROMPT` という状態も観察された。
+- 切断実験：Node `fetch` abort（t+3s）は t+5s の最初の観測で IDLE、t+20s まで維持。curl 非ストリーミング（t+21s に kill）は
+  t+22s の最初の観測で IDLE、GPU 使用率 92% → 3%、t+71s まで維持。生成開始前には `PROCESSINGPROMPT` という状態も観察された。
 - 未ロード時の挙動は再検証していない。
 
 ### 思考の無効化
@@ -164,8 +164,8 @@ gemma は qwen が見逃した助詞の重複を検出したが、`before` に�
 `reason` に分類を入れており、項目の意味を取り違えていた（要求 `02`）。
 
 JSON スキーマの各項目に `description` を付けた要求 `12` を送っても、`prompt_tokens` が 89 で変わらず、
-出力も同一だった。**LM Studio の構造化出力はスキーマを文法制約にだけ使い、`description` はモデルに渡らない。**
-項目の意味はプロンプト本文に書く必要がある。実文テスト（`10`）ではシステムプロンプトに各項目の説明があり、
+出力も同一だった。**今回のモデル・ランタイムでは、スキーマは文法制約にだけ使われ、`description` はモデルに渡らなかった。**
+項目の意味はプロンプト本文にも書く必要がある。実文テスト（`10`）ではシステムプロンプトに各項目の説明があり、
 取り違えは起きていない。
 
 ### 考察の追記
@@ -199,3 +199,22 @@ qwen を再ロード（コンテキスト長 201,728）し、要求 `13` で確�
 思考なしの qwen が最も有望に見えるが、1 原稿 1 回の観察であり、評価原稿で「思考あり／なし」を生成設定の
 1 軸として比較する。先に記した「思考は止められない」は、入れ子形式と `chat_template_kwargs` を試した時点の
 結論であり、トップレベルの `reasoning_effort` で訂正する。
+
+## 第三者による追試（2026-09-07、別のエージェントセッション）
+
+同じ環境で、別のエージェントが要求 `13`（qwen、思考なし）と gemma の同等要求、および Node `fetch` の切断実験を再実施した。
+
+| 項目 | qwen | gemma |
+| --- | --- | --- |
+| 906 字・思考なし | 2.6 秒、reasoning_tokens 0、`stop` | 2.8 秒、reasoning_tokens 0、`stop` |
+| 検出 | 3 / 3。引用は各 1 箇所に完全一致 | 2 / 3（助詞抜けを検出せず）。引用と前後の引用も正しい |
+| `before` / `after` の取り違え | 再現 | なし |
+| 切断（Node `fetch` abort） | GENERATING を確認して abort。約 1 秒後の観測で IDLE、観測終了まで維持 | GENERATING を確認して abort。約 2.8 秒後の最初の観測で IDLE、約 23 秒後まで維持 |
+
+秒数はキャッシュなどの条件をそろえていないため、これだけで優劣を判断しない。
+
+## 切断検証スクリプトの制約
+
+`scripts/disconnect-test.sh` と `scripts/abort-test.mjs` は、要求 JSON の `model` と一致する `lms ps` の行を観測する。
+切断前に対象モデルの GENERATING を確認できなかった試行は「停止を検証できず」として無効にする（終了コード 1）。
+複数モデルがロードされていても別モデルの状態を読まない。

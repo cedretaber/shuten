@@ -22,7 +22,7 @@ CPID=$!
 T0=$(date +%s.%N)
 LAST=""
 for _ in 1 2 3 4; do sleep 1; LAST=$(status); echo "connected t+$(elapsed)s: status=$LAST gpu=$(gpu)%"; done
-if [ "$LAST" != "GENERATING" ]; then echo "切断前に GENERATING を確認できなかったため、この実行は無効"; INVALID=1; fi
+if [ "$LAST" != "GENERATING" ]; then echo "停止を検証できず: 切断前に対象モデルの GENERATING を確認できなかった"; INVALID=1; fi
 kill "$CPID" 2>/dev/null; wait "$CPID" 2>/dev/null
 echo "--- disconnected at t+$(elapsed)s"
 for _ in $(seq 1 10); do sleep 1; echo "disconnected t+$(elapsed)s: status=$(status) gpu=$(gpu)%"; done

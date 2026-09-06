@@ -38,7 +38,7 @@ await sleep(3000);
 const before = status();
 console.log(`t+${elapsed()}s connected: ${before}`);
 if (before !== "GENERATING") {
-  console.log("切断前に GENERATING を確認できなかったため、この実行は無効");
+  console.log("停止を検証できず: 切断前に対象モデルの GENERATING を確認できなかった");
   process.exitCode = 1;
 }
 ac.abort();
