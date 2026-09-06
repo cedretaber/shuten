@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# エディタ
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 環境変数・秘密情報（APIキーは決してコミットしない）
+.env
+.env.*
+!.env.example
+
+# ログ・一時ファイル
+*.log
+tmp/
+.cache/
+
+# AI エージェントのローカル設定
+.claude/settings.local.json
+.qwen/
+
+# 評価用の実原稿（作者の許可を得た原稿はリポジトリに入れない）
+manuscripts/
