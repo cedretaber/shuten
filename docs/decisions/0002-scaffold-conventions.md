@@ -11,7 +11,7 @@
 
 | ツール | 版 | 備考 |
 | --- | --- | --- |
-| Node.js | 24.x（`engines`、`.node-version`、`volta`） | Active LTS |
+| Node.js | 24.20.0（`.node-version`、`volta` に完全版）。`engines` は `>=24 <25` をサポート範囲として別に明記 | Active LTS。24 系の最新を選び、セキュリティ修正に追随する |
 | pnpm | 10.17.1（`packageManager`） | pnpm 10 は `packageManager` の版を自動で使う。corepack 不要 |
 | TypeScript | 7.0.2 | Go 製のネイティブコンパイラ。2026-07 公開 |
 | Vite | 8.2.2 | |
@@ -62,6 +62,10 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
   `i/crlf w/crlf attr/-text` になることを確認済み。
 - サーバーの既定パス（`.data`、`../web/dist`）は `packages/server` からの相対で解決する。
   `pnpm start` / `pnpm dev` 経由で起動すること。
+- 既知の残課題（2026-09-07 時点）：drizzle-kit 経由で esbuild 0.18.20 が lockfile に残る。
+  既知の脆弱性は esbuild の開発サーバー機能を使う場合に限られ、本プロジェクトでは使わない。
+  依存更新時に追跡する。web の Vite 経由で `@types/node` 26.x も推移的に残るが、型検査が読むのは
+  直接依存の 24.x であることを確認済み。
 - Windows での確認は未実施。
 
 ## 却下した案

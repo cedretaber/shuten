@@ -142,7 +142,8 @@ AI エージェント（Claude Code、qwen、その他）がこのリポジト�
 - `AbortController` は HTTP 通信の中断であり、LM Studio 側の生成終了の確認ではない。
   停止・タイムアウトでは中断後も生成終了を未確認として扱う。SSE 切断では何も中断しない。
 - DB トランザクションに LLM 応答待ちを含めない。
-- Node.js と pnpm の版は `package.json`（`engines`、`packageManager`、`volta`）と `.node-version` で固定済み。
+- Node.js の完全版は `.node-version` と `package.json` の `volta` に同じ値で固定し、`engines` はサポート範囲を示す。
+  更新時は 3 箇所を同時に変える。pnpm は `packageManager` で固定。
 
 ### コマンド
 

@@ -6,7 +6,7 @@ Windows では特に better-sqlite3 のネイティブバイナリと改行の�
 
 ## 前提
 
-- Node.js 24.x（`.node-version` と `package.json` の `engines` に合わせる）
+- Node.js 24.20.0（`.node-version` に完全版を固定。`engines` の範囲は 24 系全体）
 - pnpm 10.17.1（`package.json` の `packageManager`）。`npm install -g pnpm@10.17.1` か、
   volta を使うなら `volta install pnpm@10.17.1`
 - git の `core.autocrlf` が `true` でも `.gitattributes` が優先されるが、念のため確認する

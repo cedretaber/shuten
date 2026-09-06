@@ -47,7 +47,7 @@ scaffold 完了（WSL で検証済み、Windows は未確認）。仕様は確�
 
 ## セットアップ
 
-必要なもの：Node.js 24.x、pnpm 10.17.1（`package.json` の `packageManager` に固定。volta を使う場合は `volta` フィールドで自動選択される）。
+必要なもの：Node.js 24.20.0（`.node-version`。24 系の他の版でも動く想定）、pnpm 10.17.1（`package.json` の `packageManager` に固定。volta を使う場合は `volta` フィールドで自動選択される）。
 
 ```sh
 pnpm install        # better-sqlite3 のネイティブバイナリもここで入る
