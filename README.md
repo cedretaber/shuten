@@ -21,7 +21,7 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 ## 現在の状態
 
 scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.7）。
-実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR1（原稿の取り込みと段落モデル）まで完了。次は PR2（検査範囲と参考文脈の分割）。
+実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR2（検査範囲と参考文脈の分割）まで完了。次は PR3（引用照合・位置確定・診断候補）。
 
 ## 技術スタック
 
