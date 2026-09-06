@@ -18,7 +18,7 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 
 ## 現在の状態
 
-scaffold 完了（WSL で検証済み、Windows は未確認）。仕様は確定（v0.5）。次の段階は LM Studio との接続検証と、分割・照合の実装。
+scaffold 完了（WSL で検証済み、Windows は未確認）。LM Studio との接続検証は完了。仕様は確定（v0.6）。次の段階は分割・照合の実装。
 
 ## 技術スタック
 
@@ -40,7 +40,7 @@ scaffold 完了（WSL で検証済み、Windows は未確認）。仕様は確�
 | ファイル | 内容 |
 | --- | --- |
 | [docs/spec/mvp-spec.md](docs/spec/mvp-spec.md) | MVP 仕様書（正本）。機能範囲、検査処理、保存、評価方法、受け入れ条件 |
-| [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約） |
+| [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約、LM Studio 接続検証） |
 | [docs/windows-verification.md](docs/windows-verification.md) | Windows での動作確認手順 |
 | [AGENTS.md](AGENTS.md) | AI エージェントと開発者向けの規約。不変条件、対象外、開発規約 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 固有の事項 |
