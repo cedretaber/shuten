@@ -40,9 +40,12 @@ scaffold 完了（WSL で検証済み、Windows は未確認）。LM Studio と�
 | ファイル | 内容 |
 | --- | --- |
 | [docs/spec/mvp-spec.md](docs/spec/mvp-spec.md) | MVP 仕様書（正本）。機能範囲、検査処理、保存、評価方法、受け入れ条件 |
+| [docs/reference/invariants.md](docs/reference/invariants.md) | 仕様から導いた不変条件と対象外。実装前に読む |
+| [docs/reference/conventions.md](docs/reference/conventions.md) | 開発規約、パッケージ構成、コマンド |
 | [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約、LM Studio 接続検証） |
-| [docs/windows-verification.md](docs/windows-verification.md) | Windows での動作確認手順 |
-| [AGENTS.md](AGENTS.md) | AI エージェントと開発者向けの規約。不変条件、対象外、開発規約 |
+| [docs/experiments/](docs/experiments/) | 検証の手順・要求・結果。再検証できる形で残す |
+| [docs/guides/windows-verification.md](docs/guides/windows-verification.md) | Windows での動作確認手順 |
+| [AGENTS.md](AGENTS.md) | コーディングエージェントへの指示 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 固有の事項 |
 
 ## セットアップ
@@ -61,7 +64,7 @@ Vite は `/api` をサーバーへプロキシする。
 
 環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）。
 
-Windows での確認手順は [docs/windows-verification.md](docs/windows-verification.md)。
+Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/windows-verification.md)。
 
 ## リポジトリ構成
 
@@ -69,7 +72,7 @@ Windows での確認手順は [docs/windows-verification.md](docs/windows-verifi
 packages/shared   位置換算、分割、照合、許容語判定、共有型（ビルドなし、ソースを直接参照）
 packages/server   Hono の HTTP API、実行キュー、SQLite 永続化、LM Studio クライアント、静的配信
 packages/web      React + Vite の UI
-docs/             仕様書、決定記録、手順
+docs/             仕様書、参照資料、決定記録、検証記録、手順
 ```
 
 ## 参照
