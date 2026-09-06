@@ -73,7 +73,7 @@
     書記素境界でない範囲を渡すと `RangeError` が伝播する。
 11. **設定の検証は `validateChunkSettings` で先に行い、`InvalidChunkSettingsError` を投げる。**
     条件：`targetGraphemes ≥ 1`、`contextGraphemes ≥ 0`、`recheckContextGraphemes ≥ 0`、`0 ≤ roundingTolerance < 1`、
-    `maxInputGraphemes ≥ targetGraphemes + delta`、すべて整数（tolerance を除く）。最後の条件で、検査対象単独が
+    `maxInputGraphemes ≥ targetGraphemes + delta`、tolerance 以外は `Number.isSafeInteger` を満たす整数。最後の条件で、検査対象単独が
     上限を超えることはなくなる。サーバー（PR7）がトークン上限から小さな `maxInputGraphemes` を換算した場合はこの検証で
     `InvalidChunkSettingsError` になるので、PR7 では `InputTooLongError` と同じ「設定変更を案内」の経路に載せる。
 12. **`buildCheckInput` の引数から `contextGraphemes` を外す。** ロードマップの署名は文脈長を引数と `settings` の
@@ -123,7 +123,9 @@
 - 敷き詰めの不変条件（すべての入力に対して）：先頭 0、各対象の `start` が直前の `end`、最後の `end` が
   `text.length`、`index` が 0 始まりの連番、空対象なし、すべての境界が書記素境界、各対象の長さが
   `目標 + delta` 以下（最後の対象を含む）
-- 付録の期待値はすべて、計画のアルゴリズムを別に書いた参照実装（scratch）で検算済み
+- 付録の期待値はすべて、計画のアルゴリズムを別に書いた参照実装（scratch）で検算済み。ただし初稿の参照実装は
+  設定検証を通していなかったため、上限のテスト行の設定値が検証条件に反していた（外部レビューで発見、修正済み）。
+  実装時の検証では `validateChunkSettings` を含めて突き合わせる
 - `buildCheckInput`：短い会話段落の連続で複数段落を含む文脈、前方の同距離で小さい側、本文先頭・末尾で `null`、
   ideal が本文外で丸めなし、`contextGraphemes = 0` で `null`、`inputRange` の一致、`InputTooLongError` の数値
 - `buildRecheckInput`：文脈が広がる、再確認の文脈長が初回より小さくても `inputRange` を含む、本文末尾の検査対象、上限超過
@@ -354,14 +356,18 @@ Validation rules (each violation throws `InvalidChunkSettingsError` with a Japan
 - `roundingTolerance` is a finite number with `0 ≤ roundingTolerance < 1`
 - `maxInputGraphemes` is an integer ≥ `targetGraphemes + roundingDelta(targetGraphemes, roundingTolerance)`
 
-Use `Number.isInteger` / `Number.isFinite`. `roundingDelta` is `Math.floor(target * tolerance)`.
+Integer checks MUST use `Number.isSafeInteger` (the values feed position arithmetic). `roundingTolerance` uses `Number.isFinite`.
+`roundingDelta` is `Math.floor(target * tolerance)`.
 
 Tests (settings.test.ts). `base = { targetGraphemes: 1500, contextGraphemes: 1000, recheckContextGraphemes: 3000, roundingTolerance: 0.2, maxInputGraphemes: 8000 }`.
 - `validateChunkSettings(base)` does not throw.
 - `roundingDelta(1500, 0.2)` is 300; `roundingDelta(10, 0.2)` is 2; `roundingDelta(4, 0.2)` is 0; `roundingDelta(7, 0.5)` is 3.
 - Each of the following throws `InvalidChunkSettingsError`: `targetGraphemes: 0`, `targetGraphemes: 1.5`,
-  `contextGraphemes: -1`, `recheckContextGraphemes: -1`, `roundingTolerance: 1`, `roundingTolerance: -0.1`,
-  `roundingTolerance: Number.NaN`, `maxInputGraphemes: 1799` (needs ≥ 1800 for base), `maxInputGraphemes: 1800` does NOT throw.
+  `targetGraphemes: 2 ** 53` (not a safe integer), `contextGraphemes: -1`, `contextGraphemes: 0.5`,
+  `recheckContextGraphemes: -1`, `recheckContextGraphemes: 1.5`, `roundingTolerance: 1`, `roundingTolerance: -0.1`,
+  `roundingTolerance: Number.NaN`, `roundingTolerance: Number.POSITIVE_INFINITY`, `maxInputGraphemes: 1799`
+  (needs ≥ 1800 for base), `maxInputGraphemes: 1800.5`, `maxInputGraphemes: Number.MAX_SAFE_INTEGER + 1`.
+  `maxInputGraphemes: 1800` does NOT throw.
 - `new InputTooLongError(18, 15)` has `required` 18, `limit` 15, `name` "InputTooLongError", and is `instanceof Error`.
 
 ## 4. packages/shared/src/index.ts
@@ -578,10 +584,11 @@ Also:
   equals the previous `end`, last `end === text.length`, `index` equals array position, `end > start` for every target,
   `isGraphemeBoundary(G, start)` and `isGraphemeBoundary(G, end)` for every target, and
   `graphemeAt(G, end) - graphemeAt(G, start) <= 12` for every target, and concatenating `sliceRange` of all targets equals `text`.
-- Randomized tiling check (one `it`, 300 iterations, seeded PRNG so it is deterministic — implement a tiny mulberry32):
-  build a random text by concatenating 1..40 pieces drawn from
+- Randomized tiling check (one `it`, 300 iterations, seeded PRNG so it is deterministic — implement a tiny mulberry32
+  `random(): number` returning a float in [0, 1); derive integers ONLY as `Math.floor(random() * n)`):
+  build a random text by concatenating `1 + Math.floor(random() * 40)` pieces, each `pieces[Math.floor(random() * pieces.length)]`, from
   `["あ", "い。", "う！", "\n", "\r\n", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}", "葛\u{E0100}", "か\u3099", "「え」"]`,
-  plan with `S({ targetGraphemes: 1 + (rnd % 7), roundingTolerance: 0.4 })`, and assert the tiling invariant above (with the length bound `T + roundingDelta(T, 0.4)`).
+  plan with `S({ targetGraphemes: 1 + Math.floor(random() * 7), roundingTolerance: 0.4 })` (an integer 1..7), and assert the tiling invariant above (with the length bound `T + roundingDelta(T, 0.4)`).
 - `chooseBoundary` is internal and not exported; its tie and window-edge behaviour is verified through the table rows above.
 
 ### buildCheckInput
@@ -600,7 +607,7 @@ Targets are constructed directly as `{ index: 0, range, paragraphIds }` (paragra
 | 前方は最も近い始端、後方の同距離は大きい側 | `[12,18]` | `S({ contextGraphemes: 4, roundingTolerance: 0.5 })` (DB=2) | ideal 8, window [6,10]: starts 6 (distance 2) and 9 (distance 1) → `[9,12]` | ideal 22, window [20,24]: ends 21 (distance 1) and 23 (distance 1) → tie → larger 23 → `[18,23]` | `[9,23]` |
 | 前方は窓内で最も近い始端（text G） | `[13,19]` on text G below | `S({ contextGraphemes: 4, roundingTolerance: 0.5 })` (DB=2) | `[9,13]` (ideal 9, window [7,11]: starts 7 (distance 2), 9 (distance 0)) | `null` (target ends at 19 = length) | `[9,19]` |
 | 前方の同距離は小さい側（text G） | `[13,19]` on text G below | `S({ contextGraphemes: 5, roundingTolerance: 0.2 })` (DB=1) | `[7,13]` (ideal 8, window [7,9]: starts 7 and 9 both distance 1 → tie → smaller 7) | `null` | `[7,19]` |
-| 文脈が ZWJ 絵文字をまたぐ（text J） | `[16,19]` on text J below | `S()` (B=5, DB=1) | `[3,16]` (ts = grapheme 9, ideal 4, window [3,5]: paragraph start at grapheme 3 = offset 3) | `[19,21]` (te = 12, 12 + 5 ≥ 14 → to end) | `[3,21]`; required is 11 graphemes (not 18 code units): `S({ maxInputGraphemes: 11 })` does not throw, `S({ maxInputGraphemes: 10 })` throws with `required` 11, `limit` 10 |
+| 文脈が ZWJ 絵文字をまたぐ（text J） | `[16,19]` on text J below | `S()` (B=5, DB=1) | `[3,16]` (ts = grapheme 9, ideal 4, window [3,5]: paragraph start at grapheme 3 = offset 3) | `[19,21]` (te = 12, 12 + 5 ≥ 14 → to end) | `[3,21]`; required is 11 graphemes (not 18 code units). Because `validateChunkSettings` needs `maxInputGraphemes ≥ T + D`, use `S({ targetGraphemes: 5, maxInputGraphemes: 11 })` (D = 1, minimum 6): does not throw; `S({ targetGraphemes: 5, maxInputGraphemes: 10 })` throws `InputTooLongError` with `required` 11, `limit` 10 |
 | 段落境界が窓内にない | `[9,15]` on text H below | `S({ contextGraphemes: 5, roundingTolerance: 0 })` (DB=0, window is the single point ideal) | `[4,9]` | `[15,20]` | `[4,20]` |
 | 上限超過 | `[9,15]` | `S({ maxInputGraphemes: 17 })` | throws `InputTooLongError` with `required` 18 and `limit` 17 | | |
 | 上限ちょうど | `[9,15]` | `S({ maxInputGraphemes: 18 })` | does not throw; inputRange `[3,21]` | | |
