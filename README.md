@@ -76,3 +76,7 @@ docs/             仕様書、決定記録、手順
 
 - [LM Studio: OpenAI 互換 API](https://lmstudio.ai/docs/developer/openai-compat)
 - [LM Studio: 構造化出力](https://lmstudio.ai/docs/developer/openai-compat/structured-output)
+
+## ライセンス
+
+[MIT](LICENSE)
