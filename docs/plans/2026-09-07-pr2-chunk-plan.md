@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | `packages/shared/src/text/grapheme-index.ts` | 書記素クラスタ境界の一覧と、位置 ⇄ 書記素番号の変換 | `GraphemeIndex`、`buildGraphemeIndex`、`graphemeAt`、`offsetAt`、`isGraphemeBoundary` |
 | `packages/shared/src/chunk/sentence.ts` | 文境界の検出 | `findSentenceBoundaries` |
-| `packages/shared/src/chunk/settings.ts` | 設定型と検証、例外 | `ChunkSettings`、`InvalidChunkSettingsError`、`InputTooLongError`、`validateChunkSettings` |
+| `packages/shared/src/chunk/settings.ts` | 設定型と検証、例外 | `ChunkSettings`、`InvalidChunkSettingsError`、`InputTooLongError`、`validateChunkSettings`、`roundingDelta` |
 | `packages/shared/src/chunk/plan.ts` | 分割、参考文脈、再確認入力 | `TargetRange`、`ContextWindow`、`CheckInput`、`planTargets`、`buildCheckInput`、`buildRecheckInput` |
 | `packages/shared/src/index.ts` | 再エクスポート | 上記すべて |
 | `packages/shared/src/{text,chunk}/*.test.ts` | テスト | |
@@ -63,16 +63,19 @@
    min / max で広げる。** これにより再確認の文脈長を初回より小さく設定しても「必ず含む」が成り立つ。
 9. **文境界の文字集合。** 終端記号 `。！？!?` のいずれかで始まり、終端記号と閉じ括弧 `」』）】〕〉》］)` だけが
    続く最長の並びの直後を文境界とする。閉じ括弧だけ（`」` 単独）や `……` は文境界にしない。
-   `。` の直後に結合文字や異体字セレクタが続くと書記素クラスタが `。́` のようにまとまるので、候補は必ず
-   書記素境界で濾す（Node 24 で `"あ。́い"` が 3 書記素になることを確認済み）。
+   `。` の直後に結合文字や異体字セレクタが続くと書記素クラスタが「。+ U+0301」のようにまとまるので、候補は必ず
+   書記素境界で濾す（Node 24 で「あ」「。+U+0301」「い」の 3 書記素になることを確認済み）。
 10. **`ChunkSettings` に `maxInputGraphemes` を追加する。** ロードマップの語彙にはない。shared は書記素数しか
     数えられないので上限も書記素数で持ち、トークン上限からの換算はサーバー（PR5/PR7）の責務にする。
     超過時は `buildCheckInput` / `buildRecheckInput` が `InputTooLongError { required, limit }` を投げる
     （入力長は文脈を付けた後にしか決まらないので `planTargets` では投げない）。
+    `buildCheckInput` / `buildRecheckInput` に渡す `target` は `planTargets` の出力に限る（呼び出し側の契約）。
+    書記素境界でない範囲を渡すと `RangeError` が伝播する。
 11. **設定の検証は `validateChunkSettings` で先に行い、`InvalidChunkSettingsError` を投げる。**
     条件：`targetGraphemes ≥ 1`、`contextGraphemes ≥ 0`、`recheckContextGraphemes ≥ 0`、`0 ≤ roundingTolerance < 1`、
     `maxInputGraphemes ≥ targetGraphemes + delta`、すべて整数（tolerance を除く）。最後の条件で、検査対象単独が
-    上限を超えることはなくなる。
+    上限を超えることはなくなる。サーバー（PR7）がトークン上限から小さな `maxInputGraphemes` を換算した場合はこの検証で
+    `InvalidChunkSettingsError` になるので、PR7 では `InputTooLongError` と同じ「設定変更を案内」の経路に載せる。
 12. **`buildCheckInput` の引数から `contextGraphemes` を外す。** ロードマップの署名は文脈長を引数と `settings` の
     両方で受けていた。`settings.contextGraphemes` に一本化し、`buildRecheckInput` は `settings.recheckContextGraphemes`
     を使う。ロードマップの語彙を更新する。
@@ -101,6 +104,9 @@
   候補を足すだけで済む。
 - **最後の検査対象が短くなる場合。** 決定 5 のとおり。仕様は「目標文字数前後」としか言っていないので違反ではないが、
   実測で目立てば規則を変える。
+- **窓内に段落境界がないときの文境界。** 仕様 6.1 手順 3 は文境界を「単一段落が長い場合」に挙げている。本計画では、
+  窓内に段落終端がなければ（段落終端が窓のすぐ外にあって窓が複数段落にまたがる場合も含めて）文境界を探す。
+  違反ではないが読み替えなので記録する。
 - **入力上限の単位。** 仕様は「入力上限」の単位を定めていない。shared では書記素数、サーバーでトークン上限から
   換算する前提。換算係数は PR5/PR7 で決める。
 
@@ -120,20 +126,25 @@
 - 付録の期待値はすべて、計画のアルゴリズムを別に書いた参照実装（scratch）で検算済み
 - `buildCheckInput`：短い会話段落の連続で複数段落を含む文脈、前方の同距離で小さい側、本文先頭・末尾で `null`、
   ideal が本文外で丸めなし、`contextGraphemes = 0` で `null`、`inputRange` の一致、`InputTooLongError` の数値
-- `buildRecheckInput`：文脈が広がる、再確認の文脈長が初回より小さくても `inputRange` を含む、本文端、上限超過
-- ランダム検査：`chooseBoundary` を素朴な参照実装（全候補を走査）と突き合わせ、`planTargets` の敷き詰め不変条件を
-  ランダムな本文（短い段落・長い段落・句点・絵文字・CRLF の混在）で確認
+- `buildRecheckInput`：文脈が広がる、再確認の文脈長が初回より小さくても `inputRange` を含む、本文末尾の検査対象、上限超過
+- ランダム検査：`planTargets` の敷き詰め不変条件を、シード固定の乱数で作った本文（短い段落・長い段落・句点・絵文字・
+  結合文字・CRLF の混在）で確認。`chooseBoundary` は内部関数なので、同距離と窓の両端の挙動は表の行で検証する
+- `buildCheckInput` の表には、文脈が ZWJ 絵文字をまたぎ、書記素番号とコード単位がずれる本文（text J）を含める
 
 ## 進め方（コミット単位）
 
 1. **計画とブランチ**（このコミット）：本書を追加。
-2. **実装とテスト**（qwen に委譲、Claude が検証）：付録のスペックを標準入力から渡す。ファイル数は 5 + テスト 5 で
-   委譲の上限に近いので、`grapheme-index` と `sentence` と `settings`（依存なし）を 1 回目、`plan` を 2 回目に分ける。
-   1 回目の出力を検証してから 2 回目を渡す。
+2. **実装とテスト**（qwen に委譲、Claude が検証）：付録のスペックを標準入力から渡す。実装 4 ファイル + `index.ts` +
+   テスト 4 ファイルで委譲の上限に近いので、`grapheme-index` と `sentence` と `settings`（依存なし）を 1 回目、`plan` を
+   2 回目に分ける。1 回目の出力を検証してから 2 回目を渡す。渡す前に、抽出したスペックに生の U+200D・U+0301・U+3099 が
+   含まれないことを `grep -P` で確認する（計画の初稿に混入していた。qwen が正規化すると期待値が黙って変わる）。
 3. **検証**（Claude）：全ファイルを読む。特に `outer` の向き、窓の両端の包含、最後の対象の規則、再確認の min/max を
-   スペックの数値例と突き合わせる。`pnpm check` を自分でも実行する。
-4. **ドキュメント**（Claude）：ロードマップの語彙（`ChunkSettings.maxInputGraphemes`、`buildCheckInput` の署名、
-   `InvalidChunkSettingsError`、`GraphemeIndex`）と PR2 節を更新。
+   スペックの数値例と突き合わせる。テストの期待値が付録の表と一致していることを 1 行ずつ確認する（自己修正ループで
+   期待値の側が書き換えられていないか）。`pnpm check` を自分でも実行する。
+4. **ドキュメント**（Claude）：ロードマップの共通語彙と PR2 節を更新。差分：`ChunkSettings.maxInputGraphemes` の追加、
+   `ChunkSettings` と `InputTooLongError` が `chunk/settings.ts` に移ること、`buildCheckInput` の署名から `contextGraphemes` を
+   外すこと、`InvalidChunkSettingsError`・`roundingDelta`・`validateChunkSettings`・`findSentenceBoundaries` の公開、
+   `text/grapheme-index.ts` の新設、文境界の定義（閉じ括弧は終端記号に続く場合だけ）。
 5. **PR 作成**：解釈で迷った点、Windows の確認状況（CI で確認、ローカルは未確認）を書く。
 
 ## 付録 1：qwen へのスペック（1 回目。英語）
@@ -163,8 +174,11 @@ Do NOT touch any other file. Do NOT install dependencies. Do NOT modify any Mark
 - `array[i]` has type `T | undefined`. Read elements with `?.` or compare whole arrays with `toEqual`.
   MUST NOT use the non-null assertion `!`. Use `charCodeAt` / `codePointAt`, never `text[i]`.
 - In test source, write CR, LF, U+200D, variation selectors, combining marks and every surrogate pair as
-  escapes (`\r`, `\n`, `‍`, `\u{E0100}`, `́`, `\u{20BB7}`). MUST NOT paste raw control characters,
-  raw ZWJ or raw emoji into string literals. Plain Japanese text (hiragana, kanji, 。！？「」) may be written raw.
+  escapes (`\r`, `\n`, `\u200D`, `\u{E0100}`, `\u0301`, `\u{20BB7}`). MUST NOT paste raw control characters,
+  raw ZWJ or raw emoji into string literals. Plain Japanese text (hiragana, kanji, 。！？「」, U+3000 full-width space)
+  may be written raw.
+- MUST NOT change any expected value in the tables below. A failing table row means the implementation is wrong,
+  not the table. If you believe a table value is wrong, stop and report it instead of editing the expectation.
 - Biome decides formatting and import order. Fix with `pnpm exec biome check --write .`, never by hand.
 - Existing helpers you MUST reuse: `segmentGraphemes(text)` from `packages/shared/src/text/grapheme.ts`
   returns `{ segment, index }[]` where `index` is the UTF-16 start offset of each grapheme cluster.
@@ -202,6 +216,34 @@ Implementation:
   For `""` this is `[0]` and `count` is 0. `count = boundaries.length - 1`.
 - `isGraphemeBoundary` and `graphemeAt` use binary search over `boundaries` (sorted ascending, strictly increasing).
   MUST NOT use `indexOf` (O(n) per lookup is not acceptable; these are called many times per plan).
+  Use this internal helper verbatim (it satisfies `noUncheckedIndexedAccess` without `!`):
+
+```ts
+/** 二分探索で offset の位置を返す。見つからなければ -1。 */
+function searchBoundary(index: GraphemeIndex, offset: number): number {
+  let lo = 0;
+  let hi = index.boundaries.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const value = index.boundaries[mid];
+    if (value === undefined) {
+      return -1;
+    }
+    if (value === offset) {
+      return mid;
+    }
+    if (value < offset) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return -1;
+}
+```
+
+  `isGraphemeBoundary` is `searchBoundary(...) >= 0`; `graphemeAt` throws when it returns -1.
+  `offsetAt` reads `index.boundaries[grapheme]` and throws `RangeError` if it is `undefined`.
 - `graphemeAt` throws `new RangeError(...)` (Japanese message) when the offset is not a boundary.
 - `offsetAt` throws `RangeError` when `grapheme < 0 || grapheme > count` or not an integer.
 
@@ -209,16 +251,17 @@ Tests (grapheme-index.test.ts):
 - `""` → boundaries `[0]`, count 0; `isGraphemeBoundary(idx, 0)` is true.
 - `"a\u{20BB7}b"` → boundaries `[0, 1, 3, 4]`, count 3. `graphemeAt(idx, 3)` is 2. `offsetAt(idx, 2)` is 3.
   `isGraphemeBoundary(idx, 2)` is false (inside the surrogate pair). `graphemeAt(idx, 2)` throws RangeError.
-- `"\u{1F468}‍\u{1F469}‍\u{1F467}x"` (ZWJ family + x) → boundaries `[0, 8, 9]`, count 2.
+- `"\u{1F468}\u200D\u{1F469}\u200D\u{1F467}x"` (ZWJ family + x) → boundaries `[0, 8, 9]`, count 2.
 - `"葛\u{E0100}飾"` → boundaries `[0, 3, 4]`.
 - `"行\r\n次"` → boundaries `[0, 1, 3, 4]` (CRLF is one cluster).
-- `"が"` (か + combining dakuten) → boundaries `[0, 2]`, count 1.
+- `"か\u3099"` (か + combining dakuten) → boundaries `[0, 2]`, count 1.
 - `offsetAt(idx, count)` equals `text.length`; `offsetAt(idx, count + 1)` throws; `offsetAt(idx, -1)` throws.
 - Round trip: for `"あ\u{20BB7}\r\nい"`, for every k in 0..count, `graphemeAt(idx, offsetAt(idx, k)) === k`.
 
 ## 2. packages/shared/src/chunk/sentence.ts
 
 ```ts
+import { isGraphemeBoundary } from "../text/grapheme-index.ts";
 import type { GraphemeIndex } from "../text/grapheme-index.ts";
 import type { Range } from "../text/range.ts";
 
@@ -236,7 +279,8 @@ Character sets (define as module-level `Set<number>` of code points):
 
 Algorithm: scan `i` from `range.start` to `range.end` (exclusive) by code unit. When `text.charCodeAt(i)` is in
 TERMINALS: set `j = i + 1`; while `j < range.end` and `charCodeAt(j)` is in TERMINALS or CLOSERS, `j += 1`.
-If `j < range.end` and `j > range.start` and `isGraphemeBoundary(index, j)`, push `j`. Then continue scanning
+If `j < range.end` and `isGraphemeBoundary(index, j)`, push `j` (`j > range.start` holds automatically because the scan
+starts at `range.start`). Then continue scanning
 from `j` (not from `i + 1`). If the code unit is not a terminal, `i += 1`.
 
 Restated from the other direction so it is not inverted:
@@ -256,11 +300,11 @@ unless stated. Expected offsets are UTF-16 code units.
 - `"待って……行く"` → `[]`
 - `"雨だ。"` → `[]` (the only boundary equals range.end)
 - `"あ。」）！い"` → `[5]` (one boundary after the whole run)
-- `"あ。́い"` → `[]` (combining mark after 。; cluster continues, no boundary)
+- `"あ。\u0301い"` → `[]` (combining mark after 。; cluster continues, no boundary)
 - `"a!b?c."` → `[2, 4]` (ASCII ! and ? are terminals; ASCII . is NOT)
 - `"あ。い。う。え"` (full range) → `[2, 4, 6]`
 - `"あ。い。う。え"` with `range = { start: 3, end: 6 }` → `[4]` (boundary 2 is before start, boundary 6 equals end)
-- `"あ。い。う。え"` with `range = { start: 2, end: 7 }` → `[4, 6]` (boundary 2 equals start and is not returned)
+- `"あ。い。う。え"` with `range = { start: 2, end: 7 }` → `[4, 6]` (the terminal at offset 1 is before the range, so no boundary at 2)
 
 ## 3. packages/shared/src/chunk/settings.ts
 
@@ -459,7 +503,8 @@ return targets
 
 Empty text returns `[]`. The `remaining <= T + D` check comes FIRST, before looking for boundaries.
 Candidates MUST be strictly greater than `cursor` (a boundary at the cursor would create an empty target).
-Note `ideal - D >= cursor + 1` always holds because `D < T` (tolerance < 1), so the window never reaches the cursor.
+Explanatory note, do not assert it in code: `ideal - D >= cursor + 1` always holds because `D < T` (tolerance < 1),
+so the window never reaches the cursor.
 
 ### buildCheckInput
 
@@ -468,8 +513,9 @@ grapheme numbers: `PS = paragraphs.map((p) => graphemeAt(G, p.range.start))` (th
 `ts = graphemeAt(G, target.range.start)`, `te = graphemeAt(G, target.range.end)`.
 
 before:
+Check the conditions in this order (the order matters: swapping the first two would produce an empty range at `ts == 0`):
 - if `ts == 0` or `B == 0`: `null`
-- else if `ts - B <= 0`: `{ start: 0, end: target.range.start }` (本文先頭まで。丸めない)
+- else if `ts - B <= 0`: `{ start: 0, end: target.range.start }` (everything up to the text start, no rounding)
 - else: `ideal = ts - B`; `s = chooseBoundary(ideal, DB, PS.filter(b => b < ts), "smaller") ?? ideal`;
   `{ start: offsetAt(G, s), end: target.range.start }`
 
@@ -516,7 +562,7 @@ In the texts below every character is one code unit and one grapheme unless note
 | 同距離は外側 | `"あいうえおかき\nくけこ\nさしすせそたちつてと"` | `[[0,12],[12,22]]` | ends 8 and 12 are both distance 2 from ideal 10 → larger (12) |
 | 文境界へフォールバック | `"あいうえおかきく。けこさしすせそたちつ。なにぬねのはひふへほ"` | `[[0,9],[9,20],[20,30]]` | one paragraph (end 30). cursor 0: no paragraph end in [8,12]; sentence boundaries 9, 20 → 9. cursor 9: ideal 19, window [17,21] → 20. cursor 20: remaining 10 → rest. paragraphIds all `[0]` |
 | 書記素境界へフォールバック | `"あ".repeat(25)` | `[[0,10],[10,20],[20,25]]` | no boundaries at all |
-| ZWJ 絵文字をまたぐ ideal | `"あいうえおかきくけ" + "\u{1F468}‍\u{1F469}‍\u{1F467}" + "さしすせそたちつてと"` | `[[0,17],[17,27]]` | 20 graphemes, 27 code units. grapheme 10 starts at offset 17 (after the 8-unit emoji). MUST NOT cut at offset 10 |
+| ZWJ 絵文字をまたぐ ideal | `"あいうえおかきくけ" + "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}" + "さしすせそたちつてと"` | `[[0,17],[17,27]]` | 20 graphemes, 27 code units. grapheme 10 starts at offset 17 (after the 8-unit emoji). MUST NOT cut at offset 10 |
 | 異体字セレクタをまたぐ ideal | `"あいうえおかきくけ" + "葛\u{E0100}" + "さしすせそたちつてと"` | `[[0,12],[12,22]]` | grapheme 10 starts at offset 12 |
 | CRLF をまたがない | `"あいうえおかきくけ\r\nさしすせそたちつてとな"` | `[[0,11],[11,22]]` | 21 graphemes, 22 code units. paragraph end at grapheme 10 = offset 11 (CRLF is one grapheme). window [8,12] contains 10 → cut at 11, never between CR and LF. cursor 10: remaining 11 → rest |
 | 残りが目標 + delta ちょうど | `"あ".repeat(12)` | `[[0,12]]` | remaining 12 ≤ 12 → single target |
@@ -527,16 +573,16 @@ In the texts below every character is one code unit and one grapheme unless note
 
 Also:
 - `index` is sequential from 0 for the 文境界 case (`[0, 1, 2]`).
-- Tiling invariant, one `it` per row of the table (reuse the array): for non-empty text, `first.start === 0`, each `start`
+- Tiling invariant, one `it` per row of the table (define the table once as an array and loop over it, or use `it.each`):
+  for non-empty text, `first.start === 0`, each `start`
   equals the previous `end`, last `end === text.length`, `index` equals array position, `end > start` for every target,
   `isGraphemeBoundary(G, start)` and `isGraphemeBoundary(G, end)` for every target, and
   `graphemeAt(G, end) - graphemeAt(G, start) <= 12` for every target, and concatenating `sliceRange` of all targets equals `text`.
 - Randomized tiling check (one `it`, 300 iterations, seeded PRNG so it is deterministic — implement a tiny mulberry32):
   build a random text by concatenating 1..40 pieces drawn from
-  `["あ", "い。", "う！", "\n", "\r\n", "\u{1F468}‍\u{1F469}‍\u{1F467}", "葛\u{E0100}", "が", "「え」"]`,
-  plan with `S({ targetGraphemes: 1 + (rnd % 7), roundingTolerance: 0.4 })` (skip iteration if text is empty),
-  and assert the tiling invariant above (with the length bound `T + roundingDelta(T, 0.4)`).
-- chooseBoundary cross-check is internal; instead verify tie / window behaviour through the table rows above.
+  `["あ", "い。", "う！", "\n", "\r\n", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}", "葛\u{E0100}", "か\u3099", "「え」"]`,
+  plan with `S({ targetGraphemes: 1 + (rnd % 7), roundingTolerance: 0.4 })`, and assert the tiling invariant above (with the length bound `T + roundingDelta(T, 0.4)`).
+- `chooseBoundary` is internal and not exported; its tie and window-edge behaviour is verified through the table rows above.
 
 ### buildCheckInput
 
@@ -552,16 +598,19 @@ Targets are constructed directly as `{ index: 0, range, paragraphIds }` (paragra
 | ideal が本文の外なら丸めない | `[3,9]` | `S()` | `[0,3]` (ideal −2 ≤ 0) | `[9,15]` | `[0,15]` |
 | 文脈長 0 は null | `[9,15]` | `S({ contextGraphemes: 0 })` | `null` | `null` | `[9,15]` |
 | 前方は最も近い始端、後方の同距離は大きい側 | `[12,18]` | `S({ contextGraphemes: 4, roundingTolerance: 0.5 })` (DB=2) | ideal 8, window [6,10]: starts 6 (distance 2) and 9 (distance 1) → `[9,12]` | ideal 22, window [20,24]: ends 21 (distance 1) and 23 (distance 1) → tie → larger 23 → `[18,23]` | `[9,23]` |
-| 前方の同距離は小さい側 | `[13,19]` on text G below | see below | | | |
+| 前方は窓内で最も近い始端（text G） | `[13,19]` on text G below | `S({ contextGraphemes: 4, roundingTolerance: 0.5 })` (DB=2) | `[9,13]` (ideal 9, window [7,11]: starts 7 (distance 2), 9 (distance 0)) | `null` (target ends at 19 = length) | `[9,19]` |
+| 前方の同距離は小さい側（text G） | `[13,19]` on text G below | `S({ contextGraphemes: 5, roundingTolerance: 0.2 })` (DB=1) | `[7,13]` (ideal 8, window [7,9]: starts 7 and 9 both distance 1 → tie → smaller 7) | `null` | `[7,19]` |
+| 文脈が ZWJ 絵文字をまたぐ（text J） | `[16,19]` on text J below | `S()` (B=5, DB=1) | `[3,16]` (ts = grapheme 9, ideal 4, window [3,5]: paragraph start at grapheme 3 = offset 3) | `[19,21]` (te = 12, 12 + 5 ≥ 14 → to end) | `[3,21]`; required is 11 graphemes (not 18 code units): `S({ maxInputGraphemes: 11 })` does not throw, `S({ maxInputGraphemes: 10 })` throws with `required` 11, `limit` 10 |
 | 段落境界が窓内にない | `[9,15]` on text H below | `S({ contextGraphemes: 5, roundingTolerance: 0 })` (DB=0, window is the single point ideal) | `[4,9]` | `[15,20]` | `[4,20]` |
 | 上限超過 | `[9,15]` | `S({ maxInputGraphemes: 17 })` | throws `InputTooLongError` with `required` 18 and `limit` 17 | | |
 | 上限ちょうど | `[9,15]` | `S({ maxInputGraphemes: 18 })` | does not throw; inputRange `[3,21]` | | |
 
-Text G (for the real before-tie): `"あい\nうえお\nか\nきくけ\nこさしすせそ"` — starts 0,3,7,9,13; ends 3,7,9,13,19; length 19.
-Target `[13,19]`, `S({ contextGraphemes: 4, roundingTolerance: 0.5 })` (DB=2): before ideal 9, window [7,11]; starts 7 (distance 2)
-and 9 (distance 0) → 9 → before `[9,13]`. Now use `S({ contextGraphemes: 5, roundingTolerance: 0.2 })` (DB=1): ideal 8, window [7,9];
-starts 7 (distance 1) and 9 (distance 1) → TIE → smaller (7) → before `[7,13]`. This is the real tie test; assert `[7,13]`.
-after is `null` (target ends at length 19).
+Text G: `"あい\nうえお\nか\nきくけ\nこさしすせそ"` — paragraph starts 0,3,7,9,13; ends 3,7,9,13,19; length 19. Every character is one grapheme.
+
+Text J: `"あい\n" + "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}え\n" + "おか\nきく\nけこ"` — 21 code units, 14 graphemes.
+Paragraph starts (offsets) 0,3,13,16,19; the emoji occupies offsets 3..11 and is grapheme 3; `え` is grapheme 4 at offset 11.
+Grapheme numbers of the starts: 0,3,6,9,12. The target `[16,19]` is grapheme 9..12. A code-unit implementation would compute
+ideal 16 − 5 = 11 and fail this row.
 
 Text H (no paragraph boundaries): `"あいうえおかきくけこさしすせそたちつてと"` (one paragraph, 20 graphemes). Target `[9,15]`, `S({ contextGraphemes: 5, roundingTolerance: 0 })`:
 before ideal 4, window [4,4], start candidates `< 9` are only 0 → not in window → grapheme boundary at 4 → `[4,9]`.
@@ -574,6 +623,7 @@ after ideal 20 ≥ count 20 → `[15,20]` (to the end, no rounding). inputRange 
 | 文脈が広がる | `S()` (R=8, DR=1) | before `[0,9]` (ideal 1, window [0,2] → 0), after `[15,23]` (ideal 23 ≥ count), inputRange `[0,23]`, target unchanged |
 | 再確認の文脈が初回より狭くても初回の入力を含む | `S({ recheckContextGraphemes: 2 })` (DR=0) | raw before ideal 7 → no start in [7,7] → 7; min(7, 3) = 3 → before `[3,9]`. raw after ideal 17 → no end at 17 → 17; max(17, 21) = 21 → after `[15,21]`. inputRange `[3,21]` |
 | 再確認の文脈 0 でも初回の入力を含む | `S({ recheckContextGraphemes: 0 })` | before `[3,9]`, after `[15,21]`, inputRange `[3,21]` |
+| 本文末尾の検査対象 | initial from `buildCheckInput` with `S()` on target `[18,23]` (initial inputRange `[12,23]`, after null); recheck with `S()` | before `[9,18]` (ideal 10, window [9,11] → start 9), after `null`, inputRange `[9,23]` |
 | 上限超過 | `S({ maxInputGraphemes: 22 })` | throws `InputTooLongError` with `required` 23, `limit` 22 |
 
 Also assert for every recheck case: `result.inputRange.start <= initial.inputRange.start` and `result.inputRange.end >= initial.inputRange.end`.
@@ -591,11 +641,15 @@ export { buildCheckInput, buildRecheckInput, planTargets } from "./chunk/plan.ts
 
 - Do NOT invert `outer`: target end and after-context use `"larger"`; before-context uses `"smaller"`.
 - Do NOT use sentence boundaries for context windows. Do use them for target ends (after paragraph boundaries fail).
-- Do NOT check boundaries before the `remaining <= T + D` rule; the rest-of-text rule comes first.
+- MUST NOT check boundaries before the `remaining <= T + D` rule; the rest-of-text rule comes first.
+- Invariants from docs/reference/invariants.md: every position of the text MUST belong to exactly one target (tiling);
+  every cut MUST be a grapheme cluster boundary (never inside CRLF, a surrogate pair, a ZWJ sequence, or a
+  base + combining mark / variation selector); the input MUST NOT be shrunk silently when it exceeds the limit.
 - Do NOT let a boundary equal to `cursor` be a candidate.
 - Do NOT compute lengths with `.length` or `end - start` on code units when a grapheme count is required; convert with `graphemeAt`.
 - Do NOT read or mutate `target.paragraphIds` in buildCheckInput / buildRecheckInput.
-- Do NOT shrink the input when it exceeds `maxInputGraphemes`; throw `InputTooLongError`.
+- MUST NOT shrink the input when it exceeds `maxInputGraphemes`; throw `InputTooLongError`.
+- MUST NOT change any expected value in the tables. A failing row means the implementation is wrong, not the table.
 - Do NOT rebuild `initial.target` in buildRecheckInput; return the same object.
 
 ## Self-correction (MANDATORY — run before finishing)
