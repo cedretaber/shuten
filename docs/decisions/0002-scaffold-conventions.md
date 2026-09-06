@@ -55,6 +55,13 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
   サーバー起動と `/api/health` の応答、静的配信、127.0.0.1 での待ち受けを確認済み。
 - WSL では better-sqlite3 のビルド済みバイナリ取得に失敗し、node-gyp でのソースビルドにフォールバックした
   （ビルド自体は成功）。Windows では別途確認が必要。手順は `docs/windows-verification.md`。
+- `@types/node` はランタイムに合わせて 24.x に固定する（26.x ではランタイムに無い API を型が許してしまう）。
+- `drizzle-kit generate` が動作することを確認済み。生成物（`packages/server/drizzle/`）は仕様書 8.1 節の
+  スキーマが入るまでコミットしない。
+- `.gitattributes` の `-text` は、CRLF を含むファイルを `git add` して `git ls-files --eol` で
+  `i/crlf w/crlf attr/-text` になることを確認済み。
+- サーバーの既定パス（`.data`、`../web/dist`）は `packages/server` からの相対で解決する。
+  `pnpm start` / `pnpm dev` 経由で起動すること。
 - Windows での確認は未実施。
 
 ## 却下した案
