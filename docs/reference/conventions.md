@@ -38,6 +38,7 @@
 
 - テストはソースと同じディレクトリに `*.test.ts` として置く。
 - CRLF・CR・BOM を含む原稿ファイルは `packages/*/test/fixtures/` に置き、`.gitattributes` の `-text` で改行変換から守る。
+  fixture はエディタで保存せず、`packages/shared/test/generate-fixtures.mjs` でバイト単位に生成する。追加したら `git ls-files --eol` で `attr/-text` を確認する。
 - 仕様書 11 節の受け入れ条件を、可能な限り自動テストに落とす。
 - 以下は境界条件テストを必須とする。
   - 段落分割: CRLF・LF・CR の混在、末尾改行の有無、空行、単一の長い段落

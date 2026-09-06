@@ -33,8 +33,8 @@ git config core.autocrlf
    node -e "const D=require('./packages/server/node_modules/better-sqlite3'); console.log(D(':memory:').prepare('select sqlite_version() v').get())"
    ```
 
-3. 型検査、lint、テストをまとめて実行する。テストには DB のメモリ往復と
-   `Intl.Segmenter` の書記素判定（絵文字 ZWJ、異体字セレクタ、CRLF）が含まれる。
+3. 型検査、lint、テストをまとめて実行する。テストには DB のメモリ往復、
+   `Intl.Segmenter` の書記素判定（絵文字 ZWJ、異体字セレクタ、CRLF）、段落分割、fixture の往復が含まれる。
 
    ```powershell
    pnpm check
@@ -57,13 +57,15 @@ git config core.autocrlf
    `http://127.0.0.1:3000/` を開くと「朱点」の画面にサーバー側とブラウザ側の書記素計数が
    どちらも 1 と表示されること。
 
-5. fixture の改行が保持されていることを確認する（fixture を追加した後に実施）。
+5. fixture の改行が保持されていることを確認する。
 
    ```powershell
    git ls-files --eol packages/shared/test/fixtures
    ```
 
-   `i/crlf` や `i/mixed` のファイルが `w/` 側でも同じであること。
+   4 ファイルとも `attr/-text` で、`i/` と `w/` が同じであること。期待値は `bom-crlf.txt` と `crlf.txt` が
+   `i/crlf w/crlf`、`cr-mixed.txt` が `i/-text w/-text`（単独 CR を git がバイナリと判定する）、
+   `invalid-utf8.txt` が `i/lf w/lf`。
 
 ## 記録
 

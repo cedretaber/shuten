@@ -72,6 +72,7 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 - Windows での確認：CI（`windows-latest`、Node 24.20.0）で install、typecheck、lint、test、build、
   better-sqlite3 のバインディング読み込みが通ることを確認済み（2026-09-07）。ユーザー環境の Windows での
   LM Studio を含む動作確認は未実施。
+- PR1（原稿の取り込みと段落モデル）後：テスト 101 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-07）。
 
 ## 却下した案
 
