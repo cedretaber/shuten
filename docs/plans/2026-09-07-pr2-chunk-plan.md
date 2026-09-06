@@ -364,7 +364,7 @@ Tests (settings.test.ts). `base = { targetGraphemes: 1500, contextGraphemes: 100
 - `roundingDelta(1500, 0.2)` is 300; `roundingDelta(10, 0.2)` is 2; `roundingDelta(4, 0.2)` is 0; `roundingDelta(7, 0.5)` is 3.
 - Each of the following throws `InvalidChunkSettingsError`: `targetGraphemes: 0`, `targetGraphemes: 1.5`,
   `targetGraphemes: 2 ** 53` (not a safe integer), `contextGraphemes: -1`, `contextGraphemes: 0.5`,
-  `recheckContextGraphemes: -1`, `recheckContextGraphemes: 1.5`, `roundingTolerance: 1`, `roundingTolerance: -0.1`,
+  `contextGraphemes: 2 ** 53`, `recheckContextGraphemes: -1`, `recheckContextGraphemes: 1.5`, `recheckContextGraphemes: 2 ** 53`, `roundingTolerance: 1`, `roundingTolerance: -0.1`,
   `roundingTolerance: Number.NaN`, `roundingTolerance: Number.POSITIVE_INFINITY`, `maxInputGraphemes: 1799`
   (needs ≥ 1800 for base), `maxInputGraphemes: 1800.5`, `maxInputGraphemes: Number.MAX_SAFE_INTEGER + 1`.
   `maxInputGraphemes: 1800` does NOT throw.
