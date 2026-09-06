@@ -1,0 +1,25 @@
+{
+  "name": "@shuten/server",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "@shuten/shared": "workspace:*",
+    "better-sqlite3": "13.0.3",
+    "drizzle-orm": "0.45.2",
+    "hono": "4.13.7",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "drizzle-kit": "0.31.10"
+  }
+}

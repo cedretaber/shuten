@@ -18,7 +18,7 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 
 ## 現在の状態
 
-実装前。仕様は確定（v0.5）、技術スタックは決定済み。次の段階は scaffold と LM Studio との接続検証。
+scaffold 完了（WSL で検証済み、Windows は未確認）。仕様は確定（v0.5）。次の段階は LM Studio との接続検証と、分割・照合の実装。
 
 ## 技術スタック
 
@@ -40,13 +40,37 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 | ファイル | 内容 |
 | --- | --- |
 | [docs/spec/mvp-spec.md](docs/spec/mvp-spec.md) | MVP 仕様書（正本）。機能範囲、検査処理、保存、評価方法、受け入れ条件 |
-| [docs/decisions/](docs/decisions/) | 設計上の決定記録 |
+| [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約） |
+| [docs/windows-verification.md](docs/windows-verification.md) | Windows での動作確認手順 |
 | [AGENTS.md](AGENTS.md) | AI エージェントと開発者向けの規約。不変条件、対象外、開発規約 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 固有の事項 |
 
-## セットアップ・起動（scaffold 後に追記）
+## セットアップ
 
-未整備。scaffold 後に、Node.js と pnpm の版、インストール、起動、テストの各手順を記載する。
+必要なもの：Node.js 24.x、pnpm 10.17.1（`package.json` の `packageManager` に固定。volta を使う場合は `volta` フィールドで自動選択される）。
+
+```sh
+pnpm install        # better-sqlite3 のネイティブバイナリもここで入る
+pnpm check          # 型検査 + lint + テスト
+pnpm build          # web をビルド（packages/web/dist）
+pnpm start          # http://127.0.0.1:3000 で起動し、ビルド済みの web を配信
+```
+
+開発時は `pnpm dev` でサーバー（`node --watch`）と Vite の開発サーバーを同時に起動する。
+Vite は `/api` をサーバーへプロキシする。
+
+環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）。
+
+Windows での確認手順は [docs/windows-verification.md](docs/windows-verification.md)。
+
+## リポジトリ構成
+
+```
+packages/shared   位置換算、分割、照合、許容語判定、共有型（ビルドなし、ソースを直接参照）
+packages/server   Hono の HTTP API、実行キュー、SQLite 永続化、LM Studio クライアント、静的配信
+packages/web      React + Vite の UI
+docs/             仕様書、決定記録、手順
+```
 
 ## 参照
 

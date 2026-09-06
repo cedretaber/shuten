@@ -26,3 +26,15 @@ tmp/
 
 # 評価用の実原稿（作者の許可を得た原稿はリポジトリに入れない）
 manuscripts/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# SQLite データ
+.data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

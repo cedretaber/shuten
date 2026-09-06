@@ -1,0 +1,32 @@
+{
+  "name": "shuten",
+  "private": true,
+  "version": "0.0.0",
+  "description": "日本語小説の誤字・脱字と不自然な日本語を検出する校正ツール",
+  "type": "module",
+  "packageManager": "pnpm@10.17.1",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "volta": {
+    "node": "24.8.0",
+    "pnpm": "10.17.1"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter ./packages/server --filter ./packages/web dev",
+    "build": "pnpm --filter ./packages/web build",
+    "start": "pnpm --filter ./packages/server start",
+    "typecheck": "pnpm -r --sequential typecheck && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "pnpm typecheck && pnpm lint && pnpm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@types/node": "26.4.1",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}

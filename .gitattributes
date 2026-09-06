@@ -1,0 +1,5 @@
+# 通常のテキストは LF に正規化する
+* text=auto eol=lf
+
+# テスト用 fixture は CRLF・単独 CR・BOM を意図的に含むため、git による改行変換を禁止する
+packages/*/test/fixtures/** -text

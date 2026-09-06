@@ -142,11 +142,34 @@ AI エージェント（Claude Code、qwen、その他）がこのリポジト�
 - `AbortController` は HTTP 通信の中断であり、LM Studio 側の生成終了の確認ではない。
   停止・タイムアウトでは中断後も生成終了を未確認として扱う。SSE 切断では何も中断しない。
 - DB トランザクションに LLM 応答待ちを含めない。
-- Node.js と pnpm の版を固定する。
+- Node.js と pnpm の版は `package.json`（`engines`、`packageManager`、`volta`）と `.node-version` で固定済み。
 
-### コマンド（scaffold 後に追記）
+### コマンド
 
-セットアップ、起動、テスト、lint の各コマンドは scaffold 後に実際に動くものを記載する。
+```sh
+pnpm install          # 依存の導入（better-sqlite3 のビルドスクリプトは pnpm-workspace.yaml で許可済み）
+pnpm check            # typecheck + lint + test をまとめて実行。作業の完了前に必ず通す
+pnpm typecheck        # パッケージごとに tsc -p --noEmit
+pnpm lint             # biome check .
+pnpm format           # biome format --write .
+pnpm test             # vitest run（全パッケージ）
+pnpm build            # web のビルド
+pnpm dev              # server（node --watch）と web（vite）を同時起動
+pnpm start            # server を起動し、ビルド済み web を配信
+```
+
+### コードの規約（scaffold 由来）
+
+詳細は `docs/decisions/0002-scaffold-conventions.md`。
+
+- 相対 import と `@shuten/shared` 内の import には `.ts` 拡張子を必ず付ける。Node が直接実行するため。
+- `erasableSyntaxOnly`：`enum`、`namespace`、パラメータプロパティ、`import x = require()` を使わない。
+- `shared` はビルドしない。`exports` は `src/index.ts` を直接指す。公開する関数は `src/index.ts` から再エクスポートする。
+- テストはソースと同じディレクトリに `*.test.ts` として置く。CRLF・CR・BOM を含む原稿ファイルは
+  `packages/*/test/fixtures/` に置き、`.gitattributes` の `-text` で改行変換から守る。
+- 依存の版は完全固定（`^` なし）。更新は意図的に行い、コミットメッセージに理由を書く。
+- `package.json` の scripts は Windows でも動く書き方に限定する（`rm -rf`、`&&` 以外のシェル構文、環境変数の inline 代入を使わない）。
+- Windows で未確認の変更は、その旨を PR やコミットメッセージに書く。
 
 ## 参照
 
