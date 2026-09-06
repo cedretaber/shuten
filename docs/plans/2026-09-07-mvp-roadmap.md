@@ -35,6 +35,7 @@ PR をまたいで同じ名前を使うため、ここで定める。すべて `
 ```ts
 // text/range.ts
 interface Range { readonly start: number; readonly end: number }   // UTF-16、[start, end)
+function sliceRange(text: string, range: Range): string
 
 // text/paragraph.ts
 interface Paragraph { readonly id: number; readonly range: Range }  // id は原稿版内で 0 始まりの出現順
@@ -43,6 +44,7 @@ function splitParagraphs(text: string): Paragraph[]                 // CRLF / LF
 // text/ingest.ts
 function decodeUtf8Strict(bytes: Uint8Array): string                // 不正バイトは例外（黙って置換しない）
 function stripBom(text: string): string                             // 先頭 U+FEFF だけを除外
+function ingestUtf8Bytes(bytes: Uint8Array): string                // stripBom(decodeUtf8Strict(bytes))。ファイル入力はこれだけを呼ぶ
 
 // text/grapheme.ts（scaffold 済み）
 function countGraphemes(text: string): number
@@ -169,7 +171,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 - 仕様：5.1、6.1、9（位置対応の保持）
 - 作る：`text/range.ts`、`text/paragraph.ts`、`text/ingest.ts`、`versions.ts`、上記の型
-- 提供：`Range`、`Paragraph`、`splitParagraphs`、`decodeUtf8Strict`、`stripBom`、版定数
+- 提供：`Range`、`sliceRange`、`Paragraph`、`splitParagraphs`、`decodeUtf8Strict`、`stripBom`、`ingestUtf8Bytes`（decode → stripBom を一度だけ適用する取り込み経路）、`Utf8DecodeError`、版定数
 - テスト（境界条件、fixture は `packages/shared/test/fixtures/`）：
   - CRLF・LF・CR の混在、末尾改行の有無、空行の保持、改行列が直前の段落に含まれること、全体が隙間なく覆われること
   - BOM あり・なし、本文中の U+FEFF は残すこと、不正 UTF-8 で例外
