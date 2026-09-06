@@ -1,0 +1,33 @@
+{
+  "id": "chatcmpl-0x8yiive0fih26givg6kob",
+  "object": "chat.completion",
+  "created": 1788713298,
+  "model": "qwen/qwen3.8-27b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n  \"findings\": [\n    {\n      \"quote\": \"佐和は袖をまくり、兄の店の前に積まれた木箱に手をかけけた。\",\n      \"before\": \"木箱に手を\",\n      \"after\": \"。\",\n      \"suggestion\": \"佐和は袖をまくり、兄の店の前に積まれた木箱に手をかけた。\",\n      \"reason\": \"「かけけた」は「かけた」の誤変換または文字の重複です。\"\n    },\n    {\n      \"quote\": \"それでも、体を動かしていると余計なこと考えずに済むのがありがたかった。\",\n      \"before\": \"余計なこと\",\n      \"after\": \"考えずに\",\n      \"suggestion\": \"それでも、体を動かしていると余計なことを考えずに済むのがありがたかった。\",\n      \"reason\": \"「こと」の後に助詞「を」が抜けています。\"\n    },\n    {\n      \"quote\": \"佐和と兄は慌てて残りの荷を屋根の下え運び込んだ。\",\n      \"before\": \"屋根の下\",\n      \"after\": \"運び込んだ\",\n      \"suggestion\": \"佐和と兄は慌てて残りの荷を屋根の下へ運び込んだ。\",\n      \"reason\": \"「下え」は「下へ」の誤変換です。\"\n    }\n  ]\n}",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 861,
+    "completion_tokens": 314,
+    "total_tokens": 1175,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "stats": {
+    "total_draft_tokens_count": 258,
+    "accepted_draft_tokens_count": 228,
+    "rejected_draft_tokens_count": 30
+  },
+  "system_fingerprint": "qwen/qwen3.8-27b"
+}
