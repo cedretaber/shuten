@@ -44,6 +44,7 @@ scaffold 完了（WSL で検証済み、Windows は未確認）。LM Studio と�
 | [docs/reference/conventions.md](docs/reference/conventions.md) | 開発規約、パッケージ構成、コマンド |
 | [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約、LM Studio 接続検証） |
 | [docs/experiments/](docs/experiments/) | 検証の手順・要求・結果。再検証できる形で残す |
+| [docs/plans/](docs/plans/) | 実装計画。PR 単位のロードマップと、各 PR の詳細計画 |
 | [docs/guides/windows-verification.md](docs/guides/windows-verification.md) | Windows での動作確認手順 |
 | [AGENTS.md](AGENTS.md) | コーディングエージェントへの指示 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 固有の事項 |
