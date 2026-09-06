@@ -3,17 +3,14 @@
 AI エージェント（Claude Code、qwen、その他）がこのリポジトリで作業するときの共通指針。
 人間の開発者にも同じルールが適用される。
 
-## プロジェクト概要
+## まず読むもの
 
-**朱点（shuten）** は、日本語の小説から誤字・脱字と不自然な日本語を検出する校正ツール。
-LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環境で動作する
-Web UI + ローカルバックエンドの構成を想定している。
-
-- 仕様の正本は `mvp-spec.md` のみ。設計・実装・テストの判断はすべてここに基づく。
-- 仕様書は「合意した機能範囲」と「実装時に調整する初期案」を区別している。
+- プロジェクトの概要と現在の状態は `README.md`。
+- 仕様の正本は `docs/spec/mvp-spec.md` のみ。設計・実装・テストの判断はすべてここに基づく。
+  仕様書は「合意した機能範囲」と「実装時に調整する初期案」を区別している。
   初期値（分割長 1,500 字など）は調整可能だが、機能範囲は勝手に広げない。
-- 現在は実装前。技術スタックは決定済み（`docs/decisions/0001-tech-stack.md`）。
-  接続先・プロンプト・タイムアウト・分割長の実測値などは未決（仕様書 13 節）。
+- 設計上の決定と理由は `docs/decisions/`。新しい決定は連番のファイルとして追加する。
+- 接続先・プロンプト・タイムアウト・分割長の実測値などは未決（仕様書 13 節）。
 
 ## 言語
 
@@ -107,7 +104,7 @@ Web UI + ローカルバックエンドの構成を想定している。
 
 - `main` に直接コミットせず、作業ごとにブランチを切る（初期セットアップのみ例外）。
 - コミットメッセージは日本語。1 行目に変更の要約、必要なら空行を挟んで理由を書く。
-- 仕様書を改訂したら、`mvp-spec.md` の改訂記録（15 節）に追記し、同じコミットに含める。
+- 仕様書を改訂したら、`docs/spec/mvp-spec.md` の改訂記録（15 節）に追記し、同じコミットに含める。
 
 ### テスト
 
@@ -128,18 +125,8 @@ Web UI + ローカルバックエンドの構成を想定している。
 
 ## 技術スタック
 
-決定の理由と制約は `docs/decisions/0001-tech-stack.md` を参照。
-
-| 領域 | 選択 |
-| --- | --- |
-| 言語・ランタイム | TypeScript（strict）、Node.js LTS |
-| 構成 | pnpm workspace の monorepo |
-| バックエンド | Hono（Node.js） |
-| フロントエンド | React + Vite |
-| 保存 | SQLite。better-sqlite3 + Drizzle |
-| LM Studio 接続 | 標準 `fetch` + `AbortController` |
-| 進捗通知 | SSE |
-| テスト / 検証 / lint | Vitest / zod / Biome |
+スタックの一覧は `README.md`、決定の理由と制約は `docs/decisions/0001-tech-stack.md` を参照。
+以下はエージェントが実装時に守る構成と制約。
 
 ### パッケージ構成
 
@@ -163,6 +150,6 @@ Web UI + ローカルバックエンドの構成を想定している。
 
 ## 参照
 
-- `mvp-spec.md` — MVP 仕様書（正本）
-- [LM Studio: OpenAI 互換 API](https://lmstudio.ai/docs/developer/openai-compat)
-- [LM Studio: 構造化出力](https://lmstudio.ai/docs/developer/openai-compat/structured-output)
+- `docs/spec/mvp-spec.md` — MVP 仕様書（正本）
+- `docs/decisions/` — 設計上の決定記録
+- `README.md` — 概要、技術スタック、セットアップ
