@@ -8,6 +8,8 @@
 - 設計上の決定は `docs/decisions/` に連番で追加する。結論と理由だけを短く書き、
   検証の手順や生データは `docs/experiments/` に置いて参照する。
 - Windows で未確認の変更は、その旨を PR やコミットメッセージに書く。
+- CI（`.github/workflows/ci.yml`）は Ubuntu と Windows で `pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build` を実行する。
+  PR は CI が通ってからマージする。Node と pnpm の版は `.node-version` と `packageManager` から読むので、更新時にワークフローの変更は不要。
 
 ## パッケージ構成
 
@@ -48,7 +50,7 @@
 ## コマンド
 
 ```sh
-pnpm install          # 依存の導入（better-sqlite3 のビルドスクリプトは pnpm-workspace.yaml で許可済み）
+pnpm install          # 依存の導入（better-sqlite3 は同梱のビルド済みバイナリを使い、ビルドしない）
 pnpm check            # typecheck + lint + test をまとめて実行
 pnpm typecheck        # パッケージごとに tsc -p --noEmit
 pnpm lint             # biome check .

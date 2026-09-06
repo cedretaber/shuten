@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows は標準実行環境（仕様書 2 節）。better-sqlite3 の同梱バイナリが
+        # ビルドなしで動くことの確認を兼ねる
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版は package.json の packageManager から読む
+      - uses: pnpm/action-setup@v4
+
+      # 版は .node-version から読む
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+
+      # better-sqlite3 が同梱のビルド済みバイナリを読み込めること（ビルドは行わない設定）
+      - run: node -e "const D=require('./packages/server/node_modules/better-sqlite3'); console.log(D(':memory:').prepare('select sqlite_version() v').get())"
