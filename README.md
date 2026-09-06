@@ -1,5 +1,7 @@
 # 朱点（shuten）
 
+[![CI](https://github.com/cedretaber/shuten/actions/workflows/ci.yml/badge.svg)](https://github.com/cedretaber/shuten/actions/workflows/ci.yml)
+
 日本語の小説から誤字・脱字と日本語として不自然な箇所を検出する校正ツール。
 LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環境で動作する。
 
