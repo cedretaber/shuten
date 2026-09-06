@@ -311,7 +311,7 @@ APIキーを検査履歴に含めない。再確認前の候補と撤回理由�
 ## 13. 実装前・初期検証で決める事項
 
 - ~~Web UIとバックエンドの技術選定、保存形式。~~ 決定済み（`docs/decisions/0001-tech-stack.md`）。起動方法の詳細は実装時に定める。
-- ~~ユーザー環境のLM Studio接続先（Windows／WSL構成を含む）、モデルID、構造化出力への対応。~~ 確認済み（`docs/decisions/0003-lm-studio-connection.md`）。
+- ~~ユーザー環境のLM Studio接続先（Windows／WSL構成を含む）、構造化出力への対応。~~ 確認済み（`docs/decisions/0003-lm-studio-connection.md`）。モデルIDは未決（検証は qwen/qwen3.8-27b で実施、gemma 4 は未検証）。
 - モデルごとのプロンプト、生成パラメーター、タイムアウト。
 - ~~HTTP接続の切断でLM Studioの生成が停止するかの実測。~~ 停止することを確認済み（同上）。「復旧待ち」の経路は切断が効かない環境への備えとして残す。
 - 分割長と参考文脈長の実測による調整。
@@ -331,7 +331,7 @@ APIキーを検査履歴に含めない。再確認前の候補と撤回理由�
 
 ### v0.6（2026-09-07）
 
-- 13節のうち LM Studio 接続先、構造化出力、思考出力の分離形式、HTTP 切断による生成停止を確認済みに更新。結果は `docs/decisions/0003-lm-studio-connection.md`。
+- 13節のうち LM Studio 接続先、構造化出力、思考出力の分離形式、HTTP 切断による生成停止を確認済みに更新。モデルIDは未決のまま。結果は `docs/decisions/0003-lm-studio-connection.md`。
 
 ### v0.5（2026-09-07）
 

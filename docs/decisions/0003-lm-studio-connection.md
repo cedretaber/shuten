@@ -29,6 +29,24 @@
 - LM Studio 側は「ローカルネットワークで公開」に相当する設定が必要（WSL からの到達で確認済み）。
 - Windows 側の `lms` CLI（`/mnt/c/Users/<user>/.lmstudio/bin/lms.exe`）は WSL から直接実行でき、
   `lms ps` でモデルの状態（IDLE / GENERATING）を観察できる。開発時の診断に使う。
+- アプリからモデルの状態を取るには LM Studio 固有の `GET /api/v0/models` を使う。
+  `state`（loaded / not-loaded）、`quantization`、`loaded_context_length` が取れ、
+  仕様書 10 節で実行ごとに記録する項目に対応する。OpenAI 互換の `/v1/models` には状態が含まれない。
+
+## JIT ロードによる VRAM 溢れ（検証中に発生した失敗）
+
+モデルが未ロードの状態で、モデル名を指定した生成要求を送ったところ、LM Studio が JIT ロードを開始し、
+LM Studio 側のモデル既定値であるコンテキスト長（約 26 万トークン）でロードしようとして VRAM が溢れた。
+約 104 秒後に `{"error": "Model unloaded by user or API request."}` が返り、ユーザーが手動で
+コンテキスト長を約 20 万に下げてロードし直した。
+
+- この環境では JIT ロードが有効。未ロードのモデルへの生成要求は、アプリの意図とは無関係に
+  LM Studio の既定値でロードを引き起こす。
+- 仕様書 7 節は接続確認で小さな生成をウォームアップに使うとしているが、この環境ではその小さな生成が
+  VRAM 溢れを引き起こし得る。**接続確認では先に `/api/v0/models` で `state` を確認し、`not-loaded` なら
+  生成要求を送らずに「LM Studio 側でモデルをロードしてください」と案内する。** ロードは LM Studio 側に
+  委ねる（仕様書 7 節「独自のモデル管理機能は持たない」と整合）。
+- モデル名を指定しない要求は、未ロード時に即座に 400（No models loaded）で返る。ロードは起きない。
 
 ## HTTP 切断で生成が止まるか（仕様書 8.2 節・13 節）
 
@@ -60,6 +78,8 @@
 
 ## 思考（reasoning）の扱い
 
+本節の数値と挙動は `qwen/qwen3.8-27b` に固有のもの。モデルを変えると `reasoning_content` の有無、思考量、所要時間が変わるため再計測する。
+
 - **思考は止められない。** `chat_template_kwargs: { enable_thinking: false }`、`reasoning: { effort: "none" }`
   は無視され、`/no_think` は出力を変えるだけで思考は続いた。常時思考するモデルとして扱う。
 - 思考は英語で行われ、本文の各文を順に検討する。906 字の検査対象で約 8,400 トークン、86 秒。
@@ -90,7 +110,8 @@
 | 項目 | 状態 |
 | --- | --- |
 | 接続先（Windows / WSL） | 決定。上記「接続先」 |
-| 構造化出力への対応 | 確認済み。`json_schema` + `strict` を使う |
+| モデル ID | 未決。検証には `qwen/qwen3.8-27b` を使った。`google/gemma-4-31b-qat` は未検証 |
+| 構造化出力への対応 | 確認済み（qwen で）。`json_schema` + `strict` を使う |
 | 思考出力の分離形式 | 確認済み。`reasoning_content`。`<think>` 分離は不要 |
 | HTTP 切断で生成が止まるか | 確認済み。止まる |
 | モデルごとのプロンプト、生成パラメーター | 未決。`max_tokens` の初期値だけ 16,000 に |
