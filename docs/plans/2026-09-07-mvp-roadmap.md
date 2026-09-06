@@ -51,20 +51,20 @@ interface GraphemeIndex { readonly boundaries: readonly number[]; readonly count
 function buildGraphemeIndex(text: string): GraphemeIndex
 function isGraphemeBoundary(index: GraphemeIndex, offset: number): boolean
 function graphemeAt(index: GraphemeIndex, offset: number): number       // 境界でない位置は RangeError
-function offsetAt(index: GraphemeIndex, grapheme: number): number
+function offsetAt(index: GraphemeIndex, grapheme: number): number         // 範囲外は RangeError
 
 // text/grapheme.ts（scaffold 済み）
 function countGraphemes(text: string): number
 function segmentGraphemes(text: string): GraphemeSegment[]
 
-// chunk/settings.ts
-interface ChunkSettings { targetGraphemes: number; contextGraphemes: number; recheckContextGraphemes: number; roundingTolerance: number /* 0.2 */; maxInputGraphemes: number /* 検査対象 + 参考文脈の上限。書記素数 */ }
+// chunk/settings.ts（PR2）
+interface ChunkSettings { readonly targetGraphemes: number; readonly contextGraphemes: number; readonly recheckContextGraphemes: number; readonly roundingTolerance: number /* 0.2 */; readonly maxInputGraphemes: number /* 検査対象 + 参考文脈の上限。書記素数 */ }
 class InvalidChunkSettingsError extends Error
-class InputTooLongError extends Error { required: number; limit: number }
+class InputTooLongError extends Error { readonly required: number; readonly limit: number }
 function validateChunkSettings(settings: ChunkSettings): void                 // 不正なら InvalidChunkSettingsError
 function roundingDelta(target: number, tolerance: number): number            // floor(target × tolerance)
 
-// chunk/sentence.ts
+// chunk/sentence.ts（PR2）
 function findSentenceBoundaries(text: string, range: Range, index: GraphemeIndex): number[]   // 終端記号（。！？!?）とそれに続く閉じ括弧の並びの直後。書記素境界に限る
 
 // chunk/plan.ts
@@ -85,7 +85,9 @@ interface DiagnosticCandidate { transform: "newline" | "nfc" | "newline+nfc"; te
 type LocateResult =
   | { status: "located"; range: Range }
   | { status: "failed"; reason: LocateFailureReason; diagnostic: Diagnostic }
-function locateQuote(text: string, input: CheckInput, paragraphs: Paragraph[], ref: QuoteRef): LocateResult
+function locateQuote(text: string, input: CheckInput, paragraphs: readonly Paragraph[], ref: QuoteRef): LocateResult
+// target.paragraphIds には文境界・書記素境界で切られて一部だけ重なる段落も入る。照合は inputRange で行い、
+// 「引用の開始位置が target.range 内か」で担当を決める
 // not-found / ambiguous は「位置特定失敗」として通常一覧に表示する。
 // outside-target は参考文脈内から始まる候補で、通常一覧に出さず診断記録にだけ残す。
 
@@ -296,6 +298,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - `server/src/run/executor.ts`：生成要求を直列に実行する小さな実行器（同時実行 1）。PR9 のキューはこれを包む
   - `packages/cli/`（新規パッケージ。`bin/shuten-eval.ts`）：原稿ファイルと設定を読み、パイプラインを呼び、結果を JSON に出す。`--mode full-text` で全文を 1 要求で送る比較用の経路
 - 規則：
+  - 分割前に `validateChunkSettings` を呼ぶ。`maxInputGraphemes` はモデルのコンテキスト長から換算する（係数は実測で決める）。`InputTooLongError` と `InvalidChunkSettingsError` はどちらも「設定変更を案内」の終了理由にし、本文を縮めない
   - 要求は直列。各要求の直前に `ensureLoaded`
   - タイムアウトや abort の後に生成終了を確認できなければ、後続の要求を送らずにパイプラインを終了し、その旨を結果に残す（PR9 の「復旧待ち」に相当する終了理由）
   - 失敗した単位を含む途中結果をそのまま JSON に残す。失敗を指摘ゼロにしない

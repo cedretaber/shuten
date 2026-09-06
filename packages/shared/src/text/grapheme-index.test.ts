@@ -64,7 +64,7 @@ describe("offsetAt", () => {
   });
 });
 
-describe("round trip", () => {
+describe("往復変換", () => {
   it("0..count の全 k について graphemeAt(idx, offsetAt(idx, k)) === k", () => {
     const text = "あ\u{20BB7}\r\nい";
     const index = buildGraphemeIndex(text);

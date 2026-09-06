@@ -167,6 +167,25 @@ describe("planTargets", () => {
       ],
     },
     {
+      name: "段落末の「。」の直後（改行の直前）は文境界の候補にしない",
+      text: "あいうえおかきくけこさ。\nたちつてとなにぬねのはひふへほ",
+      expected: [
+        [0, 10],
+        [10, 20],
+        [20, 28],
+      ],
+      ids: [[0], [0, 1], [1]],
+    },
+    {
+      name: "改行が続かない「。」の直後は文境界の候補になる",
+      text: "あいうえおかきくけこさ。たちつてとなにぬねのはひふへほ",
+      expected: [
+        [0, 12],
+        [12, 22],
+        [22, 27],
+      ],
+    },
+    {
       name: "窓の外は選ばない",
       text: "あいうえおかきくけこさし\nすせそたちつてとな",
       expected: [
@@ -243,9 +262,10 @@ describe("planTargets", () => {
   });
 });
 
+// 8 つの短い会話段落。長さ 23。
+const textF = "あい\nうえ\nおか\nきく\nけこ\nさし\nすせ\nそた";
+
 describe("buildCheckInput", () => {
-  // 8 つの短い会話段落。長さ 23。
-  const textF = "あい\nうえ\nおか\nきく\nけこ\nさし\nすせ\nそた";
   // 5 段落。長さ 19。
   const textG = "あい\nうえお\nか\nきくけ\nこさしすせそ";
   // 単一段落。窓内に段落境界なし。20 書記素。
@@ -425,8 +445,6 @@ describe("buildCheckInput", () => {
 });
 
 describe("buildRecheckInput", () => {
-  const textF = "あい\nうえ\nおか\nきく\nけこ\nさし\nすせ\nそた";
-
   /** 初回検査入力を作る（S() で）。 */
   function initialFor(target: readonly [number, number]): CheckInput {
     return buildCheckInput(textF, splitParagraphs(textF), makeTarget(target), S());

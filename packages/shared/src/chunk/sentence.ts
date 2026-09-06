@@ -5,7 +5,7 @@ import type { Range } from "../text/range.ts";
 /** 終端記号のコードポイント集合（。！？!?）。 */
 const TERMINALS = new Set([0x3002, 0xff01, 0xff1f, 0x0021, 0x003f]);
 
-/** 閉じ括弧のコードポイント集合（」』）］〕〉》］)）。 */
+/** 閉じ括弧のコードポイント集合（」』）】〕〉》］)）。 */
 const CLOSERS = new Set([0x300d, 0x300f, 0xff09, 0x3011, 0x3015, 0x3009, 0x300b, 0xff3d, 0x0029]);
 
 /**
