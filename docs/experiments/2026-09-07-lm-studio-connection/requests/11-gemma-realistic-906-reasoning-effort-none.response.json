@@ -1,0 +1,29 @@
+{
+  "id": "chatcmpl-jj51q6uv38jv8b1smkqkxd",
+  "object": "chat.completion",
+  "created": 1788712904,
+  "model": "google/gemma-4-31b-qat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\n    \"findings\": [\n      {\n        \"quote\": \"手をかけけた\",\n        \"before\": \"木箱に\",\n        \"after\": \"。\",\n        \"suggestion\": \"手をかけた\",\n        \"reason\": \"誤変換（または重複）による誤字\"\n      },\n      {\n        \"quote\": \"屋根の下え\",\n        \"before\": \"荷を\",\n        \"after\": \"運び込んだ\",\n        \"suggestion\": \"屋根の下へ\",\n        \"reason\": \"助詞の誤変換\"\n      }\n    ]\n  }",
+        "reasoning_content": "",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 914,
+    "completion_tokens": 136,
+    "total_tokens": 1050,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    }
+  },
+  "stats": {},
+  "system_fingerprint": "google/gemma-4-31b-qat"
+}

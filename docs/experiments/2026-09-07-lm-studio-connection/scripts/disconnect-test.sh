@@ -10,7 +10,8 @@
 set -u
 REQ="${1:?request json}"
 URL="${LM_STUDIO_URL:-http://127.0.0.1:1234}/v1/chat/completions"
-status() { "$LMS" ps 2>/dev/null | awk 'NR>1 && $1!="" {print $3}' | head -1 | tr -d '\r'; }
+# lms ps の出力にはバナーが付くので、IDENTIFIER で始まるヘッダー行の次の行を読む
+status() { "$LMS" ps 2>/dev/null | tr -d '\r' | awk 'h && $1!="" {print $3; exit} /^ *IDENTIFIER/ {h=1}'; }
 gpu() { [ -n "${NVIDIA_SMI:-}" ] && "$NVIDIA_SMI" --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | tr -d '\r ' | paste -sd/ || echo "-"; }
 elapsed() { printf "%.0f" "$(echo "$(date +%s.%N) - $T0" | bc)"; }
 

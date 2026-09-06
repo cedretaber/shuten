@@ -120,3 +120,57 @@ temperature 0.7、max_tokens 600。seed 42 で 2 回とも同一の出力、seed
 4. 切断実験は `scripts/disconnect-test.sh requests/08-long-output-nostream.json` と
    `node scripts/abort-test.mjs requests/08-long-output-nostream.json`。
 5. 結果をこの README に日付付きで追記するか、新しい日付のディレクトリを作る。
+
+## 追試：`google/gemma-4-31b-qat`（2026-09-07）
+
+同じ要求の `model` を `google/gemma-4-31b-qat`（Q4_0、ロード時コンテキスト長 80,640。VRAM 32 GB に収まる上限）に
+差し替えて実施した。qwen はアンロード済み。新規に作った要求は `11`、`12`。
+
+### 応答形式・seed・切断
+
+- 思考は qwen と同様に `reasoning_content` へ分離される。思考は英語。
+- `json_schema` strict は有効。seed は有効（seed 42 で 2 回同一）。
+- 切断実験（Node `fetch` abort、curl 非ストリーミング）はいずれも切断から 1 秒以内に GENERATING → IDLE、
+  GPU 使用率 92% → 3%。生成開始前には `PROCESSINGPROMPT` という状態も観察された。
+- 未ロード時の挙動は再検証していない。
+
+### 思考の無効化
+
+| 方法 | 結果 |
+| --- | --- |
+| `chat_template_kwargs: { enable_thinking: false }` | 無視される |
+| `/no_think` | 無視される |
+| `reasoning: { effort: "none" }` | 思考が少し減る（134 → 97 トークン）が止まらない |
+| **`reasoning_effort: "none"`（トップレベル）** | **思考が完全に止まる（reasoning_tokens 0）** |
+
+qwen では `reasoning: { effort }` の入れ子形式しか試しておらず、トップレベルの `reasoning_effort` は**未検証**。
+次に qwen をロードしたときに `11` と同じ形で確認する。
+
+### 実文テスト（906 字、誤り 3 件）
+
+| モデル | 思考 | 所要 | reasoning_tokens | 検出 | 誤検出 | 引用の完全一致 |
+| --- | --- | --- | --- | --- | --- | --- |
+| qwen/qwen3.8-27b | あり（止められない） | 86 秒 | 8,384 | 3 / 3 | 0 | 3 / 3 |
+| google/gemma-4-31b-qat | あり | 24 秒 | 1,230 | 2 / 3 | 0 | 2 / 2 |
+| google/gemma-4-31b-qat | なし（`reasoning_effort: none`） | 5 秒 | 0 | 2 / 3 | 0 | 2 / 2 |
+
+- gemma は思考の有無にかかわらず、助詞抜け（「余計なこと考えずに」）を見逃した。重複と誤変換は検出。
+- gemma の引用は短い（「かけけた」「下え」）が原文に 1 回だけ一致し、`before` / `after` も正しかった。
+- gemma は思考量が qwen の 1/7 で、所要時間は 1/3.5。思考なしなら 1/17。
+
+### 小さな試行（「駅にに向かった」）での項目の取り違え
+
+gemma は qwen が見逃した助詞の重複を検出したが、`before` に引用、`after` に修正後、`suggestion` に理由、
+`reason` に分類を入れており、項目の意味を取り違えていた（要求 `02`）。
+
+JSON スキーマの各項目に `description` を付けた要求 `12` を送っても、`prompt_tokens` が 89 で変わらず、
+出力も同一だった。**LM Studio の構造化出力はスキーマを文法制約にだけ使い、`description` はモデルに渡らない。**
+項目の意味はプロンプト本文に書く必要がある。実文テスト（`10`）ではシステムプロンプトに各項目の説明があり、
+取り違えは起きていない。
+
+### 考察の追記
+
+- 切断による停止、`reasoning_content` の分離、`json_schema`、seed はモデルに依存せず LM Studio 側の挙動と見てよい。
+- 思考の無効化の可否と、思考量・所要時間はモデル固有。`reasoning_effort` はトップレベルで送る。
+- 検出率は 1 原稿 1 回の観察で優劣を決められない。仕様書 10 節の評価原稿で、思考の有無を含めて比較する。
+  qwen は遅いが 3/3、gemma は速いが 2/3 という傾向は、評価設計（再確認の有無との組み合わせ）に影響する。

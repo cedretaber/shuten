@@ -10,9 +10,11 @@ const lms = process.env.LMS;
 if (!lms) throw new Error("LMS（lms 実行ファイルのパス）を指定してください");
 const body = readFileSync(process.argv[2], "utf8");
 
+// lms ps の出力にはバナーが付くので、IDENTIFIER で始まるヘッダー行の次の行を読む
 const status = () => {
-  const lines = execFileSync(lms, ["ps"]).toString().split("\n").slice(1);
-  const row = lines.find((l) => l.trim());
+  const lines = execFileSync(lms, ["ps"]).toString().split("\n");
+  const header = lines.findIndex((l) => l.trimStart().startsWith("IDENTIFIER"));
+  const row = header >= 0 ? lines.slice(header + 1).find((l) => l.trim()) : undefined;
   return row ? row.trim().split(/\s+/)[2] : "?";
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
