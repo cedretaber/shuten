@@ -50,7 +50,7 @@
 ## コマンド
 
 ```sh
-pnpm install          # 依存の導入（better-sqlite3 のビルドスクリプトは pnpm-workspace.yaml で許可済み）
+pnpm install          # 依存の導入（better-sqlite3 は同梱のビルド済みバイナリを使い、ビルドしない）
 pnpm check            # typecheck + lint + test をまとめて実行
 pnpm typecheck        # パッケージごとに tsc -p --noEmit
 pnpm lint             # biome check .

@@ -56,7 +56,7 @@ scaffold 完了（WSL で検証済み、Windows は未確認）。LM Studio と�
 必要なもの：Node.js 24.20.0（`.node-version`。24 系の他の版でも動く想定）、pnpm 10.17.1（`package.json` の `packageManager` に固定。volta を使う場合は `volta` フィールドで自動選択される）。
 
 ```sh
-pnpm install        # better-sqlite3 のネイティブバイナリもここで入る
+pnpm install        # better-sqlite3 は同梱のビルド済みバイナリを使う（コンパイラ不要）
 pnpm check          # 型検査 + lint + テスト
 pnpm build          # web をビルド（packages/web/dist）
 pnpm start          # http://127.0.0.1:3000 で起動し、ビルド済みの web を配信

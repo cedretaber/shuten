@@ -1,7 +1,7 @@
 # Windows での動作確認手順
 
 MVP の標準実行環境は Windows（仕様書 2 節）。scaffold は WSL で検証済みだが、
-Windows では特に better-sqlite3 のネイティブバイナリと改行の扱いを確認する必要がある。
+Windows では特に better-sqlite3 の同梱バイナリと改行の扱いを確認する必要がある。
 この手順は Windows 側の Claude Code がそのまま実行できるように書いている。
 
 ## 前提
@@ -19,10 +19,9 @@ git config core.autocrlf
 
 ## 手順
 
-1. 依存のインストール。better-sqlite3 のインストールスクリプトが実行され、
-   Node 24 / win32-x64 向けのビルド済みバイナリが取得されることを確認する。
-   node-gyp によるソースビルドへフォールバックした場合はその旨を記録する
-   （Visual Studio Build Tools と Python が必要になる）。
+1. 依存のインストール。better-sqlite3 はビルドしない設定（`pnpm-workspace.yaml` の `ignoredBuiltDependencies`）なので、
+   node-gyp が起動しないこと、Visual Studio Build Tools を要求されないことを確認する。
+   CI の `windows-latest` では確認済み。
 
    ```powershell
    pnpm install
@@ -69,4 +68,4 @@ git config core.autocrlf
 ## 記録
 
 確認結果は `docs/decisions/0002-scaffold-conventions.md` の「検証状況」に追記する。
-better-sqlite3 がビルド済みバイナリで入ったか、ソースビルドになったかは必ず残す。
+better-sqlite3 で node-gyp が起動した場合は設定の問題なので、その旨を必ず残す。

@@ -69,7 +69,9 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
   既知の脆弱性は esbuild の開発サーバー機能を使う場合に限られ、本プロジェクトでは使わない。
   依存更新時に追跡する。web の Vite 経由で `@types/node` 26.x も推移的に残るが、型検査が読むのは
   直接依存の 24.x であることを確認済み。
-- Windows での確認は未実施。
+- Windows での確認：CI（`windows-latest`、Node 24.20.0）で install、typecheck、lint、test、build、
+  better-sqlite3 のバインディング読み込みが通ることを確認済み（2026-09-07）。ユーザー環境の Windows での
+  LM Studio を含む動作確認は未実施。
 
 ## 却下した案
 
