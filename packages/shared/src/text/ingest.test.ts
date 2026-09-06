@@ -6,7 +6,8 @@ import { splitParagraphs } from "./paragraph.ts";
 import { sliceRange } from "./range.ts";
 
 const fixturesDir = path.join(import.meta.dirname, "../../test/fixtures");
-const readFixture = (name: string) => new Uint8Array(readFileSync(path.join(fixturesDir, name)));
+// readFileSync の Buffer はプールされた大きな ArrayBuffer の一部を指すビュー。コピーせずそのまま渡す。
+const readFixture = (name: string): Uint8Array => readFileSync(path.join(fixturesDir, name));
 
 describe("stripBom", () => {
   it("先頭の U+FEFF を 1 文字だけ除外する", () => {
@@ -162,5 +163,13 @@ describe("fixture の往復", () => {
 
   it("invalid-utf8.txt: 不正な UTF-8 は Utf8DecodeError を投げる", () => {
     expect(() => ingestUtf8Bytes(readFixture("invalid-utf8.txt"))).toThrow(Utf8DecodeError);
+  });
+
+  it("大きな ArrayBuffer の一部を指すビュー（subarray）でも位置がずれない", () => {
+    const whole = readFixture("crlf.txt");
+    const padded = new Uint8Array(whole.length + 8);
+    padded.set(whole, 4);
+    const view = padded.subarray(4, 4 + whole.length);
+    expect(ingestUtf8Bytes(view)).toBe(ingestUtf8Bytes(whole));
   });
 });

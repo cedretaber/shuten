@@ -48,6 +48,23 @@ const cases: Case[] = [
     ],
   },
   { name: "末尾の単独 CR", text: "a\r", expected: [[0, 2]] },
+  { name: "単独の CR", text: "\r", expected: [[0, 1]] },
+  {
+    name: "CR が 2 つ",
+    text: "\r\r",
+    expected: [
+      [0, 1],
+      [1, 2],
+    ],
+  },
+  {
+    name: "CRLF の後に単独 CR",
+    text: "a\r\n\r",
+    expected: [
+      [0, 3],
+      [3, 4],
+    ],
+  },
   { name: "単独の CRLF", text: "\r\n", expected: [[0, 2]] },
   {
     name: "単独 CR の後に CRLF",

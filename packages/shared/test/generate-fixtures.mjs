@@ -1,9 +1,9 @@
-// fixture を再生成するスクリプト。`node packages/shared/test/fixtures/generate.mjs` で実行する。
-// CRLF・単独 CR・BOM・不正 UTF-8 をバイト単位で書き出す。エディタで開いて保存しないこと。
+// fixture を再生成するスクリプト。`node packages/shared/test/generate-fixtures.mjs` で実行する。
+// CRLF・単独 CR・BOM・不正 UTF-8 をバイト単位で fixtures/ に書き出す。生成物をエディタで開いて保存しないこと。
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 
-const dir = import.meta.dirname;
+const dir = path.join(import.meta.dirname, "fixtures");
 const utf8 = (text) => new TextEncoder().encode(text);
 const concat = (...parts) => Buffer.concat(parts.map((p) => Buffer.from(p)));
 

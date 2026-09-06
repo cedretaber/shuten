@@ -322,7 +322,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 作る：`server/src/api/*.ts`（接続設定と確認、原稿、実行、指摘、採否、エクスポート）、`api/events.ts`（SSE）、zod による入出力検証
 - エンドポイント（提案）：
   - `GET/PUT /api/settings/connection`、`POST /api/settings/connection/check`（一覧・状態・小さな生成を区別して返す）
-  - `POST /api/manuscripts`（貼り付け）、`POST /api/manuscripts/upload`（ファイル。`decodeUtf8Strict` + `stripBom`）
+  - `POST /api/manuscripts`（貼り付け）、`POST /api/manuscripts/upload`（ファイル。`ingestUtf8Bytes`）
   - `POST /api/runs`（開始）、`POST /api/runs/:id/stop|resume|retry-failed`、`GET /api/runs/:id`
   - `GET /api/runs/:id/findings`（絞り込み）、`PUT /api/findings/:id/judgment`
   - `GET /api/runs/:id/events`（SSE。購読の終了で検査を止めない）

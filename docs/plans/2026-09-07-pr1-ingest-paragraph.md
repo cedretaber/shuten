@@ -1,7 +1,7 @@
 # PR1 詳細計画：原稿の取り込みと段落モデル
 
 日付：2026-09-07  
-状態：計画（レビュー待ち）  
+状態：実装済み（PR #3）  
 ブランチ：`feat/pr1-ingest-paragraph`  
 上位計画：`docs/plans/2026-09-07-mvp-roadmap.md` の PR1 節
 
@@ -101,7 +101,8 @@ fixture は Claude がスクリプトで生成し、`git ls-files --eol` で 4 �
 
 1. **計画とブランチ**（このコミット）：本書を追加。
 2. **fixture の追加**（Claude）：`packages/shared/test/fixtures/` に 4 ファイルを生成。`.gitkeep` は削除。
-   生成スクリプトは `packages/shared/test/fixtures/generate.mjs` として同梱し、再生成できるようにする。
+   生成スクリプトは `packages/shared/test/generate-fixtures.mjs` として同梱し、再生成できるようにする
+   （fixtures/ の中に置くと `.gitattributes` の `-text` と Biome の除外がスクリプトにも掛かるため外に置く）。
    `git ls-files --eol` の結果をコミットメッセージに書く。
 3. **実装とテスト**（qwen に委譲、Claude が検証）：付録のスペックを標準入力から渡す。
    - 事前に qwen の疎通を確認する（`qwen-delegate` スキルの Step 0）。

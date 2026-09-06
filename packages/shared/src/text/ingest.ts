@@ -7,6 +7,8 @@ export class Utf8DecodeError extends Error {
 }
 
 // モジュール内で 1 つだけ作成する。ignoreBOM: true により、デコード時に BOM を除去しない。
+// stream オプションなしの decode() は呼び出しごとに内部状態をリセットし、例外の後も再利用できる。
+// 同期呼び出しなので複数の呼び出し元が割り込むこともない。
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /**
