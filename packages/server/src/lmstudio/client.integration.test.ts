@@ -13,14 +13,14 @@ import { LOADED_STATE } from "./types.ts";
  * 実行には `pnpm test:llm` を使う（別プロジェクト `vitest.integration.config.ts`）。
  */
 
-const rawUrl = process.env.SHUTEN_LM_STUDIO_URL;
+const rawUrl = process.env.SHUTEN_LM_STUDIO_URL?.trim();
 
 describe.skipIf(!rawUrl)("LmStudioClient（実 LM Studio）", () => {
   // describe.skipIf はテストを skip 扱いにするだけで、describe 本体は skip 時にも実行される。
-  // そのため rawUrl の解析はここで先に済ませず、未設定時に例外が飛ばないようにする。
+  // そのため rawUrl の解析はここで先に済ませず、未設定・空白のみのときに例外が飛ばないようにする。
   const baseUrl = rawUrl ? parseLmStudioUrl(rawUrl) : "";
   const apiKey = parseLmStudioApiKey(process.env.SHUTEN_LM_STUDIO_API_KEY);
-  const requestedModelId = process.env.SHUTEN_LM_STUDIO_MODEL;
+  const requestedModelId = process.env.SHUTEN_LM_STUDIO_MODEL?.trim();
 
   let client: LmStudioClient;
   let models: ModelInfo[];
@@ -30,8 +30,11 @@ describe.skipIf(!rawUrl)("LmStudioClient（実 LM Studio）", () => {
   beforeAll(async () => {
     client = createLmStudioClient({ baseUrl, apiKey });
     models = await client.listModels();
-    if (requestedModelId !== undefined) {
-      generationModelId = requestedModelId;
+    if (requestedModelId) {
+      // 指定されたモデルがロード済みでなければ、未ロードのモデルに生成要求を送らないよう
+      // 自動選択と同じく null（＝該当テストは ctx.skip()）に倒す（仕様書 7 節、invariants.md）。
+      const requested = models.find((model) => model.id === requestedModelId);
+      generationModelId = requested?.state === LOADED_STATE ? requested.id : null;
     } else {
       const found = models.find(
         (model) => model.state === LOADED_STATE && (model.type === "llm" || model.type === "vlm"),
@@ -40,16 +43,22 @@ describe.skipIf(!rawUrl)("LmStudioClient（実 LM Studio）", () => {
     }
   });
 
-  it("モデル一覧に type・state・quantization・loaded_context_length が含まれる（決定 4 の未記録項目）", () => {
+  it("モデル一覧に type・state が含まれる（決定 4 の未記録項目）", () => {
+    expect(models.length).toBeGreaterThan(0);
+    const first = models[0];
+    expect(first).toBeDefined();
+    expect(first?.type).not.toBeNull();
+    expect(first?.state).not.toBeNull();
+  });
+
+  it("ロード済みモデルの quantization・loaded_context_length が含まれる（決定 4 の未記録項目）", (ctx) => {
     const loaded = models.find((model) => model.state === LOADED_STATE);
-    expect(
-      loaded,
-      "ロード済みのモデルが 1 つもない（LM Studio でモデルをロードしてから実行する）",
-    ).toBeDefined();
-    expect(loaded?.type).not.toBeNull();
-    expect(loaded?.state).toBe(LOADED_STATE);
-    expect(loaded?.quantization).not.toBeNull();
-    expect(loaded?.loadedContextLength).not.toBeNull();
+    if (loaded === undefined) {
+      ctx.skip();
+      return;
+    }
+    expect(loaded.quantization).not.toBeNull();
+    expect(loaded.loadedContextLength).not.toBeNull();
   });
 
   it("ensureLoaded は未ロードのモデル ID で model-not-loaded を投げる", async () => {

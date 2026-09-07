@@ -95,11 +95,13 @@ describe("parseLmStudioApiKey", () => {
   });
 
   it("例外メッセージに API キーの値を含めない（不正な URL との組み合わせで確認）", () => {
+    let thrown: unknown;
     try {
       loadConfig({ SHUTEN_LM_STUDIO_URL: "not a url", SHUTEN_LM_STUDIO_API_KEY: "sk-secret-xyz" });
-      expect.unreachable();
     } catch (err) {
-      expect(String(err)).not.toContain("sk-secret-xyz");
+      thrown = err;
     }
+    expect(thrown).toBeDefined();
+    expect(String(thrown)).not.toContain("sk-secret-xyz");
   });
 });
