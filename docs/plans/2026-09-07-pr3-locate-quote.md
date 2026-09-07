@@ -16,6 +16,10 @@
 受け入れ条件：11 節 6 項（正しい範囲の強調）、7 項（反復・段落境界・CRLF・異体字セレクタ・結合文字・絵文字で
 位置がずれない）、9 項（位置特定失敗の保存と診断候補）、17 項（参考文脈から始まる候補は採用しない）の shared 側。
 
+この PR の対象外：仕様 6.3「脱字は欠落位置を含む周辺の実在する文字列を引用し…」はプロンプトの要件で PR6 が扱う。
+6.3「引用文字列、段落 ID、前後の引用、検索対象範囲、失敗理由を保存する」の永続化は PR7/PR8 の責務で、この PR は
+`locateQuote` の入力（`QuoteRef`、`CheckInput.inputRange`）と結果を返すだけ。
+
 ## 全体の制約（`docs/reference/invariants.md` から）
 
 - 文字位置はアプリが原文から確定する。LLM の数値位置は使わない（`QuoteRef` に数値位置を持たせない）。
@@ -71,6 +75,7 @@
    `diagnostic`（`not-found` のときだけ非 null。`ambiguous` / `outside-target` / 空引用では null）。
    `exactMatches` は仕様 6.3「対象外候補は…診断用に記録する」「失敗理由（該当なし・複数該当など）を保存」の
    ための材料で、`ambiguous` なら 2 件以上、`outside-target` なら 1 件以上、`not-found` なら 0 件。
+   診断候補と同じく、強調・再確認・採用位置には使わない（型コメントに MUST NOT として書く）。
 8. **2 件以上残ったときの理由。** 残った候補の開始位置がすべて `target.range` 外なら `outside-target`
    （この検査対象の担当ではない。表 B3）、1 件でも内側にあれば `ambiguous`（表 A5）。
 9. **診断は完全一致 0 件のときだけ、newline → nfc → newline+nfc の順で 3 変換を試す。** 比較用文字列も引用も
@@ -83,14 +88,16 @@
     `range` を付け、そうでなければ `range: null` にする。`text` は一致を覆う最小の書記素境界範囲の原文
     （`range` があればその範囲の原文と同じ）。NFC の合成は結合文字列の内部で起きるため書記素クラスタをまたがない
     という前提に立つ。前提はテストで「クラスタごとの NFC の連結 = 全文の NFC」を確認する。
-11. **変換チャンクと重ならない一致は診断候補にしない。** そのような一致は原文にもそのまま存在した
-    （書記素境界で捨てた）ものであり、「変換後の一致候補」ではない。候補の `transform` が実際に関与した変換を
-    指すようにする（表 C4、C5）。
+11. **引用が変換で変わらず、かつ変換チャンクと重ならない一致は診断候補にしない。** そのような一致は原文にも
+    そのまま存在した（書記素境界で捨てた）ものであり、「変換後の一致候補」ではない。候補の `transform` が実際に
+    関与した変換を指すようにする（表 C4、C5）。引用側だけが変換で変わる一致（モデルが CRLF や分解形を返し、本文が
+    LF や合成形）は本物の候補なので残す（表 H5〜H7）。初稿はこの条件を落としていて、自己レビューで発見した。
 12. **重複除去。** 同じ覆い範囲の候補は最初に見つけた変換だけを残す（newline で見つかる候補は newline+nfc でも
     見つかる）。
 13. **近さと打ち切り。** 近さは候補の覆い範囲の開始位置が属する段落 ID と `ref.paragraphId` の差の絶対値
     （段落 ID は出現順の連番なので段落数の差）。同距離は位置順。`ref.paragraphId` が段落に無ければ全候補を
-    距離 0 とみなし位置順。保存は先頭 3 件（`DIAGNOSTIC_CANDIDATE_LIMIT`）、`omitted` は見つけた件数 − 保存数、
+    距離 0 とみなし位置順。開始位置を含む段落が無い（`paragraphs` が本文を覆っていない）のは前提違反で
+    `RangeError`。保存は先頭 3 件（`DIAGNOSTIC_CANDIDATE_LIMIT`）、`omitted` は見つけた件数 − 保存数、
     `tied` は最良距離を共有する候補が 2 件以上あるか（表 E、F）。根拠：仕様 6.3「指定段落に近い候補を最大 3 件」
     「同順位の候補があることや打ち切り件数も残し」。
 14. **`GraphemeIndex` は呼び出しごとに本文全体から作る。** PR2 決定 13 と同じ。指摘 1 件ごとに O(本文長) の
@@ -102,20 +109,36 @@
 - **照合と担当判定の順序（決定 1）。** 仕様 6.3 は「入力全体で照合」「開始位置が検査対象内の候補だけ採用」
   「複数なら段落 ID と前後の引用で特定」を並べていて、順序を明示していない。本計画は「入力全体で照合 → ヒントで
   1 件に絞る → 担当判定」。代替案は「検査対象内から始まる一致だけに絞ってからヒントで特定し、対象内に一致が
-  なければ `outside-target`」。代替案では、引用が検査対象と参考文脈に 1 回ずつありヒントが文脈側を指す場合に
-  対象側の出現へ確定してしまい、担当範囲が自身の文脈付きで検出するという 6.3 の前提と食い違う。表 A6 がこの
-  判別例。
+  なければ `outside-target`」。両案で結果が分かれる行：A6（本計画 `outside-target`、代替案では対象側の出現に
+  確定。引用が検査対象と参考文脈に 1 回ずつありヒントが文脈側を指す）、A2（本計画 `outside-target`、代替案
+  `L(7,13)`）、A5（本計画 `ambiguous`、代替案 `L(7,9)`。対象内では一意なので 6.2「引用だけで一意」を採用候補内で
+  測ればこちら）。本計画を推す理由は、担当範囲が自身の文脈付きで検出するという 6.3 の前提と、モデルの段落 ID・
+  ヒントが文脈側を指しているのに対象側へ確定する誤りを避けること。代替案は失敗が減る代わりに誤位置の危険を負う。
+  ユーザーの確認を求める点。
 - **ヒントの緩い適用（決定 5）。** 仕様 6.2 の「前後の引用の不備だけを理由に失敗にしない」は一意な場合の規定で、
   複数一致でヒントが全候補と矛盾する場合の扱いは書かれていない。本計画は矛盾するフィルタを飛ばす（表 A9 は
   それでも 2 件残るので `ambiguous`）。代替案は矛盾したら即 `ambiguous`。誤った位置に確定する危険と、
   ヒントの軽微な崩れで失敗が増える不便のどちらを取るかの判断で、モデル出力の観察で見直す前提。
-- **before / after の改行無視（決定 6）。** 引用の完全一致は崩さず、ヒントの比較だけを緩める。段落境界に接する
-  引用でモデルが改行を省くことが多いという想定に基づく。
+- **before / after の改行無視（決定 6）。** 仕様に規定は無く、ロードマップの試験項目に基づく。引用の完全一致は
+  崩さず、ヒントの比較だけを緩める。段落境界に接する引用でモデルが改行を省くことが多いという想定に基づく。
+  代替案は (a) ヒントも完全一致（改行を省いた応答は絞り込みに使えず失敗が増える）、(b) 診断と同じ改行統一
+  （`\r\n` → `\n`）だけ（省略には対応できない）。CR/LF の削除は本文側にも適用するが、比較専用で保存本文には触れない。
+- **`tied` の定義（決定 13）。** 「最良距離を 2 件以上が共有」に限定した。仕様「同順位の候補があること」は限定して
+  いないので、代替案は「打ち切り境界（保存した最後の候補と省いた最初の候補）の同順位も含める」。一意な一致との
+  誤認を防ぐ目的には最良距離の同順位が本質なので前者にしたが、`omitted > 0` のときの境界の同順位は失われる。
+- **`ref.paragraphId` が存在しないときの近さ（決定 13）。** 全候補を距離 0（位置順、2 件以上なら `tied`）。代替案は
+  候補なし扱いにすること、または距離を無限大にすることだが、段落 ID の誤りは診断の対象そのものなので候補は残す。
+- **空引用の `diagnostic: null`（決定 4）。** 仕様「候補が見つからないことも記録する」に対し、null は「診断を
+  していない」の意味で、「探して見つからなかった」（`candidates: []`）と区別する。空引用は形式不正で PR4 の
+  スキーマが拒否する前提。
 - **`ambiguous` で診断変換をしない（決定 9）。** 仕様 6.3 は「完全一致失敗時のみ」診断する。複数該当は完全一致は
-  成功しているので字義どおり診断しない。代わりに `exactMatches` を残す。
+  成功しているので字義どおり診断しない。代わりに `exactMatches` を残す。代替案は複数該当でも 3 変換を走らせる
+  ことだが、変換後の候補が完全一致の候補を増やすことはあっても減らすことはなく、絞り込みには役立たない。
 - **ロードマップの型の変更。** `Diagnostic.truncated: boolean` を仕様 6.3 の「打ち切り件数」に合わせて
   `omitted: number` にする。`failed` に `exactMatches` を足し、`diagnostic` を `Diagnostic | null` にする。
   ロードマップの共通語彙を同じ PR で更新する。
+- **ヒントの緩い適用の判別行。** A16（`before` が全候補と矛盾するのを飛ばして `after` で確定）と A17（存在するが
+  一致の無い段落 ID を飛ばして `after` で確定）は、厳密適用なら `ambiguous` になる行。
 - **位置対応の実機検証。** 仕様 13 節の「診断用比較の候補取得方法と位置対応の検証」は、本 PR で第 1 版を作る
   だけで、実モデルの出力に対する検証は未決のまま残す。
 
@@ -131,25 +154,31 @@
 - `locate`（表 A〜G）：段落 ID で絞る、段落 0 を指して `outside-target`、段落 ID 不在で `after` で絞る、
   同段落 2 件で `ambiguous`、混在 3 件で `ambiguous`、ヒントが文脈側を指す判別例、`before` / `after` が改行を
   省く、`before` が全候補と矛盾、一意ならヒント不備でも確定、対象から文脈へ続く、文脈から始まり対象へ続く、
-  段落で 1 件に絞れたら `before` を見ない、空引用、存在しない引用、入力範囲外の一致を数えない、文脈側 2 件、
-  全候補が対象外、入力末で `after` 空、本文先頭のサロゲートペア、本文末、CRLF と結合文字を含む完全一致、
-  サロゲート途中と結合文字途中の一致を捨てる、NFC でのみ一致、改行統一でのみ一致、両方でのみ一致、
-  どの変換でも一致なし、位置対応不能、近い順と打ち切り、段落不在で位置順と同順位、同順位 2 件、重なる出現
+  段落で 1 件に絞れたら `before` を見ない、空引用、存在しない引用、`before` の矛盾を飛ばして `after` で確定、
+  一致の無い段落 ID を飛ばして `after` で確定、入力範囲外の一致を数えない、文脈側 2 件、全候補が対象外、
+  一意な一致、本文先頭のサロゲートペア、本文末、CRLF と結合文字を含む完全一致、サロゲート途中と結合文字途中の
+  一致を捨てる、NFC でのみ一致、改行統一でのみ一致、両方でのみ一致、どの変換でも一致なし、位置対応不能、
+  近い順と打ち切り、段落不在で位置順と同順位、同順位 2 件、重なる出現、異体字セレクタと ZWJ 絵文字を含む
+  完全一致、異体字セレクタの直前・ZWJ 列の途中で切れる引用を捨てる、引用側だけが変換で変わる一致（NFC・改行・両方。
+  両方の行は原文側の端が書記素境界に揃わず `range: null`）
 - ランダム検査：シード固定の乱数で作った本文（CRLF・LF・ZWJ 絵文字・結合文字・サロゲートペア・句点・括弧の
   混在）を `planTargets` / `buildCheckInput` で分割し、各検査対象から書記素境界で切った部分文字列を引用、
-  入力範囲内の前後全部をヒント、開始位置の段落を段落 ID にして `locateQuote` を呼ぶ。結果は「その範囲に
-  `located`」か「`ambiguous` で `exactMatches` にその範囲を含む」のどちらか。`located` の範囲は原文の切り出しが
-  引用と一致し、両端が書記素境界で、開始が検査対象内。例外を投げない
+  入力範囲内の前後全部をヒント、開始位置の段落を段落 ID にして `locateQuote` を呼ぶ。結果は必ずその範囲に
+  `located`（段落 ID が正しく、各段落は改行列を末尾に 1 つしか含まないので、改行だけの引用でも段落フィルタで
+  1 件に絞れる）。原文の切り出しが引用と一致し、両端が書記素境界で、開始が検査対象内。例外を投げない
 - 付録の期待値はすべて、計画のアルゴリズムを別に書いた参照実装（scratch）で検算済み。参照実装は書記素境界の
-  判定と決定 10 のクラスタ単位 NFC を含む。ランダム検査の性質も参照実装で 2,920 例確認した
+  判定と決定 10 のクラスタ単位 NFC を含む。自己レビューでは独立に書いた別の参照実装でも全行を検算し、ランダム
+  検査の性質を実コードの `planTargets` / `buildCheckInput` を使って 3 シード × 3,000 反復（検査対象 約 24,000 件）で
+  確認した。クラスタごとの NFC の連結が全文の NFC と一致する前提も、分解可能な全コードポイントとハングル字母・
+  結合文字の乱数列 約 73 万列で反例が無いことを確認した（ICU 依存なので実行時テストも残す）
 
 ## 進め方（コミット単位）
 
 1. **計画とブランチ**（このコミット）：本書を追加。
 2. **実装とテスト**（qwen に委譲、Claude が検証）：付録のスペックを標準入力から渡す。1 回目は依存の無い
    `quote-ref`・`grapheme-index` の追記・`position-map`、2 回目は `diagnostic`・`locate`・`index.ts`。
-   1 回目の出力を検証してから 2 回目を渡す。渡す前に、抽出したスペックに生の U+200D・U+0301・U+3099・CR が
-   含まれないことを `grep -P` で確認する。
+   1 回目の出力を検証してから 2 回目を渡す。渡す前に、抽出したスペックに生の U+200D・U+0301・U+3099・CR と
+   BMP 外の文字（`[\x{10000}-\x{10FFFF}]`）が含まれないことを `grep -P` で確認する。
 3. **検証**（Claude）：全ファイルを読む。特に、絞り込みの順序と緩い適用、担当判定の不等号（`start <= m.start < end`）、
    書記素境界の判定、変換チャンクの内部判定、重複除去、距離と `tied` の定義を表と突き合わせる。テストの期待値が
    付録の表と一致していることを 1 行ずつ確認する。`pnpm check` を自分でも実行する。
@@ -197,7 +226,8 @@ dependencies. Do NOT modify any Markdown file.
   - `packages/shared/src/text/grapheme-index.ts`: `GraphemeIndex { readonly boundaries: readonly number[]; readonly count: number }`
     (`boundaries[k]` is the UTF-16 offset where grapheme cluster k starts; `boundaries[count] === text.length`),
     `buildGraphemeIndex(text)`, `isGraphemeBoundary(index, offset)`, `graphemeAt(index, offset)` (RangeError if not a
-    boundary), `offsetAt(index, grapheme)`. There is a private binary search `searchBoundary`; reuse or extend it.
+    boundary), `offsetAt(index, grapheme)`. The private `searchBoundary` returns -1 for non-boundary offsets, so it is
+    NOT sufficient for floor / ceil; write a separate lower-bound binary search (largest k with `boundaries[k] <= offset`).
 
 ## 1. packages/shared/src/locate/quote-ref.ts
 
@@ -234,7 +264,7 @@ Use binary search over `index.boundaries` (they are sorted ascending, first is 0
 
 ### Tests to add to grapheme-index.test.ts
 
-Text: `"\u{20BB7}か\u3099\r\nx"` — boundaries `[0, 2, 4, 6, 7]` (𠮷 = 2 units, か+U+3099 = 2 units, CRLF = 2 units, x).
+Text: `"\u{20BB7}か\u3099\r\nx"` — boundaries `[0, 2, 4, 6, 7]` (U+20BB7 = 2 units, か+U+3099 = 2 units, CRLF = 2 units, x).
 
 | offset | floor | ceil |
 | --- | --- | --- |
@@ -323,7 +353,8 @@ A lone `"\r"` is also a single cluster and becomes `"\n"` (a chunk whose output 
 
 ### mapToSource
 
-Let `c` be the chunk with the largest `outputStart <= offset` (binary search; `null` if none).
+Define an internal (non-exported) helper `chunkAt(comparison, offset): TransformedChunk | null` = the chunk with the
+largest `outputStart <= offset` (binary search over `chunks`; `null` if none). Let `c = chunkAt(comparison, offset)`.
 
 - No such chunk: return `comparison.source.start + offset`.
 - `offset === c.outputStart`: return `c.sourceStart`.
@@ -334,8 +365,11 @@ Let `c` be the chunk with the largest `outputStart <= offset` (binary search; `n
 
 ### coverSource
 
-- Start: `s = mapToSource(comparison, start)`. If `s === null`, use the containing chunk's `sourceStart`; else `floorGraphemeBoundary(index, s)`.
-- End: `e = mapToSource(comparison, end)`. If `e === null`, use the containing chunk's `sourceEnd`; else `ceilGraphemeBoundary(index, e)`.
+- Start: `s = mapToSource(comparison, start)`. If `s === null`, use `chunkAt(comparison, start).sourceStart` (the chunk is
+  non-null whenever `mapToSource` returned null); else `floorGraphemeBoundary(index, s)`.
+- End: `e = mapToSource(comparison, end)`. If `e === null`, use `chunkAt(comparison, end).sourceEnd`; else `ceilGraphemeBoundary(index, e)`.
+- With `noUncheckedIndexedAccess`, guard `boundaries[k]` / `boundaries[k + 1]` reads: read into a `const`, and if it is
+  `undefined` throw `RangeError` (it cannot happen for valid input). Never use `!`.
 - Return `{ start, end }`.
 
 ### overlapsTransformedChunk
@@ -426,7 +460,7 @@ Existing code you MUST reuse (read these files first):
 
 - `text/range.ts`: `Range`, `sliceRange`.
 - `text/paragraph.ts`: `Paragraph { readonly id: number; readonly range: Range }`, `splitParagraphs(text)`.
-- `text/grapheme-index.ts`: `GraphemeIndex`, `buildGraphemeIndex`, `isGraphemeBoundary`, `floorGraphemeBoundary`, `ceilGraphemeBoundary`.
+- `text/grapheme-index.ts`: `GraphemeIndex`, `buildGraphemeIndex`, `isGraphemeBoundary`, `graphemeAt`, `offsetAt`, `floorGraphemeBoundary`, `ceilGraphemeBoundary`.
 - `chunk/plan.ts`: `TargetRange`, `CheckInput { readonly target: TargetRange; readonly context: ContextWindow; readonly inputRange: Range }`,
   `planTargets`, `buildCheckInput`. `chunk/settings.ts`: `ChunkSettings`.
 - `locate/quote-ref.ts`: `QuoteRef { paragraphId; quote; before; after }`.
@@ -446,6 +480,14 @@ Existing code you MUST reuse (read these files first):
 ## 1. packages/shared/src/locate/diagnostic.ts
 
 ```ts
+import type { GraphemeIndex } from "../text/grapheme-index.ts";
+import type { Paragraph } from "../text/paragraph.ts";
+import type { Range } from "../text/range.ts";
+import type { DiagnosticTransform } from "./position-map.ts";
+import type { QuoteRef } from "./quote-ref.ts";
+// plus value imports: sliceRange, isGraphemeBoundary, applyTransform, buildComparisonText, mapToSource, coverSource,
+// overlapsTransformedChunk, DIAGNOSTIC_TRANSFORM_VERSION
+
 /** 位置特定失敗の診断候補 1 件。原文は変更しない。range は原文側の範囲で、位置対応が取れなければ null。 */
 export interface DiagnosticCandidate {
   readonly transform: DiagnosticTransform;
@@ -466,7 +508,7 @@ export interface Diagnostic {
   readonly tied: boolean;
 }
 
-export const DIAGNOSTIC_CANDIDATE_LIMIT = 3;
+export const DIAGNOSTIC_CANDIDATE_LIMIT: number = 3;
 
 /** 完全一致が 0 件のときだけ呼ぶ。inputRange 内で 3 変換の比較を行い、候補を近い順に返す。 */
 export function diagnoseQuote(
@@ -486,12 +528,15 @@ Algorithm of `diagnoseQuote`:
    b. If `cmp.text === slice && q === ref.quote`, skip this transform (it changes nothing).
    c. Find every occurrence of `q` in `cmp.text` including overlapping ones: `p = cmp.text.indexOf(q, from)` with `from = p + 1` after each hit.
       For each hit `[s, e)` with `e = s + q.length`:
-      - If `!overlapsTransformedChunk(cmp, s, e)`, skip it (such a match existed in the original text too and was rejected for
-        not being on grapheme boundaries; it is not a "match after transformation").
+      - If `q === ref.quote && !overlapsTransformedChunk(cmp, s, e)`, skip it (the quote was not changed by the transform and
+        the matched text was not changed either, so the same match existed in the original text and was rejected there for
+        not being on grapheme boundaries; it is not a "match after transformation"). When `q !== ref.quote` the hit is a real
+        candidate even if it lies entirely in unchanged text (the model returned CRLF or a decomposed form; see rows H5–H7).
       - `cover = coverSource(cmp, index, s, e)`; key `${cover.start}:${cover.end}`; if the key was already collected, skip
         (dedup: the earliest transform wins).
       - `ms = mapToSource(cmp, s)`, `me = mapToSource(cmp, e)`. `range = (ms !== null && me !== null && isGraphemeBoundary(index, ms) && isGraphemeBoundary(index, me)) ? { start: ms, end: me } : null`.
       - `paragraphId` = id of the paragraph whose range contains `cover.start` (`p.range.start <= cover.start && cover.start < p.range.end`).
+        If no paragraph contains it, throw `new RangeError(`段落が本文を覆っていません: 位置 ${cover.start}`)` (precondition violation).
         `distance = refExists ? Math.abs(paragraphId - ref.paragraphId) : 0`.
       - Collect `{ transform, text: sliceRange(text, cover), range, cover, distance }`.
 3. Sort collected candidates by `distance` ascending, then `cover.start` ascending, then `cover.end` ascending.
@@ -502,6 +547,13 @@ Algorithm of `diagnoseQuote`:
 ## 2. packages/shared/src/locate/locate.ts
 
 ```ts
+import type { CheckInput } from "../chunk/plan.ts";
+import type { Paragraph } from "../text/paragraph.ts";
+import type { Range } from "../text/range.ts";
+import type { Diagnostic } from "./diagnostic.ts";
+import type { QuoteRef } from "./quote-ref.ts";
+// plus value imports: buildGraphemeIndex, isGraphemeBoundary, diagnoseQuote
+
 /** 位置特定失敗の理由。not-found / ambiguous は一覧に表示する失敗、outside-target は診断記録にだけ残す。 */
 export type LocateFailureReason = "not-found" | "ambiguous" | "outside-target";
 
@@ -510,7 +562,7 @@ export type LocateResult =
   | {
       readonly status: "failed";
       readonly reason: LocateFailureReason;
-      /** 絞り込み後に残った完全一致。not-found では空。 */
+      /** 絞り込み後に残った完全一致。not-found では空。診断用の記録であり、強調・再確認・採用位置に使ってはならない（仕様書 6.3）。 */
       readonly exactMatches: readonly Range[];
       /** 診断。not-found（空引用を除く）のときだけ非 null。 */
       readonly diagnostic: Diagnostic | null;
@@ -543,7 +595,8 @@ Algorithm of `locateQuote`:
    - before filter (absent when `before === ""`): `pred(m)` = `strip(text.slice(ir.start, m.start)).endsWith(before)`.
    - after filter (absent when `after === ""`): `pred(m)` = `strip(text.slice(m.end, ir.end)).startsWith(after)`.
 6. `inTarget(m)` = `tr.start <= m.start && m.start < tr.end`.
-   - If `matches.length === 1`: `m = matches[0]`; if `inTarget(m)` return `{ status: "located", range: m }`;
+   - If `matches.length === 1`: `const m = matches[0]; if (m === undefined) throw new Error(...)` (cannot happen; this guard
+     is how to satisfy `noUncheckedIndexedAccess` without `!`); if `inTarget(m)` return `{ status: "located", range: m }`;
      else return `{ status: "failed", reason: "outside-target", exactMatches: [m], diagnostic: null }`.
    - Else: `reason = matches.some(inTarget) ? "ambiguous" : "outside-target"`;
      return `{ status: "failed", reason, exactMatches: matches, diagnostic: null }`.
@@ -563,10 +616,9 @@ export { locateQuote } from "./locate/locate.ts";
 export type { DiagnosticTransform } from "./locate/position-map.ts";
 export { applyTransform } from "./locate/position-map.ts";
 export type { QuoteRef } from "./locate/quote-ref.ts";
-export { ceilGraphemeBoundary, floorGraphemeBoundary } from "./text/grapheme-index.ts";
 ```
 
-(`floorGraphemeBoundary` / `ceilGraphemeBoundary` go into the existing grapheme-index export list.)
+and add `ceilGraphemeBoundary`, `floorGraphemeBoundary` to the existing `export { ... } from "./text/grapheme-index.ts"` list.
 
 ## Tests (locate.test.ts)
 
@@ -577,6 +629,9 @@ Build inputs with a helper. `target` and `inputRange` are given directly (they a
 ```ts
 function makeInput(text: string, target: Range, inputRange: Range): { input: CheckInput; paragraphs: Paragraph[] }
 ```
+
+`input.target = { index: 0, range: target, paragraphIds }` where `paragraphIds = paragraphs.filter((p) => p.range.start < target.end && target.start < p.range.end).map((p) => p.id)`
+(the same overlap rule as `planTargets`).
 
 Use `it.each` over a table array per text. Expected values are written as `LocateResult` objects.
 Abbreviation in the tables: `L(s,e)` = `{ status: "located", range: { start: s, end: e } }`;
@@ -603,6 +658,8 @@ Abbreviation in the tables: `L(s,e)` = `{ status: "located", range: { start: s, 
 | A13 段落で 1 件になれば before は見ない | 1 | `彼は言った。` | `ない` | `` | `L(7,13)` |
 | A14 空引用 | 1 | `` | `` | `` | `F("not-found", [], null)` |
 | A15 存在しない引用 | 1 | `彼は泣いた。` | `` | `` | `F("not-found", [], D([], 0, false))` |
+| A16 before の矛盾を飛ばし after で確定 | 1 | `。` | `ない` | `そして` | `L(12,13)` |
+| A17 一致の無い段落 ID を飛ばし after で確定 | 2 | `彼は言った。` | `` | `そして` | `L(7,13)` |
 
 ### Text B = `"一二三四五\n六七八九十\n一二三四五\n六七八九十"` (length 23; paragraphs `[0,6) [6,12) [12,18) [18,23)`), target `[12,18)`, inputRange `[6,23)`
 
@@ -611,7 +668,7 @@ Abbreviation in the tables: `L(s,e)` = `{ status: "located", range: { start: s, 
 | B1 入力範囲外の一致は数えない | 2 | `一二三` | `` | `` | `L(12,15)` |
 | B2 文脈側 2 件、段落で 1 件、対象外 | 3 | `六七` | `` | `` | `F("outside-target", [[18,20]], null)` |
 | B3 全候補が対象外 | 7 | `六七` | `` | `` | `F("outside-target", [[6,8],[18,20]], null)` |
-| B4 入力末で after 空 | 2 | `四五` | `一二三` | `` | `L(15,17)` |
+| B4 一意な一致（before は入力範囲内で一致） | 2 | `四五` | `一二三` | `` | `L(15,17)` |
 
 ### Text C = `"\u{20BB7}野家。\r\nか\u3099き\n終わり"` (length 14; paragraphs `[0,7) [7,11) [11,14)`), target `[0,14)`, inputRange `[0,14)`
 
@@ -655,6 +712,22 @@ Abbreviation in the tables: `L(s,e)` = `{ status: "located", range: { start: s, 
 | --- | --- | --- | --- |
 | G1 重なる出現 | 0 | `ああ` | `F("ambiguous", [[0,2],[1,3]], null)` |
 
+### Text H = `"がき\n葛\u{E0100}城\u{1F468}\u200D\u{1F469}。"` (length 13; paragraphs `[0,3) [3,13)`; が is precomposed U+304C; 葛+U+E0100 is one cluster `[3,6)`; the ZWJ emoji is one cluster `[7,12)`), target `[0,13)`, inputRange `[0,13)`
+
+| id | paragraphId | quote | before | after | expected |
+| --- | --- | --- | --- | --- | --- |
+| H1 異体字セレクタを含む完全一致 | 1 | `葛\u{E0100}城` | `き` | `` | `L(3,7)` |
+| H2 ZWJ 絵文字を含む完全一致 | 1 | `城\u{1F468}\u200D\u{1F469}。` | `` | `` | `L(6,13)` |
+| H3 異体字セレクタの直前で切れる引用は捨てる | 1 | `葛` | `` | `` | `F("not-found", [], D([], 0, false))` |
+| H4 ZWJ 列の途中で切れる引用は捨てる | 1 | `\u{1F468}` | `` | `` | `F("not-found", [], D([], 0, false))` |
+| H5 引用側だけ NFC で変わる | 0 | `か\u3099き` | `` | `` | `F("not-found", [], D([C("nfc", "がき", [0,2])], 0, false))` |
+| H6 引用側だけ改行統一で変わる | 0 | `き\r\n` | `` | `` | `F("not-found", [], D([C("newline", "き\n", [1,3])], 0, false))` |
+| H7 引用側だけ両方で変わり、端が書記素境界に揃わない | 0 | `か\u3099き\r\n葛` | `` | `` | `F("not-found", [], D([C("newline+nfc", "がき\n葛\u{E0100}", null)], 0, false))` |
+
+(H3/H4: every transform leaves both the text and the quote unchanged, so all three are skipped and no candidate is found.
+H7: the transformed quote matches `[0,4)` of the comparison text, which is entirely unchanged text; the source end 4 is inside
+the cluster 葛+U+E0100, so `range` is null and `text` is the covering cluster-aligned original.)
+
 ### Random property test（describe「ランダム検査」）
 
 Seeded PRNG (mulberry32, seed `20260907`), 300 iterations:
@@ -683,11 +756,12 @@ Skip the iteration if the text is empty. Settings: `{ targetGraphemes: 10, conte
 Call `locateQuote(text, input, paragraphs, { paragraphId, quote, before, after })`. Assert:
 
 - it does not throw;
-- EITHER `status === "located"` with `range` equal to `{ start, end }`,
-  OR `status === "failed"`, `reason === "ambiguous"`, and `exactMatches` contains `{ start, end }` (this only happens when the
-  quote is newline-only and the hints become empty after stripping);
-- when located: `sliceRange(text, range) === quote`, both `range.start` and `range.end` are grapheme boundaries, and
+- `status === "located"` with `range` equal to `{ start, end }` (the paragraph id is always correct and each paragraph contains
+  at most one newline cluster, at its end, so even a newline-only quote is narrowed to one match by the paragraph filter);
+- `sliceRange(text, range) === quote`, both `range.start` and `range.end` are grapheme boundaries, and
   `target.range.start <= range.start && range.start < target.range.end`.
+
+Note: `qe` may extend past the target end into the after-context (`qe <= ie`), so some quotes cross from the target into the context.
 
 ## Hazards to avoid
 
@@ -697,6 +771,8 @@ Call `locateQuote(text, input, paragraphs, { paragraphId, quote, before, after }
   match ends the narrowing. Do not continue filtering after one match remains.
 - Hint stripping removes CR and LF only. Do not trim spaces, do not touch U+3000, do not normalize.
 - Diagnostics run only when there are zero exact matches. `ambiguous` and `outside-target` have `diagnostic: null`.
+- In `diagnoseQuote`, drop a hit only when BOTH the quote is unchanged by the transform AND the hit overlaps no chunk.
+  Do not drop hits merely because they lie in unchanged text when the quote itself was changed.
 - Transform order and dedup order are `newline`, `nfc`, `newline+nfc`. Keep candidates from earlier transforms.
 - The `tied` flag is about the best distance only.
 
@@ -704,5 +780,5 @@ Call `locateQuote(text, input, paragraphs, { paragraphId, quote, before, after }
 
 1. `pnpm exec biome check --write .` then `pnpm check` from the repository root. Fix failures in the implementation, never in the tables.
 2. Re-read every table row and confirm the test expectation is exactly as written here.
-3. Confirm no raw CR, LF, U+200D, U+3099, U+0301 or surrogate characters exist inside string literals of the test file.
+3. Confirm no raw CR, LF, U+200D, U+3099, U+0301, variation selector or surrogate characters exist inside string literals of the test file.
 ````
