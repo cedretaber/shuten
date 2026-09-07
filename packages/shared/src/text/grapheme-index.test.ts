@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildGraphemeIndex, graphemeAt, isGraphemeBoundary, offsetAt } from "./grapheme-index.ts";
+import {
+  buildGraphemeIndex,
+  ceilGraphemeBoundary,
+  floorGraphemeBoundary,
+  graphemeAt,
+  isGraphemeBoundary,
+  offsetAt,
+} from "./grapheme-index.ts";
 
 describe("buildGraphemeIndex", () => {
   it("空文字列は boundaries [0]、count 0、位置 0 は境界", () => {
@@ -71,5 +78,37 @@ describe("往復変換", () => {
     for (let k = 0; k <= index.count; k += 1) {
       expect(graphemeAt(index, offsetAt(index, k))).toBe(k);
     }
+  });
+});
+
+describe("floorGraphemeBoundary / ceilGraphemeBoundary", () => {
+  const text = "\u{20BB7}か\u3099\r\nx";
+  const index = buildGraphemeIndex(text);
+
+  it("boundaries は [0, 2, 4, 6, 7]", () => {
+    expect(index.boundaries).toEqual([0, 2, 4, 6, 7]);
+  });
+
+  it("境界と非境界の offset を正しく丸める", () => {
+    const table: ReadonlyArray<readonly [number, number, number]> = [
+      [0, 0, 0],
+      [1, 0, 2],
+      [2, 2, 2],
+      [3, 2, 4],
+      [5, 4, 6],
+      [6, 6, 6],
+      [7, 7, 7],
+    ];
+    for (const [offset, floor, ceil] of table) {
+      expect(floorGraphemeBoundary(index, offset)).toBe(floor);
+      expect(ceilGraphemeBoundary(index, offset)).toBe(ceil);
+    }
+  });
+
+  it("範囲外（0 未満、text.length 超）と非整数は RangeError", () => {
+    expect(() => floorGraphemeBoundary(index, -1)).toThrowError(RangeError);
+    expect(() => ceilGraphemeBoundary(index, 8)).toThrowError(RangeError);
+    expect(() => floorGraphemeBoundary(index, 1.5)).toThrowError(RangeError);
+    expect(() => ceilGraphemeBoundary(index, 1.5)).toThrowError(RangeError);
   });
 });
