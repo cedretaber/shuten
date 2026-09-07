@@ -214,16 +214,14 @@ function chooseTargetEnd(
     // 段落境界が窓にない場合は文境界へフォールバック。
     // 走査は窓の上端の直後まででよい（それより先の境界は候補になれない）。
     // 文境界は range.start より大きい書記素境界のみのため、候補が cursor に等しくない。
-    // 直後が改行の文境界（段落末の「。」の後）は除く。その文の終わりは段落境界が表すものであり、
-    // ここで切ると改行で始まる検査対象ができ、paragraphIds に改行 1 文字だけ重なる段落が入る。
+    // 段落末の終端記号の直後（改行の直前）も通常の文境界候補。そこで切ると次の対象は改行で始まり、
+    // 改行を含む直前の段落 ID も paragraphIds に入る（段落範囲の定義どおり）。
     const scanEnd = offsetAt(index, Math.min(ideal + delta + 1, index.count));
     const sentence = findSentenceBoundaries(
       text,
       { start: offsetAt(index, cursor), end: scanEnd },
       index,
-    )
-      .filter((o) => !isNewline(text.charCodeAt(o)))
-      .map((o) => graphemeAt(index, o));
+    ).map((o) => graphemeAt(index, o));
     end = chooseBoundary(ideal, delta, sentence, "larger");
   }
   if (end === null) {
@@ -231,11 +229,6 @@ function chooseTargetEnd(
     return ideal;
   }
   return end;
-}
-
-/** CR または LF か。 */
-function isNewline(code: number): boolean {
-  return code === 0x0d || code === 0x0a;
 }
 
 /**

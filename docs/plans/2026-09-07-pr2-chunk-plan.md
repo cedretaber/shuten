@@ -83,13 +83,12 @@
     1 万字で約 8 ms（Node 24、WSL）なので、引数に事前計算を足して署名を複雑にしない。
     段落境界は常に書記素境界（CR・LF は前後で必ず切れ、CRLF はまとまる）だが、実装は仮定せず
     `isGraphemeBoundary` で確認し、違えば `RangeError`。
-14. **直後が改行の文境界は、検査対象の終端の候補にしない。**（PR レビューで追加）段落末の「。」の直後は
-    文境界だが、その文の終わりは段落境界が表す。段落終端が窓のすぐ外にあるとき、この文境界で切ると改行で始まる
-    検査対象ができ、`paragraphIds` に改行 1 文字だけ重なる段落が入る。除外すると、その場合は書記素境界への
-    フォールバックになる（文の途中で切れる）。代案は「窓を 1 書記素だけ超えて段落終端に寄せる」だが、
-    各対象が `目標 + delta` 以下という不変条件を崩すので採らなかった。
-15. **文境界の走査は窓の上端の直後まで。**（PR レビューで追加）それより先の境界は候補になれないので等価。
+14. **文境界の走査は窓の上端の直後まで。**（PR レビューで追加）それより先の境界は候補になれないので等価。
     単一の長い段落で目標が小さいときの O(n²) を避ける。
+15. **段落末の終端記号の直後も通常の文境界候補。**（PR レビューで確定）段落終端が窓のすぐ外にあるとき、
+    そこで切ると次の検査対象は改行で始まり、改行を含む直前の段落 ID も `paragraphIds` に入る。これは段落範囲と
+    `paragraphIds` の定義どおりの挙動であり、仕様 6.1 の「文境界を優先」に従う。自己レビューで一度この候補を
+    除外したが、仕様からの逸脱として取り消した。
 
 ### 数値例（目標 1,500 字、tolerance 0.2、delta 300）
 
@@ -114,8 +113,6 @@
 - **窓内に段落境界がないときの文境界。** 仕様 6.1 手順 3 は文境界を「単一段落が長い場合」に挙げている。本計画では、
   窓内に段落終端がなければ（段落終端が窓のすぐ外にあって窓が複数段落にまたがる場合も含めて）文境界を探す。
   違反ではないが読み替えなので記録する。
-- **段落末の「。」を文境界として使うか。** 決定 14 のとおり使わない。使う場合の弊害（改行で始まる検査対象）と
-  使わない場合の弊害（文の途中で切れる）のどちらを取るかは実測後に見直してよい。
 - **入力上限の単位。** 仕様は「入力上限」の単位を定めていない。shared では書記素数、サーバーでトークン上限から
   換算する前提。換算係数は PR5/PR7 で決める。
 
@@ -159,7 +156,8 @@
 5. **PR 作成**：解釈で迷った点、Windows の確認状況（CI で確認、ローカルは未確認）を書く。
 
 経過：計画を仕様整合と技術面の 2 観点でエージェントに自己レビューし、外部レビュー（上限テストの設定値、乱数の
-整数化、安全整数）を反映してから 2 回に分けて委譲した。PR 作成後のコードレビューで決定 14・15 を追加した。
+整数化、安全整数）を反映してから 2 回に分けて委譲した。PR 作成後の自己レビューで決定 14 を追加し、段落末の文境界の
+除外も入れたが、PR レビューで仕様 6.1 からの逸脱と指摘され取り消した（決定 15）。付録の擬似コードは最終実装に同期済み。
 
 ## 付録 1：qwen へのスペック（1 回目。英語）
 
@@ -508,7 +506,9 @@ while cursor < G.count:
     ideal = cursor + T
     end = chooseBoundary(ideal, D, PB.filter(b => b > cursor), "larger")
     if end == null:
-      sentence = findSentenceBoundaries(text, { start: offsetAt(G, cursor), end: text.length }, G).map(o => graphemeAt(G, o))
+      // 窓の上端より先の境界は候補になれないので、走査はそこまででよい（ideal + D + 1 <= G.count がここでは成立）
+      scanEnd = offsetAt(G, Math.min(ideal + D + 1, G.count))
+      sentence = findSentenceBoundaries(text, { start: offsetAt(G, cursor), end: scanEnd }, G).map(o => graphemeAt(G, o))
       end = chooseBoundary(ideal, D, sentence, "larger")
     if end == null:
       end = ideal                           // 書記素境界で切る
@@ -521,6 +521,9 @@ return targets
 
 Empty text returns `[]`. The `remaining <= T + D` check comes FIRST, before looking for boundaries.
 Candidates MUST be strictly greater than `cursor` (a boundary at the cursor would create an empty target).
+A sentence boundary right after a paragraph's final terminal (just before the newline) is an ordinary candidate; do NOT
+exclude it. Cutting there makes the next target start with the newline, and its `paragraphIds` include the preceding
+paragraph (overlap of one newline character) — this is the intended behaviour.
 Explanatory note, do not assert it in code: `ideal - D >= cursor + 1` always holds because `D < T` (tolerance < 1),
 so the window never reaches the cursor.
 
@@ -588,6 +591,8 @@ In the texts below every character is one code unit and one grapheme unless note
 | 窓の下端を含む | `"あいうえおかき\nくけこさしすせそたちつて"` | `[[0,8],[8,20]]` | end 8 is exactly ideal − D → chosen; cursor 8: remaining 12 → rest |
 | 窓の上端を含む | `"あいうえおかきくけこさ\nすせそたちつてとなに"` | `[[0,12],[12,22]]` | end 12 is exactly ideal + D |
 | 窓の外は選ばない | `"あいうえおかきくけこさし\nすせそたちつてとな"` | `[[0,10],[10,22]]` | end 13 is outside [8,12]; no sentence boundary → cut at 10; cursor 10: remaining 12 → rest. paragraphIds `[0]` and `[0,1]` |
+| 段落末の「。」の直後も文境界の候補 | `"あいうえおかきくけこさ。\nたちつてとなにぬねのはひふへほ"` | `[[0,12],[12,22],[22,28]]` | paragraph end 13 is outside [8,12]; sentence boundary 12 (right before the newline) is chosen. The second target starts with `\n`; paragraphIds `[0]`, `[0,1]`, `[1]` |
+| 改行が続かない「。」の直後 | `"あいうえおかきくけこさ。たちつてとなにぬねのはひふへほ"` | `[[0,12],[12,22],[22,27]]` | one paragraph (27); sentence boundary 12 → cut; cursor 12: ideal 22, no boundary → 22; rest |
 
 Also:
 - `index` is sequential from 0 for the 文境界 case (`[0, 1, 2]`).
