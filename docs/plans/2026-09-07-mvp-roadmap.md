@@ -109,25 +109,34 @@ type Perspective = "typo" | "naturalness"
 type InitialVerdict = "likely-error" | "confirm-with-author"
 // 分類。許容語による自動抑制は notation（誤字・表記の訂正）だけを対象にする（仕様書 6.4）
 type FindingCategory = "notation" | "omission-or-duplication" | "particle" | "grammar" | "context-misuse" | "unclear"
-interface LlmFinding extends QuoteRef { category: FindingCategory; suggestion: string | null; reason: string; verdict: InitialVerdict }
+// 列挙値は FINDING_CATEGORIES などの as const タプルとしても公開する（z.enum とテストの共用）
+interface LlmFinding extends QuoteRef { category: FindingCategory; reason: string; suggestion: string | null; verdict: InitialVerdict }
+// paragraphId は 0 以上の整数、quote は 1 文字以上（空引用を含む応答は形式不正）。suggestion の空文字・空白のみは解析時に null に正規化
 interface LlmCheckOutput { findings: LlmFinding[] }
 type RecheckVerdict = "keep" | "withdraw" | "confirm-with-author"
-// 再確認の理由区分（仕様書 6.5 の確認内容に対応）。confirm-with-author のうち suggestion-inappropriate は
-// 修正案を有効な修正案として表示しない（修正案の改訂はしない）
+// 再確認の理由区分（仕様書 6.5 の確認内容に対応）。suggestion-inappropriate は修正案を有効な修正案として表示しない
+// （修正案の改訂はしない）。suggestion-inappropriate と insufficient-context の verdict は confirm-with-author に限る（仕様書 6.5）
 type RecheckReasonKind = "error-confirmed" | "intentional-expression" | "suggestion-inappropriate" | "unnecessary-polish" | "insufficient-context"
-interface LlmRecheckOutput { verdict: RecheckVerdict; reasonKind: RecheckReasonKind; suggestionValid: boolean; reason: string }
+interface LlmRecheckOutput { reason: string; reasonKind: RecheckReasonKind; verdict: RecheckVerdict; suggestionValid: boolean }
 const llmCheckOutputSchema: z.ZodType<LlmCheckOutput>; const llmRecheckOutputSchema: z.ZodType<LlmRecheckOutput>
-function checkOutputJsonSchema(): object   // response_format 用（description はモデルに渡らない前提で書く）
+// response_format の json_schema.schema 本体。変換を含まないワイヤ層から生成し、$schema と整数の maximum を除く。
+// キー順（reason を suggestion・verdict の前）はプロンプト設計の一部で、PR6 が実測で並べ替えてよい（PROMPT_VERSION を上げる）
+function checkOutputJsonSchema(): Record<string, unknown>; function recheckOutputJsonSchema(): Record<string, unknown>
 
-// merge/merge.ts, merge/allowed-words.ts（PR4）
+// merge/candidate.ts, merge/merge.ts, merge/allowed-words.ts（PR4）
 interface CandidateBase { id: string; perspective: Perspective; llm: LlmFinding }
-interface LocatedCandidate extends CandidateBase { locate: { status: "located"; range: Range } }
+interface LocatedCandidate extends CandidateBase { locate: Extract<LocateResult, { status: "located" }> }
 interface UnlocatedCandidate extends CandidateBase { locate: Extract<LocateResult, { status: "failed" }> }
 type Candidate = LocatedCandidate | UnlocatedCandidate
-function partitionCandidates(candidates: Candidate[]): { located: LocatedCandidate[]; unlocated: UnlocatedCandidate[] }
-interface MergedFinding { id: string; range: Range; quote: string; category: FindingCategory; suggestion: string | null; sources: LocatedCandidate[]; verdict: InitialVerdict }
-function mergeCandidates(candidates: LocatedCandidate[]): MergedFinding[]   // 位置確定済みだけを受け取る。同一実行内は呼び出し元が保証
-function findSuppression(finding: MergedFinding, allowedWords: string[]): { word: string; ruleVersion: string } | null
+function partitionCandidates(candidates: readonly Candidate[]): { located: readonly LocatedCandidate[]; unlocated: readonly UnlocatedCandidate[] }
+interface MergedFinding { id: string; range: Range; quote: string; category: FindingCategory; suggestion: string | null; verdict: InitialVerdict; sources: LocatedCandidate[] }
+function mergeKey(candidate: LocatedCandidate): string | null   // 範囲・引用・修正案の完全一致。修正案なしは null（統合しない）。PR9 の再試行時の照合にも使う
+function mergeCandidates(candidates: readonly LocatedCandidate[], createId: () => string): MergedFinding[]   // 位置確定済みだけを受け取る。同一実行内は呼び出し元が保証
+// category は元候補が一致すればその値、不一致なら unclear。verdict は全候補が likely-error のときだけ likely-error
+type SuppressionInput = Pick<MergedFinding, "category" | "quote" | "suggestion">
+function findSuppression(finding: SuppressionInput, allowedWords: readonly string[]): Suppression | null   // Suppression = { word; ruleVersion }。SuppressionInput は構造的型なので、位置確定済みかどうかは呼び出し元が MergedFinding を渡すことで保証する
+// 判定：引用内の登録語の出現 1 箇所（書記素境界）の外側が修正案と完全一致し、置換文字列が空でなく登録語を含まない。
+// 登録語の前後・両側への挿入だけ（吉野家→吉野家だ、リュシア→リュシアー）は抑制しない。登録語は加工しない（空文字は飛ばす）
 // UnlocatedCandidate は統合・抑制・再確認に進まず、そのまま保存して一覧に表示する（not-found / ambiguous）か
 // 診断記録にだけ残す（outside-target）
 
@@ -253,8 +262,11 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 ### PR4 shared：LLM 出力スキーマ、重複統合、許容語抑制
 
 - 仕様：6.2（構造化データ）、6.4 全体、7（スキーマ検証）
-- 作る：`llm/schema.ts`（zod と JSON Schema）、`merge/merge.ts`、`merge/allowed-words.ts`、`merge/diff.ts`（共通接頭辞・接尾辞の除去）
-- 提供：`FindingCategory`、`LlmFinding`、`LlmCheckOutput`、`RecheckReasonKind`、`LlmRecheckOutput`、`llmCheckOutputSchema`、`llmRecheckOutputSchema`、`checkOutputJsonSchema`、`Candidate`、`LocatedCandidate`、`UnlocatedCandidate`、`partitionCandidates`、`MergedFinding`、`mergeCandidates`、`findSuppression`
+- 詳細計画：`docs/plans/2026-09-07-pr4-llm-schema-merge.md`
+- 作る：`llm/schema.ts`（zod と JSON Schema）、`merge/candidate.ts`、`merge/merge.ts`、`merge/allowed-words.ts`。
+  共通接頭辞・接尾辞の差分（`merge/diff.ts`）は作らない。出現ごとに「外側が一致し置換文字列が空でない」を直接判定すれば仕様 6.4 の条件をそのまま検査できる
+- 提供：`Perspective`、`InitialVerdict`、`FindingCategory`、`LlmFinding`、`LlmCheckOutput`、`RecheckVerdict`、`RecheckReasonKind`、`LlmRecheckOutput`、列挙値のタプル、`llmCheckOutputSchema`、`llmRecheckOutputSchema`、`checkOutputJsonSchema`、`recheckOutputJsonSchema`、`CandidateBase`、`Candidate`、`LocatedCandidate`、`UnlocatedCandidate`、`partitionCandidates`、`MergedFinding`、`mergeKey`、`mergeCandidates`、`Suppression`、`SuppressionInput`、`findSuppression`
+- 依存：shared に `zod` `4.5.4`（server と同じ版）
 - 規則：
   - `partitionCandidates` で位置確定済みと失敗を分ける。統合・抑制・再確認は `LocatedCandidate` だけを扱い、`UnlocatedCandidate` は保存・表示の経路へ渡す
   - 統合は同じ範囲・原文・修正案。修正案なしや別の問題は統合しない。観点と元候補への参照を保持。統合後の `category` は元候補が一致すればその値、不一致なら `unclear`
@@ -262,11 +274,14 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - 抑制の判定：「引用内の登録語の出現 1 箇所を空でない別の文字列に置き換えるだけで修正案を再現できる」。外側は完全一致。削除、複数出現にまたがる変更、範囲外に及ぶ変更は抑制しない
   - 「引用が登録語だけ」「変更の一部に登録語を含む」はそれ自体では抑制の理由にならない。上の判定を満たすかどうかだけで決める
   - 抑制結果に登録語と規則版を含める
-  - 再確認の `reasonKind` が `suggestion-inappropriate` のとき、`suggestionValid` は false。表示側は修正案を有効な修正案として出さず、履歴には残す
+  - 再確認の `reasonKind` が `suggestion-inappropriate` のとき、`suggestionValid` は false。表示側は修正案を有効な修正案として出さず、履歴には残す。`suggestion-inappropriate` と `insufficient-context` の `verdict` は `confirm-with-author`（仕様 6.5）。他の対応は検査しない
+  - スキーマは未知のキーを捨てて受理する。必須キーの欠落、型違い、未知の列挙値、空の引用、整数でない段落 ID は応答全体を形式不正にする
+  - 接続検証（決定記録 0003）で試したスキーマは文字列項目だけ。本 PR が加える `minimum`、`minLength`、`type: ["string", "null"]`、`enum` は未確認なので、生成した実スキーマでの疎通試験を PR6 までに 1 回行う
 - テスト：
   - 同じ引用「リュシア」・修正案「ルシア」で、`notation`（抑制）、`context-misuse`（抑制しない）、`unclear`（抑制しない）を分けて検証
   - 引用が登録語だけで表記訂正（抑制）、登録語を含む文で登録語の外側も変わる（抑制しない）、複数出現のうち 1 箇所（抑制）、削除（抑制しない）、修正案 null（抑制しない）
   - `partitionCandidates` の分割、`mergeCandidates` が `UnlocatedCandidate` を型で受け付けないこと
+  - 前後・両側への挿入だけの修正案（抑制しない）、修正案側にだけ登録語がある（抑制しない）、書記素境界の途中の出現（数えない）、重なる出現
   - スキーマが不正 JSON、未知の `category`、`reasonKind` と `suggestionValid` の矛盾（`suggestion-inappropriate` かつ true）を拒否
 - 受け入れ条件：11 節 10・11 項の shared 側、19 項の一部
 - 担当：Claude がスペックと許容語判定の期待結果の作成、qwen が実装、Claude が検証
@@ -312,6 +327,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - `server/src/run/executor.ts`：生成要求を直列に実行する小さな実行器（同時実行 1）。PR9 のキューはこれを包む
   - `packages/cli/`（新規パッケージ。`bin/shuten-eval.ts`）：原稿ファイルと設定を読み、パイプラインを呼び、結果を JSON に出す。`--mode full-text` で全文を 1 要求で送る比較用の経路
 - 規則：
+  - 許容語は改行区切りの文字列で受け取り、server が CRLF を含む改行で分割して各語を trim し、空行を除いた配列にしてからプロンプトと `findSuppression` に渡す（shared は登録語を加工しない）
   - 分割前に `validateChunkSettings` を呼ぶ。`maxInputGraphemes` はモデルのコンテキスト長から換算する（係数は実測で決める）。`InputTooLongError` と `InvalidChunkSettingsError` はどちらも「設定変更を案内」の終了理由にし、本文を縮めない
   - 要求は直列。各要求の直前に `ensureLoaded`
   - タイムアウトや abort の後に生成終了を確認できなければ、後続の要求を送らずにパイプラインを終了し、その旨を結果に残す（PR9 の「復旧待ち」に相当する終了理由）
@@ -342,6 +358,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - 開始は常に新しい実行 ID。再開は既存 ID。二重送信は要求の同一性（実行 ID、開始操作の識別子）で判定
   - 各生成要求の直前に `ensureLoaded`。未ロードなら当該単位を `pending` のまま実行を `stopped` にし、案内を記録
   - 観点の一部失敗は成功分で統合に進み、実行を `partially-failed`
+  - 失敗観点の再試行で同じ候補が出たときの照合は `mergeKey` で行うが、鍵は実行 ID を含まないので、保存済みの統合結果は実行 ID で名前空間を切って照合する（仕様 6.4「統合は同一の検査実行内に限定」を永続化層で破らない）
   - 停止は新規送信を止める。実行中の要求は abort し、生成終了を確認できるまで後続を送らない。上限を超えたら `recovery-waiting`
   - 自動再試行は各処理 1 回。完了済みは再開で繰り返さない。失敗単位の個別再試行
   - 分割範囲は開始時に計算して保存し、再開時は保存済みを使う
