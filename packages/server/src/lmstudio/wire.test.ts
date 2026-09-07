@@ -192,8 +192,11 @@ describe("parseChatCompletion", () => {
     expect(parseChatCompletion({ choices: [] })).toBeNull();
   });
 
-  it("choices[0].message が欠落していれば null", () => {
-    expect(parseChatCompletion({ choices: [{ finish_reason: "stop" }] })).toBeNull();
+  it("choices[0].message が欠落していても ParsedCompletion は返る（content: null）", () => {
+    const parsed = parseChatCompletion({ choices: [{ finish_reason: "stop" }] });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.content).toBeNull();
+    expect(parsed?.reasoningContent).toBeNull();
   });
 
   it("finish_reason が欠落・null なら null", () => {
@@ -228,6 +231,29 @@ describe("parseChatCompletion", () => {
     });
     expect(parsed).not.toBeNull();
     expect(parsed?.finishReason).toBe("length");
+  });
+
+  it("finish_reason: length かつ message 欠落でも ParsedCompletion が返り usage が解析される（決定 6）", () => {
+    const parsed = parseChatCompletion({
+      choices: [{ finish_reason: "length" }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.finishReason).toBe("length");
+    expect(parsed?.content).toBeNull();
+    expect(parsed?.usage).toEqual({
+      promptTokens: 10,
+      completionTokens: 5,
+      totalTokens: 15,
+      reasoningTokens: null,
+    });
+  });
+
+  it("finish_reason: stop かつ message 欠落でも ParsedCompletion は返る（malformed への分類は client.ts の責務）", () => {
+    const parsed = parseChatCompletion({ choices: [{ finish_reason: "stop" }] });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.finishReason).toBe("stop");
+    expect(parsed?.content).toBeNull();
   });
 });
 

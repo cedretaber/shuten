@@ -24,21 +24,33 @@ describe.skipIf(!rawUrl)("LmStudioClient（実 LM Studio）", () => {
 
   let client: LmStudioClient;
   let models: ModelInfo[];
-  /** 生成テスト用のモデル ID。ロード済みの llm/vlm が無ければ null（該当テストは ctx.skip() で飛ばす）。 */
+  /**
+   * 生成テスト用のモデル ID。ロード済みかつ種別が生成に使えるモデルが無ければ null
+   * （該当テストは ctx.skip() で飛ばす）。
+   */
   let generationModelId: string | null;
+
+  /**
+   * ロード済みで、かつ種別（type）が生成（chat）に使える（llm・vlm）ことを判定する。
+   * 仕様書 7 節（v0.8）「モデル種別（llm、vlm、embeddings など）で生成に使えるモデルを絞る」に基づく
+   * 絞り込みであり、`ensureLoaded` が種別を弾かない（未知の種別名でロード済みモデルを拒否しないため）
+   * のとは別の判断として、明示指定・自動選択の両方に共通して適用する。
+   */
+  function isGenerationCapable(model: ModelInfo): boolean {
+    return model.state === LOADED_STATE && (model.type === "llm" || model.type === "vlm");
+  }
 
   beforeAll(async () => {
     client = createLmStudioClient({ baseUrl, apiKey });
     models = await client.listModels();
     if (requestedModelId) {
-      // 指定されたモデルがロード済みでなければ、未ロードのモデルに生成要求を送らないよう
+      // 指定されたモデルが生成に使えなければ（未ロード、または embeddings など生成に使えない種別）、
       // 自動選択と同じく null（＝該当テストは ctx.skip()）に倒す（仕様書 7 節、invariants.md）。
       const requested = models.find((model) => model.id === requestedModelId);
-      generationModelId = requested?.state === LOADED_STATE ? requested.id : null;
+      generationModelId =
+        requested !== undefined && isGenerationCapable(requested) ? requested.id : null;
     } else {
-      const found = models.find(
-        (model) => model.state === LOADED_STATE && (model.type === "llm" || model.type === "vlm"),
-      );
+      const found = models.find(isGenerationCapable);
       generationModelId = found?.id ?? null;
     }
   });

@@ -294,6 +294,15 @@ describe("chat: truncated（finish_reason: length）", () => {
     const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
     expect(error.kind).toBe("truncated");
   });
+
+  it("C47 finish_reason が length で message ごと欠落していても truncated。usage は非 null（決定 6）", async () => {
+    const body = successBody({ finishReason: "length", omitMessage: true });
+    const { fetchImpl } = makeFetch(() => jsonResponse(200, body));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+    expect(error.kind).toBe("truncated");
+    expect(error.usage).not.toBeNull();
+  });
 });
 
 describe("chat: malformed", () => {
@@ -359,6 +368,14 @@ describe("chat: malformed", () => {
 
   it("C36 choices[0].message がなければ malformed", async () => {
     const { fetchImpl } = makeFetch(() => jsonResponse(200, successBody({ omitMessage: true })));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+    expect(error.kind).toBe("malformed");
+  });
+
+  it("C48 finish_reason が stop で message ごと欠落していれば malformed のまま", async () => {
+    const body = successBody({ finishReason: "stop", omitMessage: true });
+    const { fetchImpl } = makeFetch(() => jsonResponse(200, body));
     const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
     const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
     expect(error.kind).toBe("malformed");

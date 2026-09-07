@@ -132,12 +132,13 @@ export function parseChatCompletion(json: unknown): ParsedCompletion | null {
   if (typeof finishReason !== "string") {
     return null;
   }
+  // message がレコードでない場合も null にはしない（決定 6）。finish_reason: "length" による
+  // 打ち切りの判定は、message.content が文字列であることを含む外枠の検証より先に行う必要があり、
+  // ここで malformed 相当の null を返すと usage を含む LmStudioError を作れなくなる。
+  // content が文字列でないときの既存の扱い（null）に合わせる。
   const message = first.message;
-  if (!isRecord(message)) {
-    return null;
-  }
-  const content = toStringOrNull(message.content);
-  const reasoningContent = toStringOrNull(message.reasoning_content);
+  const content = isRecord(message) ? toStringOrNull(message.content) : null;
+  const reasoningContent = isRecord(message) ? toStringOrNull(message.reasoning_content) : null;
   const usage = parseUsage(json.usage);
   return { finishReason, content, reasoningContent, usage };
 }
