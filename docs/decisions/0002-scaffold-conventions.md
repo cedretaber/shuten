@@ -50,6 +50,9 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 | `SHUTEN_PORT` | `3000` | 待ち受けポート |
 | `SHUTEN_DATA_DIR` | `.data` | SQLite などの保存先 |
 | `SHUTEN_WEB_DIST` | `../web/dist` | 静的配信するビルド成果物。存在しなければ API のみ |
+| `SHUTEN_LM_STUDIO_URL` | `http://127.0.0.1:1234` | LM Studio のルート URL（仕様書 7 節 v0.8）。パス付き・search 付き・hash 付きは起動時にエラー |
+| `SHUTEN_LM_STUDIO_API_KEY` | なし | LM Studio に API キーが要る構成でのみ設定。`Authorization` ヘッダーにだけ載せ、ログ・例外に出さない |
+| `SHUTEN_LM_STUDIO_MODEL` | なし | 統合テスト（`pnpm test:llm`）で使うモデル ID。未指定ならロード済みの `llm` / `vlm` の最初のもの |
 
 ## 検証状況
 
@@ -76,6 +79,7 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 - PR2（検査範囲と参考文脈の分割）後：テスト 180 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-07）。
 - PR3（引用照合・位置確定・診断候補）後：テスト 247 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-07）。
 - PR4（LLM 出力スキーマ、重複統合、許容語抑制）後：テスト 360 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-08）。shared に zod 4.5.4 を追加。
+- PR5（設定と LM Studio クライアント）後：テスト 461 件が WSL で通過（Windows は CI で確認）（2026-09-08）。実 LM Studio を使うテストは `packages/server/vitest.integration.config.ts` の別プロジェクトに分離し、`pnpm test:llm` で実行する（`pnpm check` には含めない）。実機（Windows 側の LM Studio に WSL から接続）で 5 件通過を確認（2026-09-08、決定記録 0003 の追試）。Windows での `pnpm test:llm` は未確認。
 
 ## 却下した案
 

@@ -46,6 +46,8 @@ export type {
 export { partitionCandidates } from "./merge/candidate.ts";
 export type { MergedFinding } from "./merge/merge.ts";
 export { mergeCandidates, mergeKey } from "./merge/merge.ts";
+export type { FailureReason } from "./run/failure-reason.ts";
+export { FAILURE_REASONS } from "./run/failure-reason.ts";
 export type { GraphemeSegment } from "./text/grapheme.ts";
 export { countGraphemes, segmentGraphemes } from "./text/grapheme.ts";
 export type { GraphemeIndex } from "./text/grapheme-index.ts";
