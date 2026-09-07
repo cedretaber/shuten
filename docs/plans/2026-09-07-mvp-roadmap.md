@@ -350,8 +350,6 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 ### PR8 server：DB スキーマと永続化
 
-- PR5 からの持ち越し：`parseChatCompletion` が `message` 欠落を先に弾くため、`finish_reason: "length"` かつ `message` 欠落の応答が `malformed` になり `usage` を記録できない。実行記録に `usage` を保存する前に直す
-
 - 仕様：8.1 全体、8.2（永続化する対象）
 - 作る：`server/src/db/schema.ts`（置き換え）、`db/migrate.ts`、`db/repositories/*.ts`（原稿版、実行、検査単位、再確認単位、診断、指摘、採否）、`drizzle/` の SQL
 - 規則：8.1 の表の項目をすべて持つ。原稿版は本文と本文ハッシュ。指摘は元候補への参照、位置特定状態、未確定位置を許す。位置特定失敗（`not-found` / `ambiguous`）は一覧表示用に指摘として保存し、`outside-target` は診断記録にだけ保存する。再確認結果は `verdict`、`reasonKind`、`suggestionValid` を持つ。採否は指摘 ID ごとに 1 件で更新日時を持つ。API キーは保存しない。マイグレーションは API 受付前に適用し、失敗したら起動を止める
