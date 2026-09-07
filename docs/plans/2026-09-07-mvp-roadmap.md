@@ -1,7 +1,7 @@
 # MVP 実装ロードマップ（PR 単位）
 
 作成日：2026-09-07  
-仕様：`docs/spec/mvp-spec.md`（v0.7）  
+仕様：`docs/spec/mvp-spec.md`（v0.8）  
 前提：`docs/reference/invariants.md`、`docs/decisions/0001`〜`0003`
 
 本書は MVP を PR 単位に分解し、各 PR の範囲、対応する仕様の節、ファイル、インターフェース、テスト、担当を定める。

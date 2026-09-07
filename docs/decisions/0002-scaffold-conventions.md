@@ -79,7 +79,7 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 - PR2（検査範囲と参考文脈の分割）後：テスト 180 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-07）。
 - PR3（引用照合・位置確定・診断候補）後：テスト 247 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-07）。
 - PR4（LLM 出力スキーマ、重複統合、許容語抑制）後：テスト 360 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-08）。shared に zod 4.5.4 を追加。
-- PR5（設定と LM Studio クライアント）後：実 LM Studio を使うテストを `packages/server/vitest.integration.config.ts` の別プロジェクトに分離し、`pnpm test:llm` で実行する（`pnpm check` には含めない）。
+- PR5（設定と LM Studio クライアント）後：テスト 454 件が WSL で通過（Windows は CI で確認）（2026-09-08）。実 LM Studio を使うテストは `packages/server/vitest.integration.config.ts` の別プロジェクトに分離し、`pnpm test:llm` で実行する（`pnpm check` には含めない）。実機での実行は未確認。
 
 ## 却下した案
 

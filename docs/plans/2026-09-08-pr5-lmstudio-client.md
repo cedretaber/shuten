@@ -55,7 +55,7 @@
 | `server/src/lmstudio/types.ts` | 要求・応答のアプリ側の型 | `ChatMessage`、`ChatRequest`、`ChatResult`、`ModelInfo`、`Usage`、`ReasoningEffort`、`LmStudioClient`、`LmStudioClientOptions`、`LOADED_STATE` |
 | `shared/src/run/failure-reason.ts` | 失敗理由の列挙（server・web・PR7 が共用） | `FAILURE_REASONS`、`FailureReason` |
 | `server/src/lmstudio/errors.ts` | LM Studio 由来の例外 | `LmStudioError` |
-| `server/src/lmstudio/wire.ts` | 受信 JSON の外枠を検証する zod スキーマと、送信 JSON への変換 | `parseChatCompletion`、`parseModelList`、`toWireChatBody`（server 内部。`index.ts` からは公開しない） |
+| `server/src/lmstudio/wire.ts` | 受信 JSON の外枠の検証（手書きの型ガード）と、送信 JSON への変換 | `parseChatCompletion`、`parseModelList`、`toWireChatBody`（server 内部。`index.ts` からは公開しない） |
 | `server/src/lmstudio/client.ts` | HTTP 呼び出しと失敗の分類 | `createLmStudioClient` |
 | `server/src/config.ts`（改修） | 接続先と API キーの設定 | `ServerConfig` に `lmStudioUrl`、`lmStudioApiKey` を追加 |
 | `server/vitest.integration.config.ts` | 実 LM Studio を使うテストの別プロジェクト（`tsconfig.json` の `include` にも足す） | — |
@@ -69,7 +69,7 @@
 
 `GET /api/v0/models` は `/v1` の下にないため、設定値は `http://127.0.0.1:1234` のようなルートにする。
 クライアントは末尾のスラッシュを取り除き、`${base}/v1/chat/completions` と `${base}/api/v0/models` を組み立てる。
-仕様書 7 節の「初期接続先の候補は `http://127.0.0.1:1234/v1`」は生成エンドポイントの話で、矛盾しない。
+（仕様書 7 節は v0.8 でこの形に改訂した。）
 
 `/v1/models` は呼ばない。`/api/v0/models` が同じ一覧に `state`・種別などを加えて返すため、2 回呼ぶ意味がない。
 仕様書 7 節は当初 `GET /v1/models` との併用を求めていたので、逸脱のまま実装せず **仕様書を v0.8 に改訂した**
@@ -245,7 +245,8 @@ interface ChatResult {
 
 `"length"` 以外の終了理由（`stop` など）はそのまま `finishReason` に入れて返す。
 
-**判定の順序**：HTTP 200 → 本文を JSON として解析 → `error` キーの照合（決定 7）→ `choices[0].finish_reason` を見る →
+**判定の順序**：本文を JSON として解析 → `error` キーの照合（決定 7。HTTP 状態に依存しない）→ HTTP 200 以外の分類 →
+`choices[0].finish_reason` を見る →
 `"length"` なら `truncated`（このとき `content` の型は問わない。モデルによっては `null` で返る）→
 そうでなければ `message.content` が文字列であることを含む外枠の検証（失敗なら `malformed`）。
 外枠の検証を先に厳密に行うと、打ち切りが `malformed` になって `usage` を失う。

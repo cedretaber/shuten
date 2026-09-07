@@ -20,7 +20,7 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 
 ## 現在の状態
 
-scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.7）。
+scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.8）。
 実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR5（設定と LM Studio クライアント）まで完了。次は PR6（プロンプトと要求の組み立て）。
 
 ## 技術スタック
