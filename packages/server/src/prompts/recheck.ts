@@ -2,9 +2,7 @@ import type { MergedFinding, Paragraph } from "@shuten/shared";
 
 import { COMMON_INSTRUCTIONS } from "./common.ts";
 
-const RECHECK_ROLE = `あなたは日本語の小説の校正結果を検証する。すでに出ている指摘 1 件について、より広い文脈を読んだ
-うえで、その指摘を維持するか撤回するかを判断する。<target> は初回の検査対象範囲で、指摘はその中に
-ある。
+const RECHECK_ROLE = `あなたは日本語の小説の校正結果を検証する。すでに出ている指摘 1 件について、より広い文脈を読んだうえで、その指摘を維持するか撤回するかを判断する。<target> は初回の検査対象範囲で、指摘はその中にある。
 
 確認すること：
 - 文脈に照らして、実際に誤りまたは不自然さがあるか。
@@ -28,11 +26,9 @@ const RECHECK_OUTPUT_INSTRUCTIONS = `判断は次の項目で返す。
 
 次の組み合わせを返してはならない。
 - reasonKind が suggestion-inappropriate のとき、suggestionValid は false でなければならない。
-- reasonKind が suggestion-inappropriate または insufficient-context のとき、verdict は
-  confirm-with-author でなければならない。
+- reasonKind が suggestion-inappropriate または insufficient-context のとき、verdict はconfirm-with-author でなければならない。
 
-文脈が足りず判断できない場合は、reasonKind を insufficient-context、verdict を confirm-with-author に
-する。`;
+文脈が足りず判断できない場合は、reasonKind を insufficient-context、verdict を confirm-with-author にする。`;
 
 export const RECHECK_SYSTEM_PROMPT = [
   RECHECK_ROLE,

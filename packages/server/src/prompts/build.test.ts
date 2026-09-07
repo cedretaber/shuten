@@ -357,6 +357,25 @@ describe("buildRecheckRequest", () => {
     expect(user).not.toContain("修正案: null");
     expect(user).not.toMatch(/修正案:\s*null(?!\S)/);
   });
+
+  it("B14: range.start がどの段落にも含まれない指摘で「段落: 不明」になる", () => {
+    const outOfRange: Range = {
+      start: RECHECK_TEXT.length + 10,
+      end: RECHECK_TEXT.length + 15,
+    };
+    const finding = makeFinding({ range: outOfRange });
+    const request = buildRecheckRequest({
+      text: RECHECK_TEXT,
+      paragraphs: RECHECK_PARAGRAPHS,
+      input: recheckInput(),
+      finding,
+      allowedWords: [],
+      generation: BASE_GENERATION,
+    });
+
+    const user = request.messages[1]?.content ?? "";
+    expect(user).toContain("段落: 不明");
+  });
 });
 
 describe("プロンプトのスナップショット", () => {
