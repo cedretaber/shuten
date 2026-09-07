@@ -62,11 +62,13 @@
 3. **重なる出現も数える。** `あああ` に対する `ああ` は 0 と 1 の 2 件で `ambiguous`（表 G1）。
 4. **空の引用は `not-found`、診断はしない。** 空文字列はどの位置にも一致するので、一致として扱わない。
    PR4 のスキーマで `quote` を 1 文字以上にして、通常はここまで来ない。
-5. **絞り込みは 段落 ID → before → after の順に、残りが 1 件になるまで適用する。**
-   各フィルタは「適用すると残りが 0 件になる」場合は適用しない（緩い適用）。ヒントが空（改行を除いて空）なら
-   そのフィルタは無い。1 件になった時点で残りのフィルタは見ない（表 A13）。段落 ID が入力に無い番号でも、
-   それだけでは失敗にしない（表 A3）。仕様 6.3「段落 ID と前後の引用で特定する」の解釈。代替案は
-   「解釈で迷った点」。
+5. **絞り込みは 段落 ID → before → after の順に、残りが 1 件になるまで適用する。有効なヒントが全候補と矛盾したら
+   そこで打ち切り、残っている候補で失敗にする（厳密適用）。** ヒントが無い（段落 ID が入力の段落に存在しない、
+   before / after が改行を除いて空）フィルタは飛ばす（表 A3、A7）。1 件になった時点で残りのフィルタは見ない
+   （表 A13）。有効なヒントを適用して 0 件になったら絞り込みをやめ、その時点の候補に決定 8 を適用する
+   （表 A16、A17 は `ambiguous`、A18 は `outside-target`）。根拠：仕様 6.2 がヒントの不備を許すのは「引用だけで
+   位置が一意に決まる場合」だけで、複数一致で矛盾したヒントを無視すると誤位置に確定しうる（初稿は緩い適用で、
+   外部レビューで指摘され改めた）。
 6. **before / after の比較は CR と LF を両側から除いてから行う。** `before` は一致の直前（入力範囲の始端から
    一致の開始まで）の文字列が `before` で終わるか、`after` は一致の直後から入力範囲の終端までが `after` で
    始まるかを見る。比較対象は入力範囲内に限る。改行の除去はヒントの比較にだけ適用し、引用本体の照合には
@@ -98,8 +100,9 @@
     （段落 ID は出現順の連番なので段落数の差）。同距離は位置順。`ref.paragraphId` が段落に無ければ全候補を
     距離 0 とみなし位置順。開始位置を含む段落が無い（`paragraphs` が本文を覆っていない）のは前提違反で
     `RangeError`。保存は先頭 3 件（`DIAGNOSTIC_CANDIDATE_LIMIT`）、`omitted` は見つけた件数 − 保存数、
-    `tied` は最良距離を共有する候補が 2 件以上あるか（表 E、F）。根拠：仕様 6.3「指定段落に近い候補を最大 3 件」
-    「同順位の候補があることや打ち切り件数も残し」。
+    `tied` は見つけた候補（省いた分も含む）のうち同じ距離のものが 2 件以上あるか（表 E、F、J）。保存上限の
+    境界をまたぐ同順位（距離 `[0, 1, 2, 2]` で 4 件目を省く）も `true` になる（表 J1）。根拠：仕様 6.3「指定段落に
+    近い候補を最大 3 件」「同順位の候補があることや打ち切り件数も残し」。
 14. **`GraphemeIndex` は呼び出しごとに本文全体から作る。** PR2 決定 13 と同じ。指摘 1 件ごとに O(本文長) の
     分割が走るが、LLM の応答待ちに比べれば小さい。実測で問題になれば index を渡せる引数を足す（今は足さない）。
 15. **`transformVersion` は `DIAGNOSTIC_TRANSFORM_VERSION`（`"1"`）。** 変換の種類や位置対応の規則を変えたら上げる。
@@ -115,17 +118,19 @@
   測ればこちら）。本計画を推す理由は、担当範囲が自身の文脈付きで検出するという 6.3 の前提と、モデルの段落 ID・
   ヒントが文脈側を指しているのに対象側へ確定する誤りを避けること。代替案は失敗が減る代わりに誤位置の危険を負う。
   ユーザーの確認を求める点。
-- **ヒントの緩い適用（決定 5）。** 仕様 6.2 の「前後の引用の不備だけを理由に失敗にしない」は一意な場合の規定で、
-  複数一致でヒントが全候補と矛盾する場合の扱いは書かれていない。本計画は矛盾するフィルタを飛ばす（表 A9 は
-  それでも 2 件残るので `ambiguous`）。代替案は矛盾したら即 `ambiguous`。誤った位置に確定する危険と、
-  ヒントの軽微な崩れで失敗が増える不便のどちらを取るかの判断で、モデル出力の観察で見直す前提。
+- **ヒントの厳密適用（決定 5）。** 仕様 6.2 の「前後の引用の不備だけを理由に失敗にしない」は一意な場合の規定で、
+  複数一致でヒントが全候補と矛盾する場合の扱いは書かれていない。初稿は矛盾するフィルタを飛ばす緩い適用だったが、
+  外部レビューで「矛盾したヒントを無視すると後続のヒントだけで誤位置を確定しうる」と指摘され、矛盾したら
+  打ち切る厳密適用に改めた。存在しない段落 ID はヒントなしとして扱う（モデルが段落 ID を誤ることは多く、
+  それだけで失敗にすると失敗が増えすぎる）。ヒントの軽微な崩れで失敗が増える不便は、モデル出力の観察で見直す。
 - **before / after の改行無視（決定 6）。** 仕様に規定は無く、ロードマップの試験項目に基づく。引用の完全一致は
   崩さず、ヒントの比較だけを緩める。段落境界に接する引用でモデルが改行を省くことが多いという想定に基づく。
   代替案は (a) ヒントも完全一致（改行を省いた応答は絞り込みに使えず失敗が増える）、(b) 診断と同じ改行統一
   （`\r\n` → `\n`）だけ（省略には対応できない）。CR/LF の削除は本文側にも適用するが、比較専用で保存本文には触れない。
-- **`tied` の定義（決定 13）。** 「最良距離を 2 件以上が共有」に限定した。仕様「同順位の候補があること」は限定して
-  いないので、代替案は「打ち切り境界（保存した最後の候補と省いた最初の候補）の同順位も含める」。一意な一致との
-  誤認を防ぐ目的には最良距離の同順位が本質なので前者にしたが、`omitted > 0` のときの境界の同順位は失われる。
+- **`tied` の定義（決定 13）。** 初稿は「最良距離を 2 件以上が共有」に限定していたが、仕様「同順位の候補があること」
+  は最良候補に限定しておらず、保存上限の境界で同順位の一方が省かれる場合を取りこぼすと外部レビューで指摘された。
+  見つけた候補のいずれかに同距離があれば `true` に改めた。boolean のままなので「どの順位が同順位か」は
+  分からないが、候補は近い順に並んでいるので `range` と段落から読み取れる。
 - **`ref.paragraphId` が存在しないときの近さ（決定 13）。** 全候補を距離 0（位置順、2 件以上なら `tied`）。代替案は
   候補なし扱いにすること、または距離を無限大にすることだが、段落 ID の誤りは診断の対象そのものなので候補は残す。
 - **空引用の `diagnostic: null`（決定 4）。** 仕様「候補が見つからないことも記録する」に対し、null は「診断を
@@ -137,8 +142,9 @@
 - **ロードマップの型の変更。** `Diagnostic.truncated: boolean` を仕様 6.3 の「打ち切り件数」に合わせて
   `omitted: number` にする。`failed` に `exactMatches` を足し、`diagnostic` を `Diagnostic | null` にする。
   ロードマップの共通語彙を同じ PR で更新する。
-- **ヒントの緩い適用の判別行。** A16（`before` が全候補と矛盾するのを飛ばして `after` で確定）と A17（存在するが
-  一致の無い段落 ID を飛ばして `after` で確定）は、厳密適用なら `ambiguous` になる行。
+- **厳密適用の判別行。** A16（`before` が全候補と矛盾）と A17（存在するが一致の無い段落 ID）は、緩い適用なら
+  `after` で位置を確定してしまう行で、本計画では `ambiguous`。A18 は矛盾した時点の候補がすべて対象外で
+  `outside-target`。E4・F2 は同順位なし、J1 は保存上限の境界をまたぐ同順位。
 - **位置対応の実機検証。** 仕様 13 節の「診断用比較の候補取得方法と位置対応の検証」は、本 PR で第 1 版を作る
   だけで、実モデルの出力に対する検証は未決のまま残す。
 
@@ -154,11 +160,11 @@
 - `locate`（表 A〜G）：段落 ID で絞る、段落 0 を指して `outside-target`、段落 ID 不在で `after` で絞る、
   同段落 2 件で `ambiguous`、混在 3 件で `ambiguous`、ヒントが文脈側を指す判別例、`before` / `after` が改行を
   省く、`before` が全候補と矛盾、一意ならヒント不備でも確定、対象から文脈へ続く、文脈から始まり対象へ続く、
-  段落で 1 件に絞れたら `before` を見ない、空引用、存在しない引用、`before` の矛盾を飛ばして `after` で確定、
-  一致の無い段落 ID を飛ばして `after` で確定、入力範囲外の一致を数えない、文脈側 2 件、全候補が対象外、
+  段落で 1 件に絞れたら `before` を見ない、空引用、存在しない引用、`before` の矛盾で打ち切り `ambiguous`、
+  一致の無い段落 ID で打ち切り `ambiguous`、矛盾時の候補が全部対象外で `outside-target`、入力範囲外の一致を数えない、文脈側 2 件、全候補が対象外、
   一意な一致、本文先頭のサロゲートペア、本文末、CRLF と結合文字を含む完全一致、サロゲート途中と結合文字途中の
   一致を捨てる、NFC でのみ一致、改行統一でのみ一致、両方でのみ一致、どの変換でも一致なし、位置対応不能、
-  近い順と打ち切り、段落不在で位置順と同順位、同順位 2 件、重なる出現、異体字セレクタと ZWJ 絵文字を含む
+  近い順と打ち切り、段落不在で位置順と同順位、同順位 2 件、同順位なし、保存上限の境界をまたぐ同順位、重なる出現、異体字セレクタと ZWJ 絵文字を含む
   完全一致、異体字セレクタの直前・ZWJ 列の途中で切れる引用を捨てる、引用側だけが変換で変わる一致（NFC・改行・両方。
   両方の行は原文側の端が書記素境界に揃わず `range: null`）
 - ランダム検査：シード固定の乱数で作った本文（CRLF・LF・ZWJ 絵文字・結合文字・サロゲートペア・句点・括弧の
@@ -179,13 +185,17 @@
    `quote-ref`・`grapheme-index` の追記・`position-map`、2 回目は `diagnostic`・`locate`・`index.ts`。
    1 回目の出力を検証してから 2 回目を渡す。渡す前に、抽出したスペックに生の U+200D・U+0301・U+3099・CR と
    BMP 外の文字（`[\x{10000}-\x{10FFFF}]`）が含まれないことを `grep -P` で確認する。
-3. **検証**（Claude）：全ファイルを読む。特に、絞り込みの順序と緩い適用、担当判定の不等号（`start <= m.start < end`）、
+3. **検証**（Claude）：全ファイルを読む。特に、絞り込みの順序と矛盾時の打ち切り、担当判定の不等号（`start <= m.start < end`）、
    書記素境界の判定、変換チャンクの内部判定、重複除去、距離と `tied` の定義を表と突き合わせる。テストの期待値が
    付録の表と一致していることを 1 行ずつ確認する。`pnpm check` を自分でも実行する。
 4. **ドキュメント**（Claude）：ロードマップの共通語彙（`Diagnostic`、`DiagnosticCandidate`、`LocateResult` の形、
    `locate/position-map.ts` の公開名）と PR3 節の提供一覧、PR4 の `UnlocatedCandidate` の `locate` の形を更新。
    README の状態、`docs/decisions/0002` の検証状況、`docs/guides/windows-verification.md` の手順 3 にテスト内容を追記。
 5. **PR 作成**：解釈で迷った点、Windows の確認状況（CI で確認、ローカルは未確認）を書く。
+
+経過：計画を仕様整合と技術面の 2 観点でエージェントに自己レビューし、決定 11 の欠陥（引用側だけ変換で変わる一致の
+取りこぼし）と表の不足を直した。外部レビューで照合 → 絞り込み → 担当判定の順序は承認され、ヒントの緩い適用と
+`tied` の定義の 2 点を改めた（決定 5、13）。
 
 ## 付録 1：qwen へのスペック（1 回目。英語）
 
@@ -504,7 +514,7 @@ export interface Diagnostic {
   readonly candidates: readonly DiagnosticCandidate[];
   /** 見つけたが保存しなかった候補の数。 */
   readonly omitted: number;
-  /** 最良の近さを 2 件以上の候補が共有しているか。一意な一致と誤認させないための印。 */
+  /** 見つけた候補（省いた分も含む）に同じ近さのものが 2 件以上あるか。一意な一致と誤認させないための印。 */
   readonly tied: boolean;
 }
 
@@ -540,7 +550,7 @@ Algorithm of `diagnoseQuote`:
         `distance = refExists ? Math.abs(paragraphId - ref.paragraphId) : 0`.
       - Collect `{ transform, text: sliceRange(text, cover), range, cover, distance }`.
 3. Sort collected candidates by `distance` ascending, then `cover.start` ascending, then `cover.end` ascending.
-4. `tied = collected.length >= 2 && (number of candidates whose distance equals the first candidate's distance) >= 2`.
+4. `tied` = there exist two different collected candidates (including ones that will be omitted) with the same `distance`.
 5. `candidates = first DIAGNOSTIC_CANDIDATE_LIMIT entries` projected to `{ transform, text, range }`; `omitted = collected.length - candidates.length`.
 6. Return `{ transformVersion: DIAGNOSTIC_TRANSFORM_VERSION, candidates, omitted, tied }`.
 
@@ -590,8 +600,9 @@ Algorithm of `locateQuote`:
 4. If no match: return `{ status: "failed", reason: "not-found", exactMatches: [], diagnostic: diagnoseQuote(text, ir, paragraphs, ref, index) }`.
 5. Narrowing (only while `matches.length >= 2`). Let `strip = (s) => s.replace(/\r|\n/g, "")`, `before = strip(ref.before)`, `after = strip(ref.after)`.
    Apply these filters in order; for each filter: if `matches.length === 1` stop; if the filter is absent skip it;
-   `kept = matches.filter(pred)`; if `kept.length >= 1` then `matches = kept` (otherwise leave `matches` unchanged).
-   - paragraph filter: `pred(m)` = the paragraph containing `m.start` has `id === ref.paragraphId`.
+   `kept = matches.filter(pred)`; if `kept.length === 0` STOP narrowing (the hint contradicts every candidate; keep `matches`
+   as it is and fall through to step 6, which yields `ambiguous` or `outside-target`); otherwise `matches = kept`.
+   - paragraph filter (absent when no paragraph has `id === ref.paragraphId`): `pred(m)` = the paragraph containing `m.start` has `id === ref.paragraphId`.
    - before filter (absent when `before === ""`): `pred(m)` = `strip(text.slice(ir.start, m.start)).endsWith(before)`.
    - after filter (absent when `after === ""`): `pred(m)` = `strip(text.slice(m.end, ir.end)).startsWith(after)`.
 6. `inTarget(m)` = `tr.start <= m.start && m.start < tr.end`.
@@ -658,8 +669,9 @@ Abbreviation in the tables: `L(s,e)` = `{ status: "located", range: { start: s, 
 | A13 段落で 1 件になれば before は見ない | 1 | `彼は言った。` | `ない` | `` | `L(7,13)` |
 | A14 空引用 | 1 | `` | `` | `` | `F("not-found", [], null)` |
 | A15 存在しない引用 | 1 | `彼は泣いた。` | `` | `` | `F("not-found", [], D([], 0, false))` |
-| A16 before の矛盾を飛ばし after で確定 | 1 | `。` | `ない` | `そして` | `L(12,13)` |
-| A17 一致の無い段落 ID を飛ばし after で確定 | 2 | `彼は言った。` | `` | `そして` | `L(7,13)` |
+| A16 before が全候補と矛盾したら after を見ずに ambiguous | 1 | `。` | `ない` | `そして` | `F("ambiguous", [[12,13],[19,20]], null)` |
+| A17 存在するが一致の無い段落 ID で ambiguous | 2 | `彼は言った。` | `` | `そして` | `F("ambiguous", [[0,6],[7,13]], null)` |
+| A18 矛盾時の候補が全部対象外 | 0 | `彼は` | `` | `泣いた` | `F("outside-target", [[0,2]], null)` |
 
 ### Text B = `"一二三四五\n六七八九十\n一二三四五\n六七八九十"` (length 23; paragraphs `[0,6) [6,12) [12,18) [18,23)`), target `[12,18)`, inputRange `[6,23)`
 
@@ -694,17 +706,25 @@ Abbreviation in the tables: `L(s,e)` = `{ status: "located", range: { start: s, 
 
 | id | paragraphId | quote | expected |
 | --- | --- | --- | --- |
-| E1 段落 2 に近い順、打ち切り 1 | 2 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[8,10]), C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[12,14])], 1, false))` |
+| E1 段落 2 に近い順、打ち切り 1、距離 1 が 2 件 | 2 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[8,10]), C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[12,14])], 1, true))` |
 | E2 段落不在、位置順、同順位 | 9 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[0,2]), C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[8,10])], 1, true))` |
-| E3 段落 1 | 1 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[0,2]), C("nfc","か\u3099",[8,10])], 1, false))` |
+| E3 段落 1、距離 1 が 2 件 | 1 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[0,2]), C("nfc","か\u3099",[8,10])], 1, true))` |
+| E4 段落 0、距離がすべて異なる | 0 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[0,2]), C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[8,10])], 1, false))` |
 
-(`before` and `after` are `""` in every row of E, F, G.)
+(`before` and `after` are `""` in every row of E, F, G, J.)
 
 ### Text F = `"か\u3099一\n二\nか\u3099三"` (length 9; paragraphs `[0,4) [4,6) [6,9)`), target `[0,9)`, inputRange `[0,9)`
 
 | id | paragraphId | quote | expected |
 | --- | --- | --- | --- |
 | F1 同順位 2 件 | 1 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[0,2]), C("nfc","か\u3099",[6,8])], 0, true))` |
+| F2 同順位なし | 0 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[0,2]), C("nfc","か\u3099",[6,8])], 0, false))` |
+
+### Text J = `"か\u3099一\nか\u3099二\nか\u3099三\n四\nか\u3099五"` (length 17; paragraphs `[0,4) [4,8) [8,12) [12,14) [14,17)`), target `[0,17)`, inputRange `[0,17)`
+
+| id | paragraphId | quote | expected |
+| --- | --- | --- | --- |
+| J1 保存上限の境界をまたぐ同順位（距離 0,1,2,2 で 4 件目を省く） | 2 | `が` | `F("not-found", [], D([C("nfc","か\u3099",[8,10]), C("nfc","か\u3099",[4,6]), C("nfc","か\u3099",[0,2])], 1, true))` |
 
 ### Text G = `"あああ"`, target `[0,3)`, inputRange `[0,3)`
 
@@ -767,14 +787,16 @@ Note: `qe` may extend past the target end into the after-context (`qe <= ie`), s
 
 - Match on the ORIGINAL `text` in `locateQuote`, restricted to `inputRange` by the `p + quote.length <= ir.end` condition.
   Do not slice the text first and forget to add `ir.start` back to positions.
-- Filters are "soft": a filter that would leave zero matches is skipped, not applied. But a filter that leaves exactly one
-  match ends the narrowing. Do not continue filtering after one match remains.
+- Filters are strict: a present hint that matches zero candidates STOPS the narrowing (the result is then `ambiguous` or
+  `outside-target` from the candidates that remained before that filter). Only an ABSENT hint (nonexistent paragraph id,
+  empty before/after after stripping) is skipped. A filter that leaves exactly one match ends the narrowing; do not continue
+  filtering after one match remains.
 - Hint stripping removes CR and LF only. Do not trim spaces, do not touch U+3000, do not normalize.
 - Diagnostics run only when there are zero exact matches. `ambiguous` and `outside-target` have `diagnostic: null`.
 - In `diagnoseQuote`, drop a hit only when BOTH the quote is unchanged by the transform AND the hit overlaps no chunk.
   Do not drop hits merely because they lie in unchanged text when the quote itself was changed.
 - Transform order and dedup order are `newline`, `nfc`, `newline+nfc`. Keep candidates from earlier transforms.
-- The `tied` flag is about the best distance only.
+- `tied` looks at ALL collected candidates, including the ones omitted by the limit, not only the saved ones.
 
 ## Self-correction (MANDATORY — run before finishing)
 
