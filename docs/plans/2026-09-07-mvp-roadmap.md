@@ -144,11 +144,12 @@ function findSuppression(finding: SuppressionInput, allowedWords: readonly strin
 const PROMPT_VERSION, ALLOWED_WORD_RULE_VERSION, DIAGNOSTIC_TRANSFORM_VERSION: string
 ```
 
-実行の状態名（server 側、DB に保存）：
+実行の状態名（DB に保存）：
 
-- 検査実行 `RunStatus`: `running` | `stopped` | `recovery-waiting` | `completed` | `partially-failed`
-- 検査単位・再確認単位 `UnitStatus`: `pending` | `running` | `done` | `failed` | `not-applicable`（許容語により対象外など）
+- 検査実行 `RunStatus`（server）: `running` | `stopped` | `recovery-waiting` | `completed` | `partially-failed`
+- 検査単位・再確認単位 `UnitStatus`（server）: `pending` | `running` | `done` | `failed` | `not-applicable`（許容語により対象外など）
 - 失敗理由 `FailureReason`: `connection` | `model-not-loaded` | `input-too-long` | `timeout` | `truncated` | `malformed` | `aborted`
+  （PR5 で `shared/src/run/failure-reason.ts` に置く。LM Studio を経由しない失敗と web の表示も同じ列挙を使う）
 
 ## 実装上の決定（提案。各 PR の着手時に確認する）
 
@@ -157,9 +158,9 @@ const PROMPT_VERSION, ALLOWED_WORD_RULE_VERSION, DIAGNOSTIC_TRANSFORM_VERSION: s
 | ID | `crypto.randomUUID()` の文字列 |
 | マイグレーション | `drizzle-kit generate` で SQL を生成しコミット。サーバー起動時、API の受付前に `migrate()` で適用し、失敗したら起動を止める |
 | API | JSON の REST を `/api/` 配下に。進捗は `/api/runs/:id/events` の SSE |
-| LLM を呼ぶテスト | `packages/server/vitest.integration.config.ts` の別プロジェクト。`LM_STUDIO_URL` 未設定なら skip、設定時も `state` が `not-loaded` なら skip。`pnpm test:llm` で実行 |
+| LLM を呼ぶテスト | `packages/server/vitest.integration.config.ts` の別プロジェクト。`SHUTEN_LM_STUDIO_URL` 未設定なら skip、設定時も生成に使えるロード済みモデルがなければ生成テストだけ skip。`pnpm test:llm` で実行 |
 | エクスポート形式 | 実行 1 件を JSON 1 ファイルに（原稿版、設定、指摘、診断、採否を含む）。先頭に形式の版 `formatVersion` を持つ。仕様書 8.2 節の「実装設計時に決める」に対応 |
-| 接続先の設定 | 環境変数 `SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`）と UI からの上書き。UI 側の値は DB に保存 |
+| 接続先の設定 | 環境変数 `SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`。ルート URL。`/v1` 付きは起動時エラー）と UI からの上書き。UI 側の値は DB に保存 |
 
 ## PR 一覧
 
@@ -276,7 +277,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - 抑制結果に登録語と規則版を含める
   - 再確認の `reasonKind` が `suggestion-inappropriate` のとき、`suggestionValid` は false。表示側は修正案を有効な修正案として出さず、履歴には残す。`suggestion-inappropriate` と `insufficient-context` の `verdict` は `confirm-with-author`（仕様 6.5）。他の対応は検査しない
   - スキーマは未知のキーを捨てて受理する。必須キーの欠落、型違い、未知の列挙値、空の引用、整数でない段落 ID は応答全体を形式不正にする
-  - 接続検証（決定記録 0003）で試したスキーマは文字列項目だけ。本 PR が加える `minimum`、`minLength`、`type: ["string", "null"]`、`enum` は未確認なので、生成した実スキーマでの疎通試験を PR6 までに 1 回行う
+  - 接続検証（決定記録 0003）で試したスキーマは文字列項目だけ。本 PR が加える `minimum`、`minLength`、`type: ["string", "null"]`、`enum` は未確認なので、生成した実スキーマでの疎通試験を PR6 までに 1 回行う（PR5 の統合テストで実施する）
 - テスト：
   - 同じ引用「リュシア」・修正案「ルシア」で、`notation`（抑制）、`context-misuse`（抑制しない）、`unclear`（抑制しない）を分けて検証
   - 引用が登録語だけで表記訂正（抑制）、登録語を含む文で登録語の外側も変わる（抑制しない）、複数出現のうち 1 箇所（抑制）、削除（抑制しない）、修正案 null（抑制しない）
@@ -289,22 +290,27 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 ### PR5 server：設定と LM Studio クライアント
 
-- 仕様：7、8.2（切断をキャンセル要求として扱う）、決定記録 0003
-- 作る：`server/src/lmstudio/client.ts`、`lmstudio/errors.ts`、`lmstudio/types.ts`、`config.ts` の拡張、`vitest.integration.config.ts`
+- 詳細計画：`docs/plans/2026-09-08-pr5-lmstudio-client.md`
+- 仕様：7（v0.8 で一覧を `/api/v0/models` に一本化、接続先をルート URL に改訂）、8.2（切断をキャンセル要求として扱う）、決定記録 0003
+- 作る：`shared/src/run/failure-reason.ts`、`server/src/lmstudio/client.ts`、`lmstudio/errors.ts`、`lmstudio/types.ts`、`lmstudio/wire.ts`、`config.ts` の拡張、`vitest.integration.config.ts`
 - 提供：
   ```ts
   interface LmStudioClient {
-    listModels(): Promise<ModelInfo[]>                         // /api/v0/models。state, quantization, loaded_context_length
-    ensureLoaded(modelId: string): Promise<ModelInfo>           // not-loaded なら ModelNotLoadedError
-    chat(req: ChatRequest, opts: { signal: AbortSignal; timeoutMs: number }): Promise<ChatResult>
+    listModels(options?: RequestOptions): Promise<ModelInfo[]>            // /api/v0/models。type, state, quantization, loaded_context_length
+    ensureLoaded(modelId: string, options?: RequestOptions): Promise<ModelInfo>   // not-loaded なら LmStudioError（model-not-loaded）
+    chat(request: ChatRequest, options: ChatOptions): Promise<ChatResult>         // ChatOptions は timeoutMs 必須、signal 任意
   }
-  interface ChatResult { content: string; reasoningTokens: number; finishReason: string; usage: Usage; raw: unknown }
-  class LmStudioError { kind: FailureReason }                   // connection / model-not-loaded / input-too-long / timeout / truncated / malformed / aborted
+  interface ChatResult { content: string; reasoningContent: string | null; finishReason: string; usage: Usage | null; raw: unknown }
+  interface Usage { promptTokens: number; completionTokens: number; totalTokens: number; reasoningTokens: number | null }
+  class LmStudioError extends Error { kind: FailureReason; status: number | null; usage: Usage | null; finishReason: string | null; raw: unknown }
   ```
-- 規則：`finish_reason == "length"` は `truncated`。応答本文は素の JSON 解析のみ（`<think>` 分離は実装しない）。再試行はここでは行わず呼び出し側の方針に任せる。API キーは `Authorization` にだけ載せ、ログに出さない
-- テスト：モック HTTP でのエラー分類、abort で `aborted`、タイムアウト、`length` の扱い。統合テスト（`pnpm test:llm`）で実 LM Studio の一覧・状態・小さな生成
+  `RequestOptions` は `{ signal?, timeoutMs? }`。一覧取得の既定タイムアウトは 10 秒（初期値。仕様書 13 節の未決とは別）。
+  生成のタイムアウトに既定値は置かない。`ChatRequest` は camelCase で受け取り、クライアントがワイヤ形式（`stream: false`、
+  トップレベルの `reasoning_effort`、`response_format.json_schema.strict`）に直す
+- 規則：`finish_reason == "length"` は `truncated` の例外にする（`usage` と `raw` を例外に載せる）。応答本文の JSON 解析とスキーマ検証は PR6（`<think>` 分離も再試行もここでは実装しない）。API キーは `Authorization` にだけ載せ、例外にも入れない
+- テスト：モック `fetch` でのエラー分類、abort で `aborted`、タイムアウト（フェイクタイマー）、`length` の扱い、API キーが例外に漏れないこと。統合テスト（`pnpm test:llm`）で実 LM Studio の一覧・状態・小さな生成と、PR4 のスキーマでの疎通確認
 - 受け入れ条件：11 節 1・19 項
-- 担当：Claude がインターフェース設計、qwen が実装とモックテスト、Claude が検証と統合テスト
+- 担当：Claude が設計、実装はサブエージェント（Claude）、Claude が検証と統合テスト
 - 大きさ：中
 
 ### PR6 server：プロンプトと要求の組み立て

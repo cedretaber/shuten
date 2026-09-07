@@ -65,15 +65,16 @@
 
 ## 設計上の決定
 
-### 1. 接続先は「LM Studio のルート」。`/v1` を含めない
+### 1. 接続先は「LM Studio のルート」。`/v1` を含めない（判断 5）
 
 `GET /api/v0/models` は `/v1` の下にないため、設定値は `http://127.0.0.1:1234` のようなルートにする。
 クライアントは末尾のスラッシュを取り除き、`${base}/v1/chat/completions` と `${base}/api/v0/models` を組み立てる。
 仕様書 7 節の「初期接続先の候補は `http://127.0.0.1:1234/v1`」は生成エンドポイントの話で、矛盾しない。
 
-仕様書 7 節は「モデル一覧取得は `GET /v1/models`、ロード状態の確認には `GET /api/v0/models` を併用する」と書くが、
-本 PR は `/v1/models` を呼ばない。`/api/v0/models` が同じ一覧に `state` などを加えて返すため、2 回呼ぶ意味がない。
-これは仕様書の設計方針からの意図的な逸脱で、必要になれば `/v1/models` を足せる。
+`/v1/models` は呼ばない。`/api/v0/models` が同じ一覧に `state`・種別などを加えて返すため、2 回呼ぶ意味がない。
+仕様書 7 節は当初 `GET /v1/models` との併用を求めていたので、逸脱のまま実装せず **仕様書を v0.8 に改訂した**
+（一覧の正本を `/api/v0/models` に一本化、接続先の設定値をルート URL に、種別で生成対象を絞る）。
+決定記録 0003 の「接続先の既定値」も同時に直した。
 
 設定は `config.ts` で読む。
 
@@ -86,8 +87,9 @@ readonly lmStudioApiKey: string | null; // SHUTEN_LM_STUDIO_API_KEY、未設定�
 
 1. `raw.trim()` を `new URL()` に渡し、解析失敗は例外。
 2. `protocol` が `http:` / `https:` 以外なら例外。
-3. `pathname` が `/` 以外（`http://h:1234/v1` など）なら例外。決定 1 のとおり `/v1` を含めない設定なので、
-   誤設定を起動時に落とす。`search` と `hash` がある場合も同じく例外。
+3. `pathname` が `/^\/+$/`（スラッシュだけ）に一致しなければ例外。`http://h:1234/v1` のような誤設定を
+   起動時に落とす（`http://h:1234//` の `pathname` は `//` なので、この条件なら受理される）。
+   `search` と `hash` がある場合も例外。
 4. 値は `raw.trim().replace(/\/+$/, "")`（末尾のスラッシュを何個でも除去した元の文字列）。
 
 API キーの値は例外メッセージに入れない。空白のみの API キーは未設定と同じ扱い（`null`）。
@@ -178,14 +180,15 @@ PR7 の実測調整で必要になれば `ChatRequest` を広げる。
 未知のキーは無視する。`state` は列挙にせず `string` のまま持ち、**厳密に `"loaded"` のときだけ生成を許す**。
 未知の状態名が増えたとき、一覧の取得ごと失敗させるより「未ロード扱い」に倒すほうが安全側。
 
-ワイヤ側のキー名は `data[].id`、`data[].state`、`data[].quantization`、`data[].max_context_length`、
-`data[].loaded_context_length`。`data` が配列でなければ `malformed`。要素のうち `id` が文字列でないものは
+ワイヤ側のキー名は `data[].id`、`data[].type`、`data[].state`、`data[].quantization`、
+`data[].max_context_length`、`data[].loaded_context_length`。`data` が配列でなければ `malformed`。要素のうち `id` が文字列でないものは
 **その要素だけ捨てる**（一覧全体を失敗にしない）。
 
 ```ts
 const LOADED_STATE = "loaded";
 interface ModelInfo {
   readonly id: string;
+  readonly type: string | null;                 // "llm" / "vlm" / "embeddings" など。欠けていれば null
   readonly state: string | null;                // "loaded" / "not-loaded" / 未知の値 / 欠けていれば null
   readonly quantization: string | null;
   readonly maxContextLength: number | null;
@@ -195,6 +198,10 @@ interface ModelInfo {
 
 `quantization` と `loadedContextLength` は実行記録に保存する（決定 0003）。保存自体は PR8。
 
+`type` は生成に使えないモデル（`embeddings` など）を除くために持つ（仕様書 7 節 v0.8）。
+`ensureLoaded` は種別で弾かない（未知の種別名でロード済みのモデルを拒否しないため）。使う側の責務とし、
+本 PR では統合テストのモデル選択と、PR11 の選択肢の絞り込みに使う。
+
 `ensureLoaded(modelId)` は一覧から `id` が完全一致する要素を探し、見つからない場合と `state !== "loaded"` の場合に
 `LmStudioError`（`model-not-loaded`）を投げる。見つかれば `ModelInfo` を返す。
 
@@ -203,7 +210,8 @@ interface ModelInfo {
 ```ts
 interface Usage {
   readonly promptTokens: number; readonly completionTokens: number;
-  readonly totalTokens: number; readonly reasoningTokens: number;
+  readonly totalTokens: number;
+  readonly reasoningTokens: number | null;   // completion_tokens_details がなければ null
 }
 interface ChatResult {
   readonly content: string;
@@ -214,16 +222,16 @@ interface ChatResult {
 }
 ```
 
-- `reasoningTokens` は `usage.completion_tokens_details.reasoning_tokens ?? 0`。
+- `reasoningTokens` は `usage.completion_tokens_details.reasoning_tokens`。項目がなければ `null`。
+  思考なし設定の実測 0 と「取得できなかった」を区別する（仕様書 10 節の比較で使う値のため）。
   ロードマップの共通語彙では `ChatResult.reasoningTokens` が独立していたが、`usage` の一部として持つ。
   ロードマップの当該行を本 PR で直す。
 - `usage` が欠けている応答は形式不正にせず、`usage: null` として成功を返す。生成そのものは成功しているのに、
-  記録用の項目が欠けただけで結果を捨てるのは損が大きい。0 で埋めないのは、思考なし設定の実測値
-  （`reasoning_tokens: 0`）と「取得できなかった」を区別するため（仕様書 10 節の比較）。
-  `usage` はあるが `completion_tokens_details` がない場合は `reasoningTokens: 0`。
+  記録用の項目が欠けただけで結果を捨てるのは損が大きい。
+- `prompt_tokens`・`completion_tokens`・`total_tokens` のいずれかが欠けている、または数値でない場合も
+  `usage: null` にする。一部だけ 0 で埋めると「実測 0」と「取得できなかった」の区別がつかない。
 - `reasoningContent` はロードマップになかった追加。評価（PR7・PR13）で思考量を見るために残す。
   項目がない場合の `null` と、思考なし設定での `""` を区別する。
-- `usage` の一部の項目だけが欠けている場合は、その項目だけ 0 にする（`usage` 自体は非 null）。
 
 ### 6. `finish_reason == "length"` は例外にする（判断 1）
 
@@ -244,11 +252,11 @@ interface ChatResult {
 `finish_reason` が欠けている・`null` の応答は `malformed`。`choices` が複数あるときは `[0]` を使う。
 `noUncheckedIndexedAccess` が有効なので `choices[0]` は `undefined` になり得る。`!` で潰さず明示的に分岐する。
 
-### 7. 失敗の分類（判断 3 を含む）
+### 7. 失敗の分類（判断 2・判断 3 を含む）
 
 `FailureReason` は仕様書 7 節の区分そのもので、ロードマップの `FailureReason` と同じ 7 値。
 置き場所は `packages/shared/src/run/failure-reason.ts` にし、`FAILURE_REASONS` と `FailureReason` を
-`shared` の `index.ts` から再エクスポートする（判断 5）。LM Studio を経由しない失敗（PR7 の
+`shared` の `index.ts` から再エクスポートする（判断 2）。LM Studio を経由しない失敗（PR7 の
 `InputTooLongError` からの `input-too-long`）や web での表示（PR12）も同じ列挙を使うため。
 `LmStudioError` は HTTP と応答本文に依存するので `server/src/lmstudio/errors.ts` に置く。
 ロードマップは `FailureReason` を「実行の状態名（server 側）」に分類しているので、その行を本 PR で直す。
@@ -326,7 +334,7 @@ export class LmStudioError extends Error {
 `model_not_found`・`not loaded` は防御的な追加で未実測。実行中のアンロード（仕様書 7 節「実行中にアンロードされた
 場合も同様に扱う」）は `unloaded` の印で `model-not-loaded` に落ちることを狙うが、その経路自体は未実測。
 
-### 8. タイムアウトと中断の見分け（判断 2 を含む）
+### 8. タイムアウトと中断の見分け（判断 4）
 
 `chat(req, { signal, timeoutMs })` は必須引数。`listModels`・`ensureLoaded` にも省略可能の
 `{ signal?, timeoutMs? }` を足す（ロードマップからの拡張）。接続先を誤ったときの挙動は未実測で、
@@ -410,14 +418,16 @@ finally { clearTimeout(timer); callerSignal?.removeEventListener("abort", onCall
 - `packages/server/tsconfig.json` の `include` に `vitest.integration.config.ts` を足す（`pnpm typecheck` の対象にする）。
 - スクリプト：`packages/server/package.json` に `"test:llm": "vitest run -c vitest.integration.config.ts"`、
   ルートに `"test:llm": "pnpm --filter @shuten/server test:llm"`。Windows で動く書き方（inline 代入を使わない）。
-- 環境変数は **アプリと同じ `SHUTEN_LM_STUDIO_URL`**（判断 4）。未設定ならファイルごと skip。
-  モデルは `SHUTEN_LM_STUDIO_MODEL` で指定、未指定なら一覧の中で `state === "loaded"` の最初のもの。
+- 環境変数は **アプリと同じ `SHUTEN_LM_STUDIO_URL`**（判断 5）。未設定ならファイルごと skip。
+  モデルは `SHUTEN_LM_STUDIO_MODEL` で指定、未指定なら `state === "loaded"` かつ `type` が `llm` または `vlm` の
+  最初のもの（ロード済みの埋め込みモデルを選ばないため）。
   ロード済みモデルがなければ生成を伴うテストだけ skip する。判定は非同期なので `describe.skipIf` では書けない。
   URL の有無だけ `describe.skipIf(!url)` で判定し、モデルの有無は `beforeAll` で一覧を取ってから
   各テスト本体の先頭で `ctx.skip()` を呼ぶ。LM Studio が起動していない状態で `SHUTEN_LM_STUDIO_URL` だけが
   設定されている場合は `beforeAll` が失敗して赤くなる。これは許容する（設定したなら繋がるはず、という扱い）。
 - 確認する内容：
-  1. `/api/v0/models` の応答に `state`・`quantization`・`loaded_context_length` があること（決定 4 の未記録項目の確認）。
+  1. `/api/v0/models` の応答に `type`・`state`・`quantization`・`loaded_context_length` があること
+     （決定 4 の未記録項目の確認）。
   2. `ensureLoaded` が未ロードのモデル ID で `model-not-loaded` を投げること（存在しない ID で代用）。
   3. 小さな生成（`reasoning_effort: "none"`、`max_tokens` 2,000）が `stop` で返り、`usage` が埋まること。
   4. **PR4 の未確認事項の解消**：`checkOutputJsonSchema()` をそのまま `responseFormat.schema` に渡し、
@@ -442,11 +452,11 @@ finally { clearTimeout(timer); callerSignal?.removeEventListener("abort", onCall
 5. **統合テストの環境変数名。** 実験スクリプトは `LM_STUDIO_URL`、アプリ設定は `SHUTEN_LM_STUDIO_URL`。
    テストはアプリ側に合わせ、実験ディレクトリの記録は当時のまま残す。ロードマップの該当行を直す。
 6. **`/api/v0/models` の応答形が未記録。** 決定 4 のとおり緩いスキーマにし、統合テストで実物を確認する。
-7. **`FailureReason` を `shared` に置くか `server` に置くか。** 決定 7 で `shared` にした（判断 5）。
+7. **`FailureReason` を `shared` に置くか `server` に置くか。** 決定 7 で `shared` にした（判断 2）。
    ロードマップは server 側に分類しているが、PR7 の設定エラーと PR12 の表示が同じ列挙を要る。
 8. **`error` を含む応答の HTTP 状態が未記録。** 実験は `{"error": "Model unloaded by user or API request."}` の
    本文だけを記録していて状態を残していない。そのため印の照合を状態に依存させない。
-9. **`/v1/models` を呼ばない。** 決定 1 のとおり仕様書 7 節の記述からの意図的な逸脱。
+9. **`/v1/models` を呼ばない。** 決定 1 のとおり。逸脱にせず仕様書を v0.8 に改訂した。
 10. **`usage` 欠落を `null` にする。** 0 埋めだと「思考なしで 0 トークン」と区別できないため（決定 5）。
 
 ## テスト（単体。モック `fetch`）
@@ -485,7 +495,7 @@ finally { clearTimeout(timer); callerSignal?.removeEventListener("abort", onCall
 | C5 | 全項目を指定した要求 | `reasoning_effort` がトップレベル、`response_format.json_schema.strict === true`、`name` と `schema` がそのまま |
 | C6 | 正常応答 | `content`・`reasoningContent`・`finishReason`・`usage`（`reasoningTokens` 含む）・`raw` |
 | C7 | `usage` が欠けた正常応答 | `usage === null`、成功として返る |
-| C8 | `completion_tokens_details` が欠けた応答 | `usage` は非 null、`reasoningTokens === 0` |
+| C8 | `completion_tokens_details` が欠けた応答 | `usage` は非 null、`reasoningTokens === null` |
 | C9 | `finish_reason: "length"` | `truncated`。`error.usage` と `error.raw` が非 null |
 | C10 | 本文が JSON でない（`"not json"`） | `malformed` |
 | C11 | `choices` が空配列 | `malformed` |
@@ -515,7 +525,7 @@ finally { clearTimeout(timer); callerSignal?.removeEventListener("abort", onCall
 | C32 | 既に中断済みの signal を渡す | `aborted`。`fetch` が呼ばれない |
 | C33 | `reasoning_content` がない応答 | `reasoningContent === null`（空文字と区別する） |
 | C34 | `finish_reason` がない／`null` の 200 応答 | `malformed` |
-| C35 | `usage` の一部が欠けた応答（`total_tokens` なし） | `usage` は非 null、欠けた項目だけ 0 |
+| C35 | `usage` の一部が欠けた応答（`total_tokens` なし・数値でない） | `usage === null` |
 | C36 | `choices[0].message` がない | `malformed` |
 | C37 | `choices` が 2 件 | `[0]` を使う |
 | C38 | `finish_reason: "length"` かつ `content` が `null` | `truncated`（`malformed` にしない） |
@@ -523,12 +533,13 @@ finally { clearTimeout(timer); callerSignal?.removeEventListener("abort", onCall
 | C40 | `listModels` が HTTP 500 | `connection` |
 | C41 | `listModels` の本文が JSON でない／`data` が配列でない | `malformed` |
 | C42 | `listModels` の要素の `id` が数値 | その要素だけ捨てる。他は返る |
+| C46 | `listModels` の要素に `type` がある／ない | `type` に値／`null` |
 | C43 | `ensureLoaded` が `listModels` の失敗を伝播 | `connection` のまま（`model-not-loaded` にしない） |
 | C44 | `timeoutMs` が 0・負・`Infinity`・非整数 | `TypeError` |
 | C45 | API キーが空白のみ | `authorization` を付けない |
 
 `config.test.ts` の追記：既定値、末尾スラッシュの除去（`/` と `//`）、`http:` / `https:` 以外で例外、
-解析できない URL で例外、パス付き（`http://h:1234/v1`）で例外、`search` / `hash` 付きで例外、
+解析できない URL で例外、パス付き（`http://h:1234/v1`）で例外、末尾 `//` は受理、`search` / `hash` 付きで例外、
 API キー未設定・空文字・空白のみで `null`、例外メッセージに API キーを含めない。
 
 ## 進め方（コミット単位）
