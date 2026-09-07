@@ -9,6 +9,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# GITHUB_TOKEN の権限を最小に固定する。CI はリポジトリの読み取りしか必要としない
+permissions:
+  contents: read
+
 jobs:
   check:
     name: check (${{ matrix.os }})
@@ -20,13 +24,13 @@ jobs:
         # ビルドなしで動くことの確認を兼ねる
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 版は package.json の packageManager から読む
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       # 版は .node-version から読む
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
           cache: pnpm
