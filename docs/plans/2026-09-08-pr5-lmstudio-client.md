@@ -1,7 +1,7 @@
 # PR5 詳細計画：設定と LM Studio クライアント
 
 日付：2026-09-08  
-状態：計画（レビュー待ち）  
+状態：実装済み（PR #10）  
 ブランチ：`feat/pr5-lmstudio-client`  
 上位計画：`docs/plans/2026-09-07-mvp-roadmap.md` の PR5 節
 
