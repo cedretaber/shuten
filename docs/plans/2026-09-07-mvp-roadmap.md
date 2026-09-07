@@ -315,10 +315,11 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 ### PR6 server：プロンプトと要求の組み立て
 
+- 詳細計画：`docs/plans/2026-09-08-pr6-prompts.md`
 - 仕様：3.1、5.2（許容語のヒント）、5.4、6.2、6.5、13（プロンプトは未決。ここで初版を作り版を付ける）
-- 作る：`server/src/prompts/typo.ts`、`prompts/naturalness.ts`、`prompts/recheck.ts`、`prompts/build.ts`（`<context>` / `<target>` の区切りと非追従の指示）、`test/fixtures/injection/`（命令文を含む原稿）
-- 提供：`buildCheckRequest(input: CheckInput, text, perspective, allowedWords, settings): ChatRequest`、`buildRecheckRequest(...)`、`parseCheckResponse(result: ChatResult): LlmCheckOutput`、`parseRecheckResponse(result): LlmRecheckOutput`（PR4 のスキーマで検証）
-- 規則の追加：プロンプトは `category` と `reasonKind` の各値の意味を本文に書き、モデルが分類を選べるようにする
+- 作る：`server/src/prompts/types.ts`（`GenerationSettings`、`CheckRequestInput`、`RecheckRequestInput`）、`prompts/render.ts`（`<context_before>` / `<target>` / `<context_after>` の描画）、`prompts/common.ts`（system プロンプト共通部。原稿・許容語中の命令に従わない非追従の指示を含む）、`prompts/typo.ts`、`prompts/naturalness.ts`、`prompts/recheck.ts`、`prompts/build.ts`、`prompts/parse.ts`、`lmstudio/integration-support.ts`（統合テスト共通ヘルパー）、`test/fixtures/injection/`（命令文を含む原稿）
+- 提供：`buildCheckRequest(args: CheckRequestInput): ChatRequest`、`buildRecheckRequest(args: RecheckRequestInput): ChatRequest`、`parseCheckResponse(result: ChatResult): LlmCheckOutput`、`parseRecheckResponse(result: ChatResult): LlmRecheckOutput`（PR4 のスキーマで検証）。`CheckRequestInput` / `RecheckRequestInput` はオブジェクト 1 引数で、保存本文・`paragraphs`（原稿版全体の段落）・`CheckInput`・許容語に加え、生成パラメーターを `GenerationSettings`（`model`、`maxTokens`、`temperature`、`seed?`、`reasoningEffort?`。既定値は持たない）として受け取る
+- 規則の追加：プロンプトは `category` と `reasonKind` の各値の意味を本文に書き、モデルが分類を選べるようにする。原稿は段落マーカー `[P12]` を付けて描画し、`quote`・`before`・`after` のいずれにも段落マーカーやタグを含めない指示を明示する。再確認では `reasonKind` が `suggestion-inappropriate` のとき `suggestionValid` は false、`suggestion-inappropriate` または `insufficient-context` のとき `verdict` は `confirm-with-author` という矛盾する組み合わせをプロンプト本文で明示する
 - 規則：項目の意味（引用、前後の引用、修正案は引用全体に対応し変更を最小限、理由）をプロンプト本文に書く。体言止め・倒置・口語・造語を誤りにしない指示。件数のノルマなし。思考の有無は設定
 - テスト：プロンプトのスナップショット（版が変わったら更新）、命令文を含む原稿の統合テストで逸脱の有無を記録
 - 受け入れ条件：11 節 20 項
@@ -328,6 +329,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 ### PR7 server + cli：検査パイプライン（DB なし）と評価ハーネス
 
 - PR5 からの持ち越し：`chat` を実際に使うときに、既定タイムアウトの適用・本文読み取り中のタイムアウト・`truncateRaw` の各テストを足す
+- PR6 からの持ち越し：`<think>` 分離（実測で必要になったモデルが出たら、決定記録 0003 の追記と同時に実装する）、`finish_reason` が `stop` / `length` 以外のときの扱い、段落マーカーの引用への混入率と検査対象の終端をまたぐ引用の有無の観測、`before` / `after` の長さの調整
 
 - 仕様：6（処理順序）、7（未ロード、再試行 1 回、生成終了未確認時の扱い）、10（比較実験）、13（プロンプトと生成設定の実測）
 - 作る：

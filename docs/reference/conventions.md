@@ -5,6 +5,8 @@
 - `main` に直接コミットせず、作業ごとにブランチを切る。
 - コミットメッセージは日本語。1 行目に変更の要約、必要なら空行を挟んで理由を書く。
 - 仕様書を改訂したら、`docs/spec/mvp-spec.md` の改訂記録（15 節）に追記し、同じコミットに含める。
+- プロンプトのスナップショット（`packages/server/src/prompts/__snapshots__/`）を更新するときは、
+  `PROMPT_VERSION`（`packages/shared/src/versions.ts`。初版は `"1"`）の更新と同じコミットで行う。
 - 設計上の決定は `docs/decisions/` に連番で追加する。結論と理由だけを短く書き、
   検証の手順や生データは `docs/experiments/` に置いて参照する。
 - Windows で未確認の変更は、その旨を PR やコミットメッセージに書く。
@@ -42,6 +44,8 @@
 - テストはソースと同じディレクトリに `*.test.ts` として置く。
 - CRLF・CR・BOM を含む原稿ファイルは `packages/*/test/fixtures/` に置き、`.gitattributes` の `-text` で改行変換から守る。
   fixture はエディタで保存せず、`packages/shared/test/generate-fixtures.mjs` でバイト単位に生成する。追加したら `git ls-files --eol` で `attr/-text` を確認する。
+- `packages/*/test/fixtures/` に置く合成テキスト（CRLF・CR・BOM を含まないもの）は LF 改行で保存する
+  （`-text` によりそのままコミットされるため）。CRLF を含む期待値が必要なときは fixture ではなくテスト内の文字列リテラルで作る。
 - 仕様書 11 節の受け入れ条件を、可能な限り自動テストに落とす。
 - 以下は境界条件テストを必須とする。
   - 段落分割: CRLF・LF・CR の混在、末尾改行の有無、空行、単一の長い段落
