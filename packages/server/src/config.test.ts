@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, parsePort } from "./config.ts";
+import { loadConfig, parseLmStudioApiKey, parseLmStudioUrl, parsePort } from "./config.ts";
 
 describe("parsePort", () => {
   it("十進の整数表記を受け付ける", () => {
@@ -29,5 +29,77 @@ describe("loadConfig", () => {
 
   it("SHUTEN_PORT の不正値で例外を投げる", () => {
     expect(() => loadConfig({ SHUTEN_PORT: "3e3" })).toThrow();
+  });
+
+  it("未指定なら LM Studio の既定値を使う", () => {
+    const config = loadConfig({});
+    expect(config.lmStudioUrl).toBe("http://127.0.0.1:1234");
+    expect(config.lmStudioApiKey).toBeNull();
+  });
+});
+
+describe("parseLmStudioUrl", () => {
+  it("既定値をそのまま受け付ける", () => {
+    expect(parseLmStudioUrl("http://127.0.0.1:1234")).toBe("http://127.0.0.1:1234");
+  });
+
+  it("末尾のスラッシュを 1 個除去する", () => {
+    expect(parseLmStudioUrl("http://127.0.0.1:1234/")).toBe("http://127.0.0.1:1234");
+  });
+
+  it("末尾のスラッシュを複数個除去する", () => {
+    expect(parseLmStudioUrl("http://127.0.0.1:1234//")).toBe("http://127.0.0.1:1234");
+  });
+
+  it("http でも https でもないスキームを拒否する", () => {
+    expect(() => parseLmStudioUrl("ftp://127.0.0.1:1234")).toThrow(/http/);
+  });
+
+  it("解析できない URL を拒否する", () => {
+    expect(() => parseLmStudioUrl("not a url")).toThrow();
+  });
+
+  it("パス付きの URL を拒否する（例: /v1）", () => {
+    expect(() => parseLmStudioUrl("http://127.0.0.1:1234/v1")).toThrow();
+  });
+
+  it("末尾が // だけのパスは受理する", () => {
+    expect(() => parseLmStudioUrl("http://127.0.0.1:1234//")).not.toThrow();
+  });
+
+  it("クエリ文字列付きの URL を拒否する", () => {
+    expect(() => parseLmStudioUrl("http://127.0.0.1:1234/?a=1")).toThrow();
+  });
+
+  it("フラグメント付きの URL を拒否する", () => {
+    expect(() => parseLmStudioUrl("http://127.0.0.1:1234/#frag")).toThrow();
+  });
+});
+
+describe("parseLmStudioApiKey", () => {
+  it("未設定なら null", () => {
+    expect(parseLmStudioApiKey(undefined)).toBeNull();
+  });
+
+  it("空文字なら null", () => {
+    expect(parseLmStudioApiKey("")).toBeNull();
+  });
+
+  it("空白のみなら null", () => {
+    expect(parseLmStudioApiKey("   ")).toBeNull();
+    expect(parseLmStudioApiKey("\t\n")).toBeNull();
+  });
+
+  it("値があればそのまま返す", () => {
+    expect(parseLmStudioApiKey("sk-secret-token")).toBe("sk-secret-token");
+  });
+
+  it("例外メッセージに API キーの値を含めない（不正な URL との組み合わせで確認）", () => {
+    try {
+      loadConfig({ SHUTEN_LM_STUDIO_URL: "not a url", SHUTEN_LM_STUDIO_API_KEY: "sk-secret-xyz" });
+      expect.unreachable();
+    } catch (err) {
+      expect(String(err)).not.toContain("sk-secret-xyz");
+    }
   });
 });

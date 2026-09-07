@@ -12,6 +12,10 @@ export interface ServerConfig {
   readonly dataDir: string;
   /** web パッケージのビルド成果物。存在しなければ静的配信をスキップする。 */
   readonly webDistDir: string;
+  /** LM Studio のルート URL（`/v1` を含めない）。末尾のスラッシュは除去済み（決定 5）。 */
+  readonly lmStudioUrl: string;
+  /** LM Studio の API キー。未設定・空文字・空白のみは null。 */
+  readonly lmStudioApiKey: string | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -21,6 +25,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     port,
     dataDir: path.resolve(env.SHUTEN_DATA_DIR ?? ".data"),
     webDistDir: path.resolve(env.SHUTEN_WEB_DIST ?? "../web/dist"),
+    lmStudioUrl: parseLmStudioUrl(env.SHUTEN_LM_STUDIO_URL ?? "http://127.0.0.1:1234"),
+    lmStudioApiKey: parseLmStudioApiKey(env.SHUTEN_LM_STUDIO_API_KEY),
   };
 }
 
@@ -40,4 +46,45 @@ export function parsePort(raw: string): number {
     throw new Error(`SHUTEN_PORT が範囲外です（1〜65535）: ${raw}`);
   }
   return port;
+}
+
+/**
+ * LM Studio のルート URL を検証して正規化する（決定 1）。
+ *
+ * `new URL().href` は `http://h:1234/` のように末尾スラッシュの扱いが混ざるため使わない。
+ * 検証を通した元の文字列から末尾のスラッシュだけを除去して返す。
+ */
+export function parseLmStudioUrl(raw: string): string {
+  const trimmed = raw.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error(`SHUTEN_LM_STUDIO_URL を URL として解析できません: ${JSON.stringify(raw)}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(
+      `SHUTEN_LM_STUDIO_URL は http または https でなければなりません: ${JSON.stringify(raw)}`,
+    );
+  }
+  if (!/^\/+$/.test(url.pathname)) {
+    throw new Error(
+      `SHUTEN_LM_STUDIO_URL にパスを含めることはできません（ルート URL のみ）: ${JSON.stringify(raw)}`,
+    );
+  }
+  if (url.search !== "" || url.hash !== "") {
+    throw new Error(
+      `SHUTEN_LM_STUDIO_URL にクエリやフラグメントを含めることはできません: ${JSON.stringify(raw)}`,
+    );
+  }
+  return trimmed.replace(/\/+$/, "");
+}
+
+/** LM Studio の API キーを読む。未設定・空文字・空白のみは null。 */
+export function parseLmStudioApiKey(raw: string | undefined): string | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : raw;
 }

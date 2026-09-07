@@ -19,6 +19,7 @@
     "typecheck": "pnpm -r --sequential typecheck && tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:llm": "pnpm --filter @shuten/server test:llm",
     "lint": "biome check .",
     "format": "biome format --write .",
     "check": "pnpm typecheck && pnpm lint && pnpm test"

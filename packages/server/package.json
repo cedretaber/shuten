@@ -7,6 +7,7 @@
     "dev": "node --watch src/index.ts",
     "start": "node src/index.ts",
     "test": "vitest run",
+    "test:llm": "vitest run -c vitest.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "typecheck": "tsc -p tsconfig.json"
   },
