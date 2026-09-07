@@ -35,6 +35,20 @@
   IP は環境や再起動で変わるため設定に固定値を書かず、接続先 URL は環境変数で与える。
   WSL の `networkingMode=mirrored` では Windows 側へ `127.0.0.1` で届くため、この扱いは不要。
 
+## 追試：生成した実スキーマでの疎通（2026-09-08、PR5）
+
+`packages/shared` の `checkOutputJsonSchema()`（zod から生成した検査出力のスキーマ）をそのまま
+`response_format` に渡し、応答を `llmCheckOutputSchema` で検証できることを確認した。qwen（ロード時
+コンテキスト長 160,000、`reasoning_effort: "none"`、`max_tokens` 2,000）で 2.2 秒。
+
+- **`minimum`・`minLength`・`type: ["string", "null"]`・`enum` を含むスキーマが `strict: true` で通る。**
+  接続検証（2026-09-07）で試したのは文字列項目だけだったので、この 4 つは未確認のまま残っていた。
+- `GET /api/v0/models` は `id`・`type`・`state`・`quantization`・`max_context_length`・
+  `loaded_context_length` を返す。**`type` は qwen・gemma とも `vlm`**（`llm` ではない）。
+  生成に使えるモデルを種別で絞るときは `llm` だけにしない。
+- 未確認のまま残るもの：`input-too-long` の判定文字列（ロード時コンテキスト長を超える要求が要る）、
+  実行中アンロード時の応答（`unloaded` の印）。
+
 ## 接続先の既定値
 
 Windows 上で動かす標準構成では仕様書 7 節どおり `http://127.0.0.1:1234`（LM Studio のルート。
