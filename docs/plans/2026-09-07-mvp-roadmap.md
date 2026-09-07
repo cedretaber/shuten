@@ -128,13 +128,13 @@ interface CandidateBase { id: string; perspective: Perspective; llm: LlmFinding 
 interface LocatedCandidate extends CandidateBase { locate: Extract<LocateResult, { status: "located" }> }
 interface UnlocatedCandidate extends CandidateBase { locate: Extract<LocateResult, { status: "failed" }> }
 type Candidate = LocatedCandidate | UnlocatedCandidate
-function partitionCandidates(candidates: Candidate[]): { located: LocatedCandidate[]; unlocated: UnlocatedCandidate[] }
+function partitionCandidates(candidates: readonly Candidate[]): { located: readonly LocatedCandidate[]; unlocated: readonly UnlocatedCandidate[] }
 interface MergedFinding { id: string; range: Range; quote: string; category: FindingCategory; suggestion: string | null; verdict: InitialVerdict; sources: LocatedCandidate[] }
 function mergeKey(candidate: LocatedCandidate): string | null   // 範囲・引用・修正案の完全一致。修正案なしは null（統合しない）。PR9 の再試行時の照合にも使う
-function mergeCandidates(candidates: LocatedCandidate[], createId: () => string): MergedFinding[]   // 位置確定済みだけを受け取る。同一実行内は呼び出し元が保証
+function mergeCandidates(candidates: readonly LocatedCandidate[], createId: () => string): MergedFinding[]   // 位置確定済みだけを受け取る。同一実行内は呼び出し元が保証
 // category は元候補が一致すればその値、不一致なら unclear。verdict は全候補が likely-error のときだけ likely-error
 type SuppressionInput = Pick<MergedFinding, "category" | "quote" | "suggestion">
-function findSuppression(finding: SuppressionInput, allowedWords: string[]): { word: string; ruleVersion: string } | null
+function findSuppression(finding: SuppressionInput, allowedWords: readonly string[]): Suppression | null   // Suppression = { word; ruleVersion }。SuppressionInput は構造的型なので、位置確定済みかどうかは呼び出し元が MergedFinding を渡すことで保証する
 // 判定：引用内の登録語の出現 1 箇所（書記素境界）の外側が修正案と完全一致し、置換文字列が空でなく登録語を含まない。
 // 登録語の前後・両側への挿入だけ（吉野家→吉野家だ、リュシア→リュシアー）は抑制しない。登録語は加工しない（空文字は飛ばす）
 // UnlocatedCandidate は統合・抑制・再確認に進まず、そのまま保存して一覧に表示する（not-found / ambiguous）か
@@ -265,7 +265,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 詳細計画：`docs/plans/2026-09-07-pr4-llm-schema-merge.md`
 - 作る：`llm/schema.ts`（zod と JSON Schema）、`merge/candidate.ts`、`merge/merge.ts`、`merge/allowed-words.ts`。
   共通接頭辞・接尾辞の差分（`merge/diff.ts`）は作らない。出現ごとに「外側が一致し置換文字列が空でない」を直接判定すれば仕様 6.4 の条件をそのまま検査できる
-- 提供：`Perspective`、`InitialVerdict`、`FindingCategory`、`LlmFinding`、`LlmCheckOutput`、`RecheckVerdict`、`RecheckReasonKind`、`LlmRecheckOutput`、列挙値のタプル、`llmCheckOutputSchema`、`llmRecheckOutputSchema`、`checkOutputJsonSchema`、`recheckOutputJsonSchema`、`Candidate`、`LocatedCandidate`、`UnlocatedCandidate`、`partitionCandidates`、`MergedFinding`、`mergeKey`、`mergeCandidates`、`SuppressionInput`、`findSuppression`
+- 提供：`Perspective`、`InitialVerdict`、`FindingCategory`、`LlmFinding`、`LlmCheckOutput`、`RecheckVerdict`、`RecheckReasonKind`、`LlmRecheckOutput`、列挙値のタプル、`llmCheckOutputSchema`、`llmRecheckOutputSchema`、`checkOutputJsonSchema`、`recheckOutputJsonSchema`、`CandidateBase`、`Candidate`、`LocatedCandidate`、`UnlocatedCandidate`、`partitionCandidates`、`MergedFinding`、`mergeKey`、`mergeCandidates`、`Suppression`、`SuppressionInput`、`findSuppression`
 - 依存：shared に `zod` `4.5.4`（server と同じ版）
 - 規則：
   - `partitionCandidates` で位置確定済みと失敗を分ける。統合・抑制・再確認は `LocatedCandidate` だけを扱い、`UnlocatedCandidate` は保存・表示の経路へ渡す
@@ -358,6 +358,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - 開始は常に新しい実行 ID。再開は既存 ID。二重送信は要求の同一性（実行 ID、開始操作の識別子）で判定
   - 各生成要求の直前に `ensureLoaded`。未ロードなら当該単位を `pending` のまま実行を `stopped` にし、案内を記録
   - 観点の一部失敗は成功分で統合に進み、実行を `partially-failed`
+  - 失敗観点の再試行で同じ候補が出たときの照合は `mergeKey` で行うが、鍵は実行 ID を含まないので、保存済みの統合結果は実行 ID で名前空間を切って照合する（仕様 6.4「統合は同一の検査実行内に限定」を永続化層で破らない）
   - 停止は新規送信を止める。実行中の要求は abort し、生成終了を確認できるまで後続を送らない。上限を超えたら `recovery-waiting`
   - 自動再試行は各処理 1 回。完了済みは再開で繰り返さない。失敗単位の個別再試行
   - 分割範囲は開始時に計算して保存し、再開時は保存済みを使う

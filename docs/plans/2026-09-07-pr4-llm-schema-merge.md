@@ -1,7 +1,7 @@
 # PR4 詳細計画：LLM 出力スキーマ、重複統合、許容語抑制
 
 日付：2026-09-07  
-状態：実装中（計画は承認済み）  
+状態：実装済み（PR 作成中）  
 ブランチ：`feat/pr4-llm-schema-merge`  
 上位計画：`docs/plans/2026-09-07-mvp-roadmap.md` の PR4 節
 
@@ -101,7 +101,7 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
    原文と同じ）。
 9. **抑制判定は「出現の外側が一致し、置換文字列が空でなく登録語と異なる」で直接判定する。** 登録語の各出現
    `[s, e)` について、`suggestion` が `quote[0..s)` で始まり `quote[e..)` で終わり、その間の置換文字列 `r` が空でなく、
-   `r` が登録語で始まらず終わらない（決定 10）なら抑制する。これは仕様 6.4「引用内の登録語の出現 1 箇所を、空でない
+   `r` が登録語を含まない（決定 10）なら抑制する。これは仕様 6.4「引用内の登録語の出現 1 箇所を、空でない
    別の文字列に置き換えるだけで修正案を完全に再現できる」「登録語の外側は原文と完全一致」の字義そのもので、
    共通接頭辞・接尾辞の除去による差分範囲の計算（ロードマップの `diff.ts`）は不要になる。接頭辞と接尾辞が
    `suggestion` 上で重ならないこと（`s + (quote.length - e) < suggestion.length`）を先に確かめる。これを怠ると
@@ -115,10 +115,12 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
     「差分が登録語の出現範囲の外に及ぶ場合は抑制しない」「判別に迷う場合は候補を残す」に従い抑制しない。判定は
     「置換文字列が登録語を含む」で行う（登録語と同一、後ろへの挿入、前への挿入、両側への挿入をまとめて除く）。
     代替案と費用は「解釈で迷った点」。
-11. **抑制の前提。** `category === "notation"`、`suggestion !== null`。位置確定済みであることは `MergedFinding`
-    （`LocatedCandidate` からしか作れない）の型で保証する。他の 5 分類は文字列が同じでも抑制しない（仕様 6.4、
-    ロードマップの「リュシア／ルシア」の 3 分類テスト）。`findSuppression` の引数は
-    `Pick<MergedFinding, "category" | "quote" | "suggestion">`（`SuppressionInput`）にし、`MergedFinding` をそのまま渡せる。
+11. **抑制の前提。** `category === "notation"`、`suggestion !== null`。位置確定済みであることは、呼び出し元が
+    `mergeCandidates` の結果（`LocatedCandidate` からしか作れない `MergedFinding`）を渡すことで保証する。
+    `findSuppression` の引数は `Pick<MergedFinding, "category" | "quote" | "suggestion">`（`SuppressionInput`）で、
+    構造的型なので `UnlocatedCandidate.llm` を渡してもコンパイルは通る。型で防いでいるのは `mergeCandidates` の
+    入力側だけ（初稿は「型で保証」と書いていたが最終レビューで誤りと指摘され改めた）。他の 5 分類は文字列が同じでも
+    抑制しない（仕様 6.4、ロードマップの「リュシア／ルシア」の 3 分類テスト）。
 12. **抑制結果。** `{ word, ruleVersion: ALLOWED_WORD_RULE_VERSION }`。`ALLOWED_WORD_RULE_VERSION` は既存の `"1"` のまま
     （判定規則の初版）。
 13. **`partitionCandidates` は入力順を保つ。** `locate.status` で分けるだけ。`UnlocatedCandidate` は統合・抑制・再確認に
@@ -208,6 +210,11 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
 全行が参照実装で一致することを確認し、qwen 向けスペックの落とし穴（入れ子の判別子では絞り込まれない、
 `noUncheckedIndexedAccess` 下の配列要素、Biome の `useIterableCallbackReturn`、`refine` は `toJSONSchema` で
 黙って通る）を明文化した。両側への挿入（表 S29）も決定 10 の論理に合わせて抑制しないよう `includes` に改めた。
+実装は qwen が LM Studio 側の失敗（`bad allocation`、モデルのアンロード）で 2 回止まったため、ユーザーの指示で
+Claude のサブエージェント（実装 → タスク単位のレビュー → ブランチ全体のレビュー）に切り替えた。最終レビューで
+決定 11 の「型で保証」の誤り、列挙型のタプルからの導出漏れ、抑制判定の古いコメント、境界テスト（サロゲートペア・
+異体字セレクタ）の不足を直した。付録のスペックは委譲時の記録としてそのまま残す（決定 10 の `includes` 化以前の
+「始まりも終わりもしない」という文言は付録 2 の doc コメント案に残っているが、コードは改訂後の規則）。
 
 ## 付録 1：qwen へのスペック（1 回目。英語）
 
