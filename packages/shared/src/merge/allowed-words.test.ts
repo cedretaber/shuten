@@ -158,6 +158,22 @@ describe("findSuppression", () => {
     expect(sup("notation", "リュシア", "xリュシアx")).toBeNull();
   });
 
+  it("サロゲートペア全体を占める出現は境界と認める（SB1）", () => {
+    expect(sup("notation", "\u{20BB7}野家", "吉野家", ["\u{20BB7}"])).toBe("\u{20BB7}");
+  });
+
+  it("上位サロゲート単体は書記素クラスタの内部で終わり境界と認めない（SB2）", () => {
+    expect(sup("notation", "\u{20BB7}野家", "吉野家", ["\uD842"])).toBeNull();
+  });
+
+  it("異体字セレクタの手前で終わる出現は書記素クラスタの内部で境界と認めない（SB3）", () => {
+    expect(sup("notation", "葛\uFE00城", "葛城", ["葛"])).toBeNull();
+  });
+
+  it("異体字セレクタを含むクラスタ全体の置き換えなら抑制する（SB4）", () => {
+    expect(sup("notation", "葛\uFE00城", "葛城", ["葛\uFE00"])).toBe("葛\uFE00");
+  });
+
   it("結果には登録語と規則の版を含む（SV1）", () => {
     const result: Suppression | null = findSuppression(
       { category: "notation", quote: "リュシア", suggestion: "ルシア" },

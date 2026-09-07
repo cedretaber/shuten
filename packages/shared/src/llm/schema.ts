@@ -5,56 +5,6 @@ import type { QuoteRef } from "../locate/quote-ref.ts";
 /** 検査の観点。観点ごとに別の要求を送る（仕様書 6.2）。 */
 export type Perspective = "typo" | "naturalness";
 
-/** 初回検査の暫定判定（仕様書 5.4）。 */
-export type InitialVerdict = "likely-error" | "confirm-with-author";
-
-/** 指摘の分類。許容語による自動抑制は notation（誤字・表記の訂正）だけを対象にする（仕様書 6.4）。 */
-export type FindingCategory =
-  | "notation"
-  | "omission-or-duplication"
-  | "particle"
-  | "grammar"
-  | "context-misuse"
-  | "unclear";
-
-/** 初回検査で LLM が返す指摘 1 件。数値位置は持たない（仕様書 6.3）。 */
-export interface LlmFinding extends QuoteRef {
-  readonly category: FindingCategory;
-  /** 指摘の理由。 */
-  readonly reason: string;
-  /** 最小限の修正案。特定できないときは null（空文字は解析時に null に正規化する）。 */
-  readonly suggestion: string | null;
-  readonly verdict: InitialVerdict;
-}
-
-/** 初回検査の応答全体。該当なしは空配列。 */
-export interface LlmCheckOutput {
-  readonly findings: readonly LlmFinding[];
-}
-
-/** 再確認の判定（仕様書 6.5）。 */
-export type RecheckVerdict = "keep" | "withdraw" | "confirm-with-author";
-
-/**
- * 再確認の理由区分（仕様書 6.5 の確認内容に対応）。suggestion-inappropriate は「問題は実在するが修正案が不適切」で、
- * 修正案を有効な修正案として表示しない（修正案の改訂はしない）。
- */
-export type RecheckReasonKind =
-  | "error-confirmed"
-  | "intentional-expression"
-  | "suggestion-inappropriate"
-  | "unnecessary-polish"
-  | "insufficient-context";
-
-/** 再確認の応答。 */
-export interface LlmRecheckOutput {
-  readonly reason: string;
-  readonly reasonKind: RecheckReasonKind;
-  readonly verdict: RecheckVerdict;
-  /** 修正案を有効な修正案として表示してよいか。reasonKind が suggestion-inappropriate のときは必ず false。 */
-  readonly suggestionValid: boolean;
-}
-
 export const FINDING_CATEGORIES = [
   "notation",
   "omission-or-duplication",
@@ -72,6 +22,45 @@ export const RECHECK_REASON_KINDS = [
   "unnecessary-polish",
   "insufficient-context",
 ] as const;
+
+/** 初回検査の暫定判定（仕様書 5.4）。 */
+export type InitialVerdict = (typeof INITIAL_VERDICTS)[number];
+
+/** 指摘の分類。許容語による自動抑制は notation（誤字・表記の訂正）だけを対象にする（仕様書 6.4）。 */
+export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
+
+/** 初回検査で LLM が返す指摘 1 件。数値位置は持たない（仕様書 6.3）。 */
+export interface LlmFinding extends QuoteRef {
+  readonly category: FindingCategory;
+  /** 指摘の理由。 */
+  readonly reason: string;
+  /** 最小限の修正案。特定できないときは null（空文字は解析時に null に正規化する）。 */
+  readonly suggestion: string | null;
+  readonly verdict: InitialVerdict;
+}
+
+/** 初回検査の応答全体。該当なしは空配列。 */
+export interface LlmCheckOutput {
+  readonly findings: readonly LlmFinding[];
+}
+
+/** 再確認の判定（仕様書 6.5）。 */
+export type RecheckVerdict = (typeof RECHECK_VERDICTS)[number];
+
+/**
+ * 再確認の理由区分（仕様書 6.5 の確認内容に対応）。suggestion-inappropriate は「問題は実在するが修正案が不適切」で、
+ * 修正案を有効な修正案として表示しない（修正案の改訂はしない）。
+ */
+export type RecheckReasonKind = (typeof RECHECK_REASON_KINDS)[number];
+
+/** 再確認の応答。 */
+export interface LlmRecheckOutput {
+  readonly reason: string;
+  readonly reasonKind: RecheckReasonKind;
+  readonly verdict: RecheckVerdict;
+  /** 修正案を有効な修正案として表示してよいか。reasonKind が suggestion-inappropriate のときは必ず false。 */
+  readonly suggestionValid: boolean;
+}
 
 // 内部用の「ワイヤー」スキーマ。.transform / .refine / .preprocess を持たない。
 // モデルの応答そのものの形を表し、z.toJSONSchema への唯一の入力になる。

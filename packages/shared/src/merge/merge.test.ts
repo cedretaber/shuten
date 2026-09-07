@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FindingCategory, InitialVerdict, Perspective } from "../llm/schema.ts";
-import type { Candidate, LocatedCandidate, UnlocatedCandidate } from "./candidate.ts";
+import type { Candidate, LocatedCandidate } from "./candidate.ts";
 import type { MergedFinding } from "./merge.ts";
 import { mergeCandidates, mergeKey } from "./merge.ts";
 
@@ -30,24 +30,6 @@ function located(
     locate: { status: "located", range: { start, end } },
   };
 }
-function _unlocated(id: string, perspective: Perspective, quote: string): UnlocatedCandidate {
-  return {
-    id,
-    perspective,
-    llm: {
-      paragraphId: 0,
-      quote,
-      before: "",
-      after: "",
-      category: "unclear",
-      reason: "理由",
-      suggestion: null,
-      verdict: "confirm-with-author",
-    },
-    locate: { status: "failed", reason: "not-found", exactMatches: [], diagnostic: null },
-  };
-}
-
 function ids(): () => string {
   let n = 0;
   return () => `f${++n}`;

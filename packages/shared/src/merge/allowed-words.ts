@@ -14,8 +14,9 @@ export interface Suppression {
 /**
  * 許容語による自動抑制の判定（仕様書 6.4）。
  * 前提：category が notation で、suggestion が null でない。それ以外は null。
- * 条件：引用内の登録語の出現 1 箇所を、空でなく登録語で始まりも終わりもしない文字列に置き換えるだけで
- * 修正案を完全に再現できる。登録語の外側は原文と完全一致していなければならない。
+ * 条件：引用内の登録語の出現 1 箇所を、空でなく登録語を含まない文字列に置き換えるだけで修正案を完全に再現できる
+ * （登録語の前後・両側への挿入だけの修正案は抑制しない）。登録語の外側は原文と完全一致していなければならない。
+ * 前提：suggestion は llmCheckOutputSchema で正規化済み（空文字・空白のみは null）。空白のみの文字列を直接渡すと抑制される。
  */
 export function findSuppression(
   finding: SuppressionInput,
