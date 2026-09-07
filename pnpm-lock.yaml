@@ -49,7 +49,11 @@ importers:
         specifier: 0.31.10
         version: 0.31.10
 
-  packages/shared: {}
+  packages/shared:
+    dependencies:
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
 
   packages/web:
     dependencies:
