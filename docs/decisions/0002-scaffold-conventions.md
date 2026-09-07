@@ -80,6 +80,7 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 - PR3（引用照合・位置確定・診断候補）後：テスト 247 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-07）。
 - PR4（LLM 出力スキーマ、重複統合、許容語抑制）後：テスト 360 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-08）。shared に zod 4.5.4 を追加。
 - PR5（設定と LM Studio クライアント）後：テスト 461 件が WSL で通過（Windows は CI で確認）（2026-09-08）。実 LM Studio を使うテストは `packages/server/vitest.integration.config.ts` の別プロジェクトに分離し、`pnpm test:llm` で実行する（`pnpm check` には含めない）。実機（Windows 側の LM Studio に WSL から接続）で 5 件通過を確認（2026-09-08、決定記録 0003 の追試）。Windows での `pnpm test:llm` は未確認。
+- PR6（プロンプトと要求の組み立て）後：`pnpm check` はテストファイル 23 件・テスト 529 件が WSL で通過（Windows は CI で確認）（2026-09-08、レビュー対応後の値）。この作業環境からは LM Studio に到達できず、`pnpm test:llm` は未実行。`SHUTEN_LM_STUDIO_URL` を設定していない状態でテストファイル 2 件・テスト 11 件が skip されることだけ確認した。その後、実機（Windows 側の LM Studio に WSL から接続、モデル `qwen/qwen3.8-27b`）で `pnpm test:llm` がテストファイル 2 件・テスト 11 件すべて通過（skip なし）を確認（2026-09-08）。結果は `docs/experiments/2026-09-08-prompt-injection/` に記録した。
 
 ## 却下した案
 

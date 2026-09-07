@@ -1,9 +1,10 @@
 import { checkOutputJsonSchema, llmCheckOutputSchema } from "@shuten/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { parseLmStudioApiKey, parseLmStudioUrl } from "../config.ts";
+import { parseLmStudioUrl } from "../config.ts";
 import { createLmStudioClient } from "./client.ts";
 import type { LmStudioError } from "./errors.ts";
+import { readIntegrationEnv, selectGenerationModelId } from "./integration-support.ts";
 import type { ChatRequest, LmStudioClient, ModelInfo } from "./types.ts";
 import { LOADED_STATE } from "./types.ts";
 
@@ -13,14 +14,12 @@ import { LOADED_STATE } from "./types.ts";
  * 実行には `pnpm test:llm` を使う（別プロジェクト `vitest.integration.config.ts`）。
  */
 
-const rawUrl = process.env.SHUTEN_LM_STUDIO_URL?.trim();
+const env = readIntegrationEnv();
 
-describe.skipIf(!rawUrl)("LmStudioClient（実 LM Studio）", () => {
+describe.skipIf(!env.rawUrl)("LmStudioClient（実 LM Studio）", () => {
   // describe.skipIf はテストを skip 扱いにするだけで、describe 本体は skip 時にも実行される。
   // そのため rawUrl の解析はここで先に済ませず、未設定・空白のみのときに例外が飛ばないようにする。
-  const baseUrl = rawUrl ? parseLmStudioUrl(rawUrl) : "";
-  const apiKey = parseLmStudioApiKey(process.env.SHUTEN_LM_STUDIO_API_KEY);
-  const requestedModelId = process.env.SHUTEN_LM_STUDIO_MODEL?.trim();
+  const baseUrl = env.rawUrl ? parseLmStudioUrl(env.rawUrl) : "";
 
   let client: LmStudioClient;
   let models: ModelInfo[];
@@ -30,29 +29,10 @@ describe.skipIf(!rawUrl)("LmStudioClient（実 LM Studio）", () => {
    */
   let generationModelId: string | null;
 
-  /**
-   * ロード済みで、かつ種別（type）が生成（chat）に使える（llm・vlm）ことを判定する。
-   * 仕様書 7 節（v0.8）「モデル種別（llm、vlm、embeddings など）で生成に使えるモデルを絞る」に基づく
-   * 絞り込みであり、`ensureLoaded` が種別を弾かない（未知の種別名でロード済みモデルを拒否しないため）
-   * のとは別の判断として、明示指定・自動選択の両方に共通して適用する。
-   */
-  function isGenerationCapable(model: ModelInfo): boolean {
-    return model.state === LOADED_STATE && (model.type === "llm" || model.type === "vlm");
-  }
-
   beforeAll(async () => {
-    client = createLmStudioClient({ baseUrl, apiKey });
+    client = createLmStudioClient({ baseUrl, apiKey: env.apiKey });
     models = await client.listModels();
-    if (requestedModelId) {
-      // 指定されたモデルが生成に使えなければ（未ロード、または embeddings など生成に使えない種別）、
-      // 自動選択と同じく null（＝該当テストは ctx.skip()）に倒す（仕様書 7 節、invariants.md）。
-      const requested = models.find((model) => model.id === requestedModelId);
-      generationModelId =
-        requested !== undefined && isGenerationCapable(requested) ? requested.id : null;
-    } else {
-      const found = models.find(isGenerationCapable);
-      generationModelId = found?.id ?? null;
-    }
+    generationModelId = selectGenerationModelId(models, env.requestedModelId);
   });
 
   it("モデル一覧に type・state が含まれる（決定 4 の未記録項目）", () => {

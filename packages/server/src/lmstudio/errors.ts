@@ -12,12 +12,13 @@ export class LmStudioError extends Error {
   readonly kind: FailureReason;
   /** HTTP 応答があったときだけ。 */
   readonly status: number | null;
-  /** `truncated` のとき非 null。 */
+  /** `truncated` や、応答から usage を取れた後の `malformed`（解析失敗）のように、取れたときだけ非 null。 */
   readonly usage: Usage | null;
   readonly finishReason: string | null;
   /**
-   * 応答本文。ただし `ensureLoaded` の `model-not-loaded` では該当 `ModelInfo`（見つからなければ
-   * null）が入る。要求本文とヘッダーは入れない（API キーを含まないようにするため）。
+   * 応答本文。`malformed`（解析失敗）でも `ChatResult.raw` などが入る。ただし `ensureLoaded` の
+   * `model-not-loaded` では該当 `ModelInfo`（見つからなければ null）が入る。
+   * 要求本文とヘッダーは入れない（API キーを含まないようにするため）。
    */
   readonly raw: unknown;
 
