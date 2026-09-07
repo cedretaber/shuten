@@ -10,7 +10,7 @@
 - Windows で未確認の変更は、その旨を PR やコミットメッセージに書く。
 - CI（`.github/workflows/ci.yml`）は Ubuntu と Windows で `pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build` を実行する。
   PR は CI が通ってからマージする。Node と pnpm の版は `.node-version` と `packageManager` から読むので、更新時にワークフローの変更は不要。
-- GitHub の Ruleset で、`main` へのマージに `check (ubuntu-latest)` と `check (windows-latest)` の成功を必須にしている（#4）。
+- GitHub の Ruleset で、`main` へのマージに `check (ubuntu-latest)` と `check (windows-latest)` の成功を必須にする（設定手順と状態は #4）。
   ワークフローの `GITHUB_TOKEN` 権限は `contents: read` に固定する。書き込みが必要なジョブを足すときはジョブ単位で権限を広げる。
 
 ## パッケージ構成
