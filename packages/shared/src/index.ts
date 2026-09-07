@@ -8,6 +8,26 @@ export {
   roundingDelta,
   validateChunkSettings,
 } from "./chunk/settings.ts";
+export type {
+  FindingCategory,
+  InitialVerdict,
+  LlmCheckOutput,
+  LlmFinding,
+  LlmRecheckOutput,
+  Perspective,
+  RecheckReasonKind,
+  RecheckVerdict,
+} from "./llm/schema.ts";
+export {
+  checkOutputJsonSchema,
+  FINDING_CATEGORIES,
+  INITIAL_VERDICTS,
+  llmCheckOutputSchema,
+  llmRecheckOutputSchema,
+  RECHECK_REASON_KINDS,
+  RECHECK_VERDICTS,
+  recheckOutputJsonSchema,
+} from "./llm/schema.ts";
 export type { Diagnostic, DiagnosticCandidate } from "./locate/diagnostic.ts";
 export { DIAGNOSTIC_CANDIDATE_LIMIT } from "./locate/diagnostic.ts";
 export type { LocateFailureReason, LocateResult } from "./locate/locate.ts";
@@ -15,6 +35,17 @@ export { locateQuote } from "./locate/locate.ts";
 export type { DiagnosticTransform } from "./locate/position-map.ts";
 export { applyTransform } from "./locate/position-map.ts";
 export type { QuoteRef } from "./locate/quote-ref.ts";
+export type { Suppression, SuppressionInput } from "./merge/allowed-words.ts";
+export { findSuppression } from "./merge/allowed-words.ts";
+export type {
+  Candidate,
+  CandidateBase,
+  LocatedCandidate,
+  UnlocatedCandidate,
+} from "./merge/candidate.ts";
+export { partitionCandidates } from "./merge/candidate.ts";
+export type { MergedFinding } from "./merge/merge.ts";
+export { mergeCandidates, mergeKey } from "./merge/merge.ts";
 export type { GraphemeSegment } from "./text/grapheme.ts";
 export { countGraphemes, segmentGraphemes } from "./text/grapheme.ts";
 export type { GraphemeIndex } from "./text/grapheme-index.ts";
