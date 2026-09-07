@@ -26,7 +26,7 @@ const RECHECK_OUTPUT_INSTRUCTIONS = `判断は次の項目で返す。
 
 次の組み合わせを返してはならない。
 - reasonKind が suggestion-inappropriate のとき、suggestionValid は false でなければならない。
-- reasonKind が suggestion-inappropriate または insufficient-context のとき、verdict はconfirm-with-author でなければならない。
+- reasonKind が suggestion-inappropriate または insufficient-context のとき、verdict は confirm-with-author でなければならない。
 
 文脈が足りず判断できない場合は、reasonKind を insufficient-context、verdict を confirm-with-author にする。`;
 
