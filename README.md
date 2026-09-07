@@ -21,7 +21,7 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 ## 現在の状態
 
 scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.7）。
-実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR4（LLM 出力スキーマ、重複統合、許容語抑制）まで完了。次は PR5（設定と LM Studio クライアント）。
+実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR5（設定と LM Studio クライアント）まで完了。次は PR6（プロンプトと要求の組み立て）。
 
 ## 技術スタック
 
@@ -66,7 +66,13 @@ pnpm start          # http://127.0.0.1:3000 で起動し、ビルド済みの we
 開発時は `pnpm dev` でサーバー（`node --watch`）と Vite の開発サーバーを同時に起動する。
 Vite は `/api` をサーバーへプロキシする。
 
-環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）。
+環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）、
+`SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`。LM Studio のルート URL。`/v1` を付けると起動時にエラー）、
+`SHUTEN_LM_STUDIO_API_KEY`（省略可）。
+
+実 LM Studio を使う統合テストは通常のテストから分離してある。`SHUTEN_LM_STUDIO_URL` を設定して `pnpm test:llm`
+を実行する（未設定なら全件 skip）。モデルは `SHUTEN_LM_STUDIO_MODEL` で指定でき、未指定ならロード済みの
+`llm` / `vlm` の最初のものを使う。
 
 Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/windows-verification.md)。
 
