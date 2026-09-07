@@ -23,7 +23,8 @@ shared 側。
 ## 全体の制約（`docs/reference/invariants.md` から）
 
 - 失敗・形式不正を正常な空配列に置き換えない。スキーマ検証の失敗は失敗として返す（空配列にしない）。
-- 引用は完全一致で位置を確定する。スキーマは空の引用を拒否し、`LlmFinding` に数値位置を持たせない。
+- 文字位置はアプリが原文から確定し、LLM の数値位置を信用しない。`LlmFinding` に数値位置を持たせない。
+  空の引用の拒否は不変条件ではなく PR3 決定 4 と仕様 6.2「正確な引用」に基づく（「解釈で迷った点」）。
 - 重複統合は同一の検査実行内に限る。本 PR の `mergeCandidates` は 1 回の呼び出しが 1 実行分であることを
   呼び出し元が保証する前提で、実行 ID を見ない。
 - 統合・抑制・再確認は位置確定済み候補だけを扱う。位置特定失敗の候補は型で受け付けない。
@@ -39,7 +40,7 @@ shared 側。
 | ファイル | 責務 | 公開する名前 |
 | --- | --- | --- |
 | `packages/shared/package.json` | zod への依存（`4.5.4`、server と同じ版） | |
-| `packages/shared/src/llm/schema.ts` | LLM 応答の型、zod スキーマ、JSON Schema | `Perspective`、`InitialVerdict`、`FindingCategory`、`LlmFinding`、`LlmCheckOutput`、`RecheckVerdict`、`RecheckReasonKind`、`LlmRecheckOutput`、`llmCheckOutputSchema`、`llmRecheckOutputSchema`、`checkOutputJsonSchema`、`recheckOutputJsonSchema` |
+| `packages/shared/src/llm/schema.ts` | LLM 応答の型、zod スキーマ、JSON Schema | `Perspective`、`InitialVerdict`、`FindingCategory`、`LlmFinding`、`LlmCheckOutput`、`RecheckVerdict`、`RecheckReasonKind`、`LlmRecheckOutput`、`FINDING_CATEGORIES`、`INITIAL_VERDICTS`、`RECHECK_VERDICTS`、`RECHECK_REASON_KINDS`、`llmCheckOutputSchema`、`llmRecheckOutputSchema`、`checkOutputJsonSchema`、`recheckOutputJsonSchema` |
 | `packages/shared/src/merge/candidate.ts` | 候補の型と位置確定済み・失敗の分割 | `CandidateBase`、`LocatedCandidate`、`UnlocatedCandidate`、`Candidate`、`partitionCandidates` |
 | `packages/shared/src/merge/merge.ts` | 重複統合 | `MergedFinding`、`mergeKey`、`mergeCandidates` |
 | `packages/shared/src/merge/allowed-words.ts` | 許容語による抑制判定 | `Suppression`、`SuppressionInput`、`findSuppression` |
@@ -68,12 +69,17 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
    除き、`integer` の `maximum`（zod が安全整数の上限として付ける `9007199254740991`）を `override` で除く。
    `suggestion` は `{ type: ["string", "null"] }`。`response_format` の `{ type: "json_schema", json_schema: { name, strict: true, schema } }`
    への包み込みは PR6 の責務で、本 PR は `schema` 本体だけを返す。再確認用も同じ形で `recheckOutputJsonSchema()` を提供する。
-4. **`suggestion` の空文字は `null` に正規化する。** 仕様 5.4「修正を特定できない場合は未提示を許可」に対し、モデルが
-   `null` でなく `""` を返すことがある。`""` だけを `null` にし、空白のみの文字列はそのまま残す。JSON Schema 側は
-   `string | null` のまま（`minLength` を付けない）。理由と代替案は「解釈で迷った点」。
-5. **再確認の整合性検査は 1 つだけ。** `reasonKind === "suggestion-inappropriate"` かつ `suggestionValid === true` を
-   拒否する（ロードマップの規則。仕様 6.5「修正案が不適切と判断した場合は…有効な修正案としては表示しない」）。
-   `verdict` と `reasonKind` の対応（例：`error-confirmed` なら `keep`）は検査しない。理由は「解釈で迷った点」。
+4. **`suggestion` の空文字と空白のみの文字列は `null` に正規化する。** 仕様 5.4「修正を特定できない場合は未提示を許可」に
+   対し、モデルが `null` でなく `""` や `" "` を返すことがある。`trim()` が空になる文字列（全角空白 U+3000 を含む）を
+   `null` にし、それ以外は加工しない。空白のみを残すと、引用「リュシア」・修正案 `" "` が決定 9 の判定を通って
+   許容語で隠れてしまう（自己レビューで発見）。JSON Schema 側は `string | null` のまま（`minLength` を付けない）。
+   理由と代替案は「解釈で迷った点」。
+5. **再確認の整合性検査は仕様 6.5 が明記する 3 つだけ。** (a) `reasonKind === "suggestion-inappropriate"` かつ
+   `suggestionValid === true` を拒否（ロードマップの規則。仕様 6.5「修正案が不適切と判断した場合は…有効な修正案としては
+   表示しない」）。(b) `suggestion-inappropriate` で `verdict !== "confirm-with-author"` を拒否（同「作者への確認事項とし」）。
+   (c) `insufficient-context` で `verdict !== "confirm-with-author"` を拒否（同「文脈が足りず判断できない場合は…作者への
+   確認事項にする」）。`error-confirmed` と `keep`、`intentional-expression` / `unnecessary-polish` と `withdraw` の対応は
+   仕様が定めていないので検査しない。理由は「解釈で迷った点」。
 6. **未知のキーは捨てて受理する。** zod の `z.object` の既定（strip）。`strict: true` の構造化出力では未知のキーは
    来ないが、構造化出力に対応しないモデルの経路（仕様 7）では余分なキーだけで形式不正にしない。必須キーの欠落、
    型違い、未知の列挙値、空の引用は拒否する。
@@ -85,8 +91,9 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
    それ以外は `start`、`end`、`quote`、`suggestion` を連結した文字列。範囲が重なるだけの候補、修正案が異なる候補、
    修正案の無い候補は統合しない（仕様 6.4「修正案がないものや別の問題を示すものは、範囲の重なりだけで統合しない」）。
    同じ観点の重複（モデルが同じ指摘を 2 回返した）も鍵が同じなら統合する。`category` が一致しなければ `unclear`
-   （ロードマップ）。`verdict` は全候補が `likely-error` のときだけ `likely-error`、それ以外は `confirm-with-author`
-   （「解釈で迷った点」）。`sources` は入力順。出力は `range.start`、`range.end`、最初の候補の入力順で並べ、
+   （ロードマップ）。分類が `unclear` になった統合結果は、単独なら抑制対象だった `notation` 候補を含んでいても
+   抑制しない（仕様 6.4「不明瞭な分類…は自動抑制しない」。表 M2 と S3 の組。意図した結果）。`verdict` は全候補が
+   `likely-error` のときだけ `likely-error`、それ以外は `confirm-with-author`（「解釈で迷った点」）。`sources` は入力順。出力は `range.start`、`range.end`、最初の候補の入力順で並べ、
    ID はその順に `createId()` を呼んで付ける。`quote` は最初の候補の `llm.quote`（完全一致で確定しているので範囲の
    原文と同じ）。
 9. **抑制判定は「出現の外側が一致し、置換文字列が空でなく登録語と異なる」で直接判定する。** 登録語の各出現
@@ -101,9 +108,10 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
    次に出現位置の順で最初のものを返す。
 10. **登録語の前後への挿入だけの修正案は抑制しない。** 引用「吉野家」、登録語「野家」、修正案「吉野家だ」は、
     「野家」を「野家だ」に置き換えたとも、「野家」の後ろに「だ」を挿入したとも読める。後者なら差分は登録語の出現
-    範囲の外（境界上）で、仕様「差分が登録語の出現範囲の外に及ぶ場合は抑制しない」「判別に迷う場合は候補を残す」に
-    従い抑制しない。判定は「置換文字列が登録語で始まる、または登録語で終わる」で行う（登録語と同一の場合も含む）。
-    代替案は「解釈で迷った点」。
+    範囲の外（境界上）で、仕様 6.4「変更が登録語の表記を別表記に置き換えることだけに限定される場合に抑制する」
+    「差分が登録語の出現範囲の外に及ぶ場合は抑制しない」「判別に迷う場合は候補を残す」に従い抑制しない。判定は
+    「置換文字列が登録語を含む」で行う（登録語と同一、後ろへの挿入、前への挿入、両側への挿入をまとめて除く）。
+    代替案と費用は「解釈で迷った点」。
 11. **抑制の前提。** `category === "notation"`、`suggestion !== null`。位置確定済みであることは `MergedFinding`
     （`LocatedCandidate` からしか作れない）の型で保証する。他の 5 分類は文字列が同じでも抑制しない（仕様 6.4、
     ロードマップの「リュシア／ルシア」の 3 分類テスト）。`findSuppression` の引数は
@@ -121,22 +129,34 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
   `likely-error` のときだけ `likely-error`」（保守的。観点の一方が確認事項としたなら確認事項）。代替案は
   「1 件でも `likely-error` なら `likely-error`」（2 観点が同じ修正で一致した事実を重く見る）。どちらでも再確認が
   最終判定を出すので影響は再確認なしの比較実験に限られる。ユーザーの確認を求める点。
-- **`suggestion` の `""` → `null`（決定 4）。** 代替案は (a) `""` をそのまま残す（表示側と抑制判定が空文字を扱う）、
-  (b) `minLength: 1` で形式不正として拒否し再要求する（1 件の空文字で応答全体が失敗する）。本計画は表示・抑制・統合が
-  「修正案なし」を `null` の 1 通りで扱えるように正規化する。空白のみの文字列は判断せず残す。
-- **`verdict` と `reasonKind` の対応を検査しない（決定 5）。** `keep` に `suggestion-inappropriate`、`withdraw` に
-  `error-confirmed` のような組は矛盾に見えるが、仕様 6.5 は対応表を定めておらず、プロンプト（13 節、未決）で
-  どう説明するかに依存する。拒否すると使える応答を失敗にしうるので、初版は表示側が両方を出す前提で検査しない。
-  実測で矛盾が目立てば PR6 以降でスキーマに足す。
+- **`suggestion` の `""` と空白のみ → `null`（決定 4）。** 代替案は (a) そのまま残す（表示側と抑制判定が空文字・空白を
+  扱う）、(b) `minLength: 1` で形式不正として拒否し再要求する（1 件の空文字で応答全体が失敗する）。本計画は表示・
+  抑制・統合が「修正案なし」を `null` の 1 通りで扱えるように正規化する。
+- **`verdict` と `reasonKind` の対応（決定 5）。** 仕様 6.5 は `suggestion-inappropriate` と `insufficient-context` を
+  「作者への確認事項」にすると明記しているので、この 2 組だけ拒否する（初稿は検査しない方針だったが自己レビューで
+  指摘され改めた）。`keep` に `intentional-expression`、`withdraw` に `error-confirmed` のような組は矛盾に見えるが
+  仕様は対応を定めておらず、プロンプト（13 節、未決）の説明に依存する。拒否すると使える応答を失敗にしうるので、
+  初版は表示側が両方を出す前提で検査しない。実測で矛盾が目立てば PR6 以降でスキーマに足す。
 - **前後への挿入だけの修正案（決定 10）。** 代替案は字義どおり「置換文字列が空でなく登録語と異なる」だけで判定し、
   「吉野家」→「吉野家だ」を抑制すること。仕様の「引用内の登録語の出現 1 箇所を…置き換えるだけで再現できる」は
   満たすが、「差分が登録語の出現範囲の外に及ぶ」とも読め、脱字の補いを許容語で隠す危険がある（分類が `notation`
   でない限り門前で弾かれるので実害は小さい）。「判別に迷う場合は候補を残す」に従い抑制しない側に倒した。
+  費用：登録名への長音の追加（「リュシア」→「リュシアー」、表 S28）は本計画では抑制されず、字義読みなら抑制される。
+  カタカナの固有名詞で起こりやすいので、ユーザーの確認を求める点。また本決定が防ぐのは純粋な挿入だけで、
+  「リュシア」→「ルシアさん」（表 S27）は「さん」が登録語の外に及んでいるように見えても、外側（空）が一致し
+  置換文字列「ルシアさん」が登録語を含まないので、本計画でも字義読みでも抑制される。
+- **空の引用の拒否。** `quote` の `minLength: 1` は、構造化出力では文法で空引用を防ぎ、非対応モデルの経路では空引用を
+  含む応答全体を形式不正にする（他の指摘も捨てて再要求）。代替案は `minLength` を外して `locateQuote` の `not-found`
+  （空引用は診断なし）に任せ、位置特定失敗として一覧に出すこと。PR3 決定 4 は本 PR で拒否する前提だったので
+  そのまま拒否するが、1 件の空引用で応答全体を失うのは厳しいとも言える。ユーザーの確認を求める点。
+  `paragraphId` の負数・小数も同じ扱い（応答全体を拒否）。段落 ID はヒントに過ぎないが、構造化出力では文法で
+  起こらず、非対応モデルでも整数以外を返すのは形式の崩れなので拒否側に置く。
 - **`diff.ts` を作らない（決定 9）。** 仕様 6.4 の「差分範囲（共通接頭辞・接尾辞の除去など）を内部で計算する」は
   判定の手段の例示で、判定条件そのものは「出現 1 箇所の置換で再現できる」。共通接頭辞・接尾辞による差分は
   一意でなく（「ああ」→「あい」の差分は 2 通り）、出現ごとの直接判定の方が仕様の条件を漏れなく検査できる。
 - **登録語の前処理。** `findSuppression` は登録語を加工しない（trim も重複除去もしない）。改行区切りの入力を
-  語の配列にするのは設定を受け取る側（server/web）の責務。空文字だけは飛ばす。
+  語の配列にする（CRLF を含む改行で分割し、各語を trim し、空行を除く）のは設定を受け取る server の責務で、
+  ロードマップの該当 PR に明記する。空文字だけは飛ばす。
 - **統合の再実行。** 仕様 6.4「後から失敗観点を再試行して同じ候補が出た場合は参照を追加し、再確認済みの同じ候補を
   重複実行しない」は、保存済みの統合結果に対する処理で PR9 の責務。本 PR は同じ鍵 `mergeKey` を公開し、server が
   同じ同一性で照合できるようにする。
@@ -176,6 +196,13 @@ ID 生成関数の引数を足す。ロードマップの共通語彙と PR4 節
 5. **ドキュメント**（Claude）：ロードマップの共通語彙（`llm/schema.ts`、`merge/*` の型と関数）と PR4 節、README の
    状態、`docs/decisions/0002` の検証状況。
 6. **PR 作成**：解釈で迷った点、Windows の確認状況（CI で確認、ローカルは未確認）を書く。
+
+経過：計画を仕様整合と技術面の 2 観点でエージェントに自己レビューした。仕様整合では、仕様 6.5 が明記する
+`reasonKind` と判定の対応 2 組を拒否に加え（決定 5）、空白のみの修正案が抑制判定を通る穴を正規化で塞ぎ（決定 4）、
+決定 10 の費用（長音の追加）と空引用の拒否をユーザーの判断事項に挙げた。技術面では、zod 4.5.4 の API と表 S・M・T・R・J の
+全行が参照実装で一致することを確認し、qwen 向けスペックの落とし穴（入れ子の判別子では絞り込まれない、
+`noUncheckedIndexedAccess` 下の配列要素、Biome の `useIterableCallbackReturn`、`refine` は `toJSONSchema` で
+黙って通る）を明文化した。両側への挿入（表 S29）も決定 10 の論理に合わせて抑制しないよう `includes` に改めた。
 
 ## 付録 1：qwen へのスペック（1 回目。英語）
 
@@ -292,21 +319,37 @@ Layer 2, exported parsing schemas:
 export const llmCheckOutputSchema: z.ZodType<LlmCheckOutput> = checkOutputWire.transform((output) => ({
   findings: output.findings.map((finding) => ({
     ...finding,
-    suggestion: finding.suggestion === "" ? null : finding.suggestion,
+    // 空文字と空白のみ（全角空白を含む）は「修正案なし」として null に揃える
+    suggestion: finding.suggestion !== null && finding.suggestion.trim() === "" ? null : finding.suggestion,
   })),
 }));
 
-/** 再確認の応答を検証する。suggestion-inappropriate のときに suggestionValid が true なら矛盾として拒否する。 */
-export const llmRecheckOutputSchema: z.ZodType<LlmRecheckOutput> = recheckOutputWire.refine(
-  (output) => !(output.reasonKind === "suggestion-inappropriate" && output.suggestionValid),
-  { message: "reasonKind が suggestion-inappropriate のとき suggestionValid は false でなければならない" },
-);
+/**
+ * 再確認の応答を検証する（仕様書 6.5）。矛盾として拒否する組：
+ * suggestion-inappropriate で suggestionValid が true、suggestion-inappropriate または insufficient-context で
+ * verdict が confirm-with-author 以外。
+ */
+export const llmRecheckOutputSchema: z.ZodType<LlmRecheckOutput> = recheckOutputWire
+  .refine((output) => !(output.reasonKind === "suggestion-inappropriate" && output.suggestionValid), {
+    message: "reasonKind が suggestion-inappropriate のとき suggestionValid は false でなければならない",
+  })
+  .refine(
+    (output) =>
+      !(
+        (output.reasonKind === "suggestion-inappropriate" || output.reasonKind === "insufficient-context") &&
+        output.verdict !== "confirm-with-author"
+      ),
+    { message: "suggestion-inappropriate と insufficient-context の verdict は confirm-with-author でなければならない" },
+  );
 ```
 
 Rules:
-- Only the exact empty string `""` becomes `null`. A whitespace-only string such as `" "` stays as is. MUST NOT trim.
+- `suggestion` becomes `null` when it is `""` or when `trim()` leaves nothing (this includes the full-width space U+3000,
+  which `String.prototype.trim` removes). Any string with a non-whitespace character is kept EXACTLY as is (no trimming
+  of the stored value). `null` stays `null`.
 - Unknown keys are stripped (default `z.object` behaviour). MUST NOT use `z.strictObject` and MUST NOT call `.strict()`.
-- MUST NOT add any other refinement (no verdict/reasonKind coupling). MUST NOT add default values for missing keys.
+- MUST NOT add any other refinement beyond the two shown (no other verdict/reasonKind coupling). MUST NOT add default
+  values for missing keys.
 - A validation failure MUST be a failure (`safeParse(...).success === false`); MUST NOT fall back to an empty findings array.
 
 ### JSON Schema for response_format (exported)
@@ -336,9 +379,10 @@ function toResponseSchema(schema: z.ZodType): Record<string, unknown> {
 }
 ```
 
-Pass the WIRE schemas to it (`toResponseSchema(checkOutputWire)`), never the exported transform/refine schemas
-(`z.toJSONSchema` throws on transforms). Return type: if `z.toJSONSchema`'s return type is not assignable to
-`Record<string, unknown>`, convert with `{ ...json }` after the deletes (object spread), not with a cast to `any`.
+Pass the WIRE schemas to it (`toResponseSchema(checkOutputWire)`), never the exported transform/refine schemas.
+The return value of `z.toJSONSchema` is assignable to `Record<string, unknown>` as is; return it directly after the
+`delete`. Do NOT cast. (It carries a non-enumerable `"~standard"` property; ignore it. It does not appear in
+`Object.keys`, `JSON.stringify`, or `toEqual`.)
 Do NOT pass `io: "input"` (it drops `additionalProperties: false`). Do NOT pass `target`. Do NOT hand-write the JSON Schema;
 it must be generated from the wire schema so the two cannot drift.
 
@@ -361,6 +405,20 @@ function obj(value: unknown, ...path: string[]): JsonObject {
 }
 ```
 
+Parsing helper (put it in the test file; `safeParse`'s `data` is only narrowed inside `if (result.success)`):
+
+```ts
+function parseOk<T>(schema: z.ZodType<T>, input: unknown): T {
+  const result = schema.safeParse(input);
+  if (!result.success) throw new Error(result.error.message);
+  return result.data;
+}
+```
+
+`array[i]` has type `T | undefined` (`noUncheckedIndexedAccess`). For "success" rows, assert on the WHOLE `findings`
+array with `toEqual` (`expect(parseOk(llmCheckOutputSchema, input).findings).toEqual([...])`), never on `findings[0].xxx`.
+For "failure" rows, assert `expect(llmCheckOutputSchema.safeParse(input).success).toBe(false)`.
+
 A valid finding `V` used throughout:
 
 ```ts
@@ -371,8 +429,8 @@ const V = { paragraphId: 0, quote: "吉野家", before: "", after: "へ", catego
 
 | row | input | expected |
 | --- | --- | --- |
-| T1 | `{ findings: [V] }` | success; `data` toEqual `{ findings: [V] }` |
-| T2 | `{ findings: [] }` | success; `data.findings` is `[]` |
+| T1 | `{ findings: [V] }` | success; `parseOk(...)` toEqual `{ findings: [V] }` |
+| T2 | `{ findings: [] }` | success; `parseOk(...).findings` toEqual `[]` |
 | T3 | `{ findings: [{ ...V, category: "typo" }] }` | failure |
 | T4 | `{ findings: [{ ...V, quote: "" }] }` | failure |
 | T5a | `{ findings: [{ ...V, paragraphId: -1 }] }` | failure |
@@ -380,10 +438,12 @@ const V = { paragraphId: 0, quote: "吉野家", before: "", after: "へ", catego
 | T5c | `{ findings: [{ ...V, paragraphId: "1" }] }` | failure |
 | T6a | `V` without the `before` key | failure |
 | T6b | `V` without the `suggestion` key | failure (null must be explicit) |
-| T7a | `{ ...V, suggestion: "" }` | success; parsed `suggestion` is `null` |
-| T7b | `{ ...V, suggestion: null }` | success; parsed `suggestion` is `null` |
-| T7c | `{ ...V, suggestion: " " }` | success; parsed `suggestion` is `" "` |
-| T8 | `{ ...V, confidence: 0.9 }` | success; the parsed finding has no `confidence` key (`"confidence" in finding` is false) and toEqual `V` |
+| T7a | `{ ...V, suggestion: "" }` | success; `.findings` toEqual `[{ ...V, suggestion: null }]` |
+| T7b | `{ ...V, suggestion: null }` | success; `.findings` toEqual `[{ ...V, suggestion: null }]` |
+| T7c | `{ ...V, suggestion: " " }` | success; `.findings` toEqual `[{ ...V, suggestion: null }]` |
+| T7d | `{ ...V, suggestion: "\u3000" }` (full-width space, written as the escape) | success; `.findings` toEqual `[{ ...V, suggestion: null }]` |
+| T7e | `{ ...V, suggestion: " 吉野屋 " }` | success; `.findings` toEqual `[{ ...V, suggestion: " 吉野屋 " }]` (not trimmed) |
+| T8 | `{ ...V, confidence: 0.9 }` | success; `.findings` toEqual `[V]` and `Object.keys(findings[0] ?? {})` not.toContain `"confidence"` (`toEqual` ignores keys whose value is `undefined`, so check the key list) |
 | T9a | the string `'{"findings":[]}'` (not parsed) | failure |
 | T9b | `null` | failure |
 | T9c | `{ findings: "x" }` | failure |
@@ -398,13 +458,17 @@ For rows with a single finding object, wrap it as `{ findings: [row] }`.
 
 | row | input | expected |
 | --- | --- | --- |
-| R1 | `R` | success; `data` toEqual `R` |
+| R1 | `R` | success; `parseOk(...)` toEqual `R` |
 | R2 | `{ ...R, reasonKind: "suggestion-inappropriate", verdict: "confirm-with-author", suggestionValid: true }` | failure |
 | R3 | `{ ...R, reasonKind: "suggestion-inappropriate", verdict: "confirm-with-author", suggestionValid: false }` | success |
 | R4 | `{ ...R, reasonKind: "other" }` | failure |
 | R5 | `R` without `suggestionValid` | failure |
-| R6 | `{ ...R, note: "x" }` | success; `"note" in data` is false |
+| R6 | `{ ...R, note: "x" }` | success; `Object.keys(parseOk(...))` not.toContain `"note"` |
 | R7 | `{ ...R, verdict: "keep", reasonKind: "error-confirmed", suggestionValid: true }` | success |
+| R8 | `{ ...R, reasonKind: "suggestion-inappropriate", verdict: "keep", suggestionValid: false }` | failure (verdict must be confirm-with-author) |
+| R9 | `{ ...R, reasonKind: "insufficient-context", verdict: "withdraw", suggestionValid: true }` | failure |
+| R10 | `{ ...R, reasonKind: "insufficient-context", verdict: "confirm-with-author", suggestionValid: true }` | success |
+| R11 | `{ ...R, reasonKind: "intentional-expression", verdict: "keep", suggestionValid: true }` | success (no coupling is checked for the other three kinds) |
 
 ### Table J: JSON Schema
 
@@ -435,7 +499,9 @@ J4: `llmCheckOutputSchema.safeParse(JSON.parse(JSON.stringify({ findings: [V] })
 
 ## Hazards to avoid
 
-- Do NOT generate the JSON Schema from `llmCheckOutputSchema` / `llmRecheckOutputSchema` (they carry transform/refine).
+- Do NOT generate the JSON Schema from `llmCheckOutputSchema` / `llmRecheckOutputSchema`. `.transform` makes
+  `z.toJSONSchema` throw; `.refine` does NOT throw and silently emits the wire shape, so passing it would hide the
+  mistake. Always pass `checkOutputWire` / `recheckOutputWire`.
   Generate from the wire schemas only.
 - Do NOT use `io: "input"`. Do NOT hand-write `additionalProperties: false`; zod emits it for `z.object` in output mode.
 - Do NOT make `""` → `null` a `preprocess` on the wire schema; the wire schema must stay transform-free.
@@ -524,13 +590,36 @@ export function partitionCandidates(candidates: readonly Candidate[]): {
 }
 ```
 
-Implement with a single loop and `candidate.locate.status === "located"` as the discriminant (TypeScript narrows the
-union through the nested `locate.status`; if it does not narrow automatically, write two small type guard functions
-`isLocated(c: Candidate): c is LocatedCandidate`). Do NOT use `Array.prototype.filter` with a cast.
+Implement with one type guard and a single loop. TypeScript does NOT narrow `Candidate` through the nested
+`candidate.locate.status`, so write exactly this:
+
+```ts
+function isLocated(candidate: Candidate): candidate is LocatedCandidate {
+  return candidate.locate.status === "located";
+}
+// in partitionCandidates:
+for (const candidate of candidates) {
+  if (isLocated(candidate)) {
+    located.push(candidate);
+  } else {
+    unlocated.push(candidate);
+  }
+}
+```
+
+The `else` branch narrows to `UnlocatedCandidate` by itself. MUST NOT use `as LocatedCandidate` / `as UnlocatedCandidate`
+anywhere. MUST NOT use `Array.prototype.filter` with a cast.
 
 ### Table P (candidate.test.ts)
 
-Build candidates with helpers (put them in the test file):
+Build candidates with helpers (put them in the test file). Imports for the test file:
+
+```ts
+import { describe, expect, it } from "vitest";
+import type { FindingCategory, InitialVerdict, Perspective } from "../llm/schema.ts";
+import type { Candidate, LocatedCandidate, UnlocatedCandidate } from "./candidate.ts";
+import { partitionCandidates } from "./candidate.ts";
+```
 
 ```ts
 function located(id: string, perspective: Perspective, start: number, end: number, quote: string, suggestion: string | null, category: FindingCategory, verdict: InitialVerdict): LocatedCandidate {
@@ -593,11 +682,12 @@ export function mergeCandidates(candidates: readonly LocatedCandidate[], createI
 
 1. Iterate candidates in input order. Keep a `Map<string, group>` for keyed candidates and a list of standalone groups
    for `mergeKey === null` candidates (each becomes its own group; never merged even if range and quote are equal).
-   Each group remembers the index of its first candidate (`firstIndex`) and its members in input order.
+   Each group is `{ readonly firstIndex: number; readonly first: LocatedCandidate; readonly members: LocatedCandidate[] }`;
+   store `first` when the group is created so step 3 never indexes `members[0]` (which is `T | undefined`).
 2. Sort groups by `range.start` ascending, then `range.end` ascending, then `firstIndex` ascending. Use `Array.prototype.sort`
    with an explicit comparator (do not rely on sort stability alone; the comparator includes `firstIndex`).
 3. For each group in sorted order, build the finding: `id = createId()` (called once per group, in sorted order),
-   `range` and `quote` from the first member, `suggestion` from the first member, `category` = the common category if
+   `range` and `quote` from `group.first`, `suggestion` from `group.first`, `category` = the common category if
    every member has the same `llm.category`, else `"unclear"`, `verdict` = `"likely-error"` if every member's
    `llm.verdict === "likely-error"`, else `"confirm-with-author"`, `sources` = members in input order.
 4. Return the array.
@@ -607,7 +697,9 @@ MUST NOT merge candidates whose ranges merely overlap. MUST NOT mutate input arr
 
 ### Table M (merge.test.ts)
 
-Candidates (use the `located` helper from Table P; copy it into this test file):
+Imports for merge.test.ts: the same as candidate.test.ts plus `import type { MergedFinding } from "./merge.ts";` and
+`import { mergeCandidates, mergeKey } from "./merge.ts";`. Copy the `located` and `unlocated` helpers from Table P into
+this test file. Candidates:
 
 ```ts
 const a  = located("a",  "typo",        3,  5, "リュシア", "ルシア",   "notation",      "likely-error");
@@ -621,7 +713,26 @@ const g  = located("g",  "typo",        4,  6, "ュシア",   "ュシヤ",   "no
 const h  = located("h",  "typo",       10, 12, "太郎",     "太朗",     "notation",      "likely-error");
 ```
 
-`ids()` returns a fresh `createId` producing `"f1"`, `"f2"`, ... in call order. `F(id, start, end, quote, category, suggestion, verdict, sources)` builds a `MergedFinding` for `toEqual`.
+Helpers (put them in the test file exactly as written; note the argument order of `F` differs from `located`):
+
+```ts
+function ids(): () => string {
+  let n = 0;
+  return () => `f${++n}`;
+}
+function F(
+  id: string,
+  start: number,
+  end: number,
+  quote: string,
+  category: FindingCategory,
+  suggestion: string | null,
+  verdict: InitialVerdict,
+  sources: readonly LocatedCandidate[],
+): MergedFinding {
+  return { id, range: { start, end }, quote, category, suggestion, verdict, sources };
+}
+```
 
 | row | input | expected `mergeCandidates(input, ids())` |
 | --- | --- | --- |
@@ -659,6 +770,8 @@ The arrow function is never invoked, so no unlocated candidate reaches the imple
 ## 3. packages/shared/src/merge/allowed-words.ts
 
 ```ts
+import { buildGraphemeIndex, isGraphemeBoundary } from "../text/grapheme-index.ts";
+import { ALLOWED_WORD_RULE_VERSION } from "../versions.ts";
 import type { MergedFinding } from "./merge.ts";
 
 /** 抑制の判定に使う項目。MergedFinding をそのまま渡せる。 */
@@ -697,8 +810,8 @@ for word of allowedWords (in array order):
          and suggestion.startsWith(quote.slice(0, s))
          and suggestion.endsWith(quote.slice(e)):
         replacement = suggestion.slice(s, suggestion.length - suffixLength)
-        // 登録語と同一、登録語で始まる（後ろへの挿入だけ）、登録語で終わる（前への挿入だけ）は表記の置き換えでない
-        if not replacement.startsWith(word) and not replacement.endsWith(word):
+        // 置換文字列が登録語を含む（同一、前後・両側への挿入だけ）なら表記の置き換えでない
+        if not replacement.includes(word):
           return { word, ruleVersion: ALLOWED_WORD_RULE_VERSION }
     pos = quote.indexOf(word, pos + 1)                   // 重なる出現も数える
 return null
@@ -708,6 +821,11 @@ MUST NOT trim or otherwise modify `allowedWords` entries. MUST NOT use a regular
 (escaping bugs). MUST NOT compute a common-prefix/suffix diff; the prefix/suffix check above is the whole rule.
 
 ### Table S (allowed-words.test.ts)
+
+Notation: `(null)` in the suggestion column means the JavaScript value `null`, not a string. Backticked cells are
+JavaScript string literals to be written exactly as shown (with `\u3099` escapes); the word column of S14b is the same
+literal and the expected value is compared with `toBe` against that literal. Row numbers are not contiguous (there is
+no S18); do not invent a row.
 
 `sup(category, quote, suggestion, words)` calls `findSuppression({ category, quote, suggestion }, words)`.
 Expected is the `word` of the result, or `null`. Unless stated, `words = ["リュシア"]` and `category = "notation"`.
@@ -747,6 +865,9 @@ Expected is the `word` of the result, or `null`. Unless stated, `words = ["リ�
 | S24 | notation | リュシア | リュシア。 | | null |
 | S25 | notation | リュシア | 、リュシア | | null |
 | S26 | notation | リュシアリュシア | リュシア | | null |
+| S27 | notation | リュシア | ルシアさん | | リュシア |
+| S28 | notation | リュシア | リュシアー | | null |
+| S29 | notation | リュシア | xリュシアx | | null |
 
 Also: SV1: `sup("notation", "リュシア", "ルシア", ["リュシア"])` toEqual `{ word: "リュシア", ruleVersion: "1" }` (use `toEqual` on the whole object).
 
@@ -757,7 +878,9 @@ Explanations (do not turn these into different expectations):
 - S12: both words qualify; the first word in array order wins.
 - S14a: "か" ends inside the grapheme cluster "か\u3099" → not an occurrence.
 - S15a: occurrences at 0 and 1; occurrence 0 ("ああ" → "あい") reproduces the suggestion.
-- S23, S24, S25: pure insertion after or before the word (replacement starts or ends with the word) → null.
+- S23, S24, S25, S28, S29: pure insertion after, before or around the word (replacement contains the word) → null.
+- S27: the outside of the occurrence (empty prefix and suffix) matches and the replacement "ルシアさん" does not contain
+  the word → suppressed. The rule does not try to tell "さん" apart from the word.
 - S26: the word occurs twice; removing one occurrence is a deletion for occurrence 0 (prefix "" + suffix "リュシア" leaves an
   empty replacement) and for occurrence 1 → null.
 
@@ -780,7 +903,9 @@ export { findSuppression } from "./merge/allowed-words.ts";
 
 - Polarity: the suppression gate is `category === "notation"` → continue; every OTHER category → return null. Do not invert.
 - The `s + suffixLength < suggestion.length` guard MUST be checked BEFORE `startsWith` / `endsWith`; otherwise S16a passes wrongly.
-- The replacement check is `!replacement.startsWith(word) && !replacement.endsWith(word)`; `replacement !== word` alone is NOT enough (S23, S24).
+- The replacement check is `!replacement.includes(word)`; `replacement !== word` alone is NOT enough (S23, S24, S29).
+- Use `for...of` for every loop. If you use `forEach`, the callback MUST be a block body `{ ... }` that returns nothing;
+  an expression body like `(c) => list.push(c)` fails Biome (`useIterableCallbackReturn`, severity error).
 - Occurrence search must continue from `pos + 1`, not `pos + word.length` (S15a needs overlapping occurrences).
 - Merge grouping ignores `perspective` (M7 merges two "typo" candidates). Merge never groups `suggestion === null` (M4).
 - Sorting must include `firstIndex` as the last tie-breaker (M11).
