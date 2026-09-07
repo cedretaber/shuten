@@ -8,11 +8,20 @@ export {
   roundingDelta,
   validateChunkSettings,
 } from "./chunk/settings.ts";
+export type { Diagnostic, DiagnosticCandidate } from "./locate/diagnostic.ts";
+export { DIAGNOSTIC_CANDIDATE_LIMIT } from "./locate/diagnostic.ts";
+export type { LocateFailureReason, LocateResult } from "./locate/locate.ts";
+export { locateQuote } from "./locate/locate.ts";
+export type { DiagnosticTransform } from "./locate/position-map.ts";
+export { applyTransform } from "./locate/position-map.ts";
+export type { QuoteRef } from "./locate/quote-ref.ts";
 export type { GraphemeSegment } from "./text/grapheme.ts";
 export { countGraphemes, segmentGraphemes } from "./text/grapheme.ts";
 export type { GraphemeIndex } from "./text/grapheme-index.ts";
 export {
   buildGraphemeIndex,
+  ceilGraphemeBoundary,
+  floorGraphemeBoundary,
   graphemeAt,
   isGraphemeBoundary,
   offsetAt,

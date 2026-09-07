@@ -78,16 +78,29 @@ function buildRecheckInput(text: string, paragraphs: readonly Paragraph[], initi
 // locate/quote-ref.ts（PR3。LLM 出力の型に依存しない照合用の最小入力）
 interface QuoteRef { paragraphId: number; quote: string; before: string; after: string }
 
+// text/grapheme-index.ts（PR3 で追加）
+function floorGraphemeBoundary(index: GraphemeIndex, offset: number): number   // offset 以下で最大の書記素境界
+function ceilGraphemeBoundary(index: GraphemeIndex, offset: number): number    // offset 以上で最小の書記素境界
+
+// locate/position-map.ts（PR3。比較用文字列と原文の位置対応。内部用。applyTransform だけ公開）
+type DiagnosticTransform = "newline" | "nfc" | "newline+nfc"
+function applyTransform(text: string, transform: DiagnosticTransform): string
+
+// locate/diagnostic.ts（PR3）
+interface DiagnosticCandidate { readonly transform: DiagnosticTransform; readonly text: string /* 一致を覆う書記素境界範囲の原文 */; readonly range: Range | null /* 位置対応が取れなければ null */ }
+interface Diagnostic { readonly transformVersion: string; readonly candidates: readonly DiagnosticCandidate[] /* 指定段落に近い順、最大 3 件 */; readonly omitted: number /* 打ち切り件数 */; readonly tied: boolean /* 同順位あり */ }
+const DIAGNOSTIC_CANDIDATE_LIMIT: number   // 3
+
 // locate/locate.ts（PR3）
 type LocateFailureReason = "not-found" | "ambiguous" | "outside-target"
-interface Diagnostic { transformVersion: string; candidates: DiagnosticCandidate[]; truncated: boolean; tied: boolean }
-interface DiagnosticCandidate { transform: "newline" | "nfc" | "newline+nfc"; text: string; range: Range | null }
 type LocateResult =
-  | { status: "located"; range: Range }
-  | { status: "failed"; reason: LocateFailureReason; diagnostic: Diagnostic }
+  | { readonly status: "located"; readonly range: Range }
+  | { readonly status: "failed"; readonly reason: LocateFailureReason; readonly exactMatches: readonly Range[]; readonly diagnostic: Diagnostic | null }
 function locateQuote(text: string, input: CheckInput, paragraphs: readonly Paragraph[], ref: QuoteRef): LocateResult
 // target.paragraphIds には文境界・書記素境界で切られて一部だけ重なる段落も入る。照合は inputRange で行い、
-// 「引用の開始位置が target.range 内か」で担当を決める
+// ヒント（段落 ID → before → after）で 1 件に絞ってから「引用の開始位置が target.range 内か」で担当を決める。
+// exactMatches は絞り込み後に残った完全一致（ambiguous / outside-target の記録用。採用位置には使わない）。
+// diagnostic は not-found のときだけ非 null（空引用は null）。
 // not-found / ambiguous は「位置特定失敗」として通常一覧に表示する。
 // outside-target は参考文脈内から始まる候補で、通常一覧に出さず診断記録にだけ残す。
 
@@ -109,7 +122,7 @@ function checkOutputJsonSchema(): object   // response_format 用（description 
 // merge/merge.ts, merge/allowed-words.ts（PR4）
 interface CandidateBase { id: string; perspective: Perspective; llm: LlmFinding }
 interface LocatedCandidate extends CandidateBase { locate: { status: "located"; range: Range } }
-interface UnlocatedCandidate extends CandidateBase { locate: { status: "failed"; reason: LocateFailureReason; diagnostic: Diagnostic } }
+interface UnlocatedCandidate extends CandidateBase { locate: Extract<LocateResult, { status: "failed" }> }
 type Candidate = LocatedCandidate | UnlocatedCandidate
 function partitionCandidates(candidates: Candidate[]): { located: LocatedCandidate[]; unlocated: UnlocatedCandidate[] }
 interface MergedFinding { id: string; range: Range; quote: string; category: FindingCategory; suggestion: string | null; sources: LocatedCandidate[]; verdict: InitialVerdict }
@@ -223,15 +236,16 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 ### PR3 shared：引用照合・位置確定・診断候補
 
 - 仕様：6.2（引用だけで一意なら失敗にしない）、6.3 全体
-- 作る：`locate/quote-ref.ts`、`locate/locate.ts`、`locate/diagnostic.ts`、`locate/position-map.ts`（正規化後の文字列から原文への位置対応）
-- 提供：`QuoteRef`、`LocateResult`、`LocateFailureReason`、`Diagnostic`、`locateQuote`
+- 詳細計画：`docs/plans/2026-09-07-pr3-locate-quote.md`（実装済み）
+- 作る：`locate/quote-ref.ts`、`locate/locate.ts`、`locate/diagnostic.ts`、`locate/position-map.ts`（正規化後の文字列から原文への位置対応）、`text/grapheme-index.ts` に境界の丸めを追加
+- 提供：`QuoteRef`、`LocateResult`、`LocateFailureReason`、`Diagnostic`、`DiagnosticCandidate`、`DiagnosticTransform`、`DIAGNOSTIC_CANDIDATE_LIMIT`、`locateQuote`、`applyTransform`、`floorGraphemeBoundary`、`ceilGraphemeBoundary`
 - 規則：
-  - 完全一致を `inputRange` 内で探す。1 件なら確定。複数なら段落 ID と `before` / `after` で絞る。絞れなければ `ambiguous`
-  - 開始位置が `target.range` 外なら `outside-target`（診断記録に残す。付け替えない。通常一覧に出さない）
+  - 完全一致を `inputRange` 内で探す（書記素境界で始まり終わる一致だけ。重なる出現も数える）。1 件なら確定。複数なら段落 ID → `before` → `after` の順に 1 件になるまで絞る。存在しない段落 ID と空のヒントは飛ばし、有効なヒントが全候補と矛盾したらそこで打ち切る。`before` / `after` は CR/LF を除いて比べる（引用本体は完全一致）
+  - 絞った結果の開始位置が `target.range` 外なら `outside-target`（診断記録に残す。付け替えない。通常一覧に出さない）。2 件以上残り、すべて対象外なら `outside-target`、1 件でも対象内なら `ambiguous`
   - `not-found` と `ambiguous` は位置特定失敗として保存し、通常一覧に表示する（強調はしない）
-  - 完全一致ゼロのときだけ診断：改行統一、NFC、両方の 3 変換で比較し、指定段落に近い順に最大 3 件。同順位と打ち切りを記録。位置対応が取れない候補は `range: null`
+  - 完全一致ゼロのときだけ診断：改行統一、NFC、両方の 3 変換で比較し、指定段落に近い順（段落 ID の差）に最大 3 件。同順位（`tied`）と打ち切り件数（`omitted`）を記録。位置対応は書記素クラスタ単位で、取れない候補は `range: null`
   - 原文は変更しない。変換規則の版を記録
-- テスト：同一引用の反復、検査対象から参考文脈へ続く引用、参考文脈から始まる引用、本文端、`before` / `after` が改行を省く応答、NFC で一致する濁点の分解、CRLF と LF の違いでのみ一致、候補 4 件以上での打ち切り
+- テスト：同一引用の反復、検査対象から参考文脈へ続く引用、参考文脈から始まる引用、本文端、`before` / `after` が改行を省く応答、矛盾したヒント、NFC で一致する濁点の分解、CRLF と LF の違いでのみ一致、引用側だけが変換で変わる一致、候補 4 件以上での打ち切りと同順位、位置対応不能、異体字セレクタ・ZWJ・サロゲートの途中で切れる引用、ランダム検査
 - 受け入れ条件：11 節 6・7・9・17 項の shared 側
 - 担当：Claude がスペック、位置対応の設計、Unicode を含む期待結果の作成。qwen が実装、Claude が検証
 - 大きさ：中〜大

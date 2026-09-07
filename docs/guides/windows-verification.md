@@ -34,7 +34,8 @@ git config core.autocrlf
    ```
 
 3. 型検査、lint、テストをまとめて実行する。テストには DB のメモリ往復、
-   `Intl.Segmenter` の書記素判定（絵文字 ZWJ、異体字セレクタ、CRLF）、段落分割、fixture の往復が含まれる。
+   `Intl.Segmenter` の書記素判定（絵文字 ZWJ、異体字セレクタ、CRLF）、段落分割、fixture の往復、
+   引用照合（NFC・改行統一の診断候補と位置対応を含む）が含まれる。
 
    ```powershell
    pnpm check
