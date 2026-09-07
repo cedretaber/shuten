@@ -46,18 +46,34 @@ function decodeUtf8Strict(bytes: Uint8Array): string                // 不正バ
 function stripBom(text: string): string                             // 先頭 U+FEFF だけを除外
 function ingestUtf8Bytes(bytes: Uint8Array): string                // stripBom(decodeUtf8Strict(bytes))。ファイル入力はこれだけを呼ぶ
 
+// text/grapheme-index.ts（PR2）
+interface GraphemeIndex { readonly boundaries: readonly number[]; readonly count: number }   // boundaries[k] は k 番目の書記素の開始位置、末尾は text.length
+function buildGraphemeIndex(text: string): GraphemeIndex
+function isGraphemeBoundary(index: GraphemeIndex, offset: number): boolean
+function graphemeAt(index: GraphemeIndex, offset: number): number       // 境界でない位置は RangeError
+function offsetAt(index: GraphemeIndex, grapheme: number): number         // 範囲外は RangeError
+
 // text/grapheme.ts（scaffold 済み）
 function countGraphemes(text: string): number
 function segmentGraphemes(text: string): GraphemeSegment[]
 
+// chunk/settings.ts（PR2）
+interface ChunkSettings { readonly targetGraphemes: number; readonly contextGraphemes: number; readonly recheckContextGraphemes: number; readonly roundingTolerance: number /* 0.2 */; readonly maxInputGraphemes: number /* 検査対象 + 参考文脈の上限。書記素数 */ }
+class InvalidChunkSettingsError extends Error
+class InputTooLongError extends Error { readonly required: number; readonly limit: number }
+function validateChunkSettings(settings: ChunkSettings): void                 // 不正なら InvalidChunkSettingsError
+function roundingDelta(target: number, tolerance: number): number            // floor(target × tolerance)
+
+// chunk/sentence.ts（PR2）
+function findSentenceBoundaries(text: string, range: Range, index: GraphemeIndex): number[]   // 終端記号（。！？!?）とそれに続く閉じ括弧の並びの直後。書記素境界に限る
+
 // chunk/plan.ts
-interface ChunkSettings { targetGraphemes: number; contextGraphemes: number; recheckContextGraphemes: number; roundingTolerance: number /* 0.2 */ }
 interface TargetRange { readonly index: number; readonly range: Range; readonly paragraphIds: readonly number[] }
 interface ContextWindow { readonly before: Range | null; readonly after: Range | null }
 interface CheckInput { readonly target: TargetRange; readonly context: ContextWindow; readonly inputRange: Range }
-function planTargets(text: string, paragraphs: Paragraph[], settings: ChunkSettings): TargetRange[]
-function buildCheckInput(text: string, paragraphs: Paragraph[], target: TargetRange, contextGraphemes: number, settings: ChunkSettings): CheckInput
-function buildRecheckInput(text: string, paragraphs: Paragraph[], initial: CheckInput, settings: ChunkSettings): CheckInput   // 初回の inputRange を必ず含む
+function planTargets(text: string, paragraphs: readonly Paragraph[], settings: ChunkSettings): TargetRange[]
+function buildCheckInput(text: string, paragraphs: readonly Paragraph[], target: TargetRange, settings: ChunkSettings): CheckInput           // settings.contextGraphemes を使う
+function buildRecheckInput(text: string, paragraphs: readonly Paragraph[], initial: CheckInput, settings: ChunkSettings): CheckInput   // settings.recheckContextGraphemes。初回の inputRange を必ず含む
 
 // locate/quote-ref.ts（PR3。LLM 出力の型に依存しない照合用の最小入力）
 interface QuoteRef { paragraphId: number; quote: string; before: string; after: string }
@@ -69,7 +85,9 @@ interface DiagnosticCandidate { transform: "newline" | "nfc" | "newline+nfc"; te
 type LocateResult =
   | { status: "located"; range: Range }
   | { status: "failed"; reason: LocateFailureReason; diagnostic: Diagnostic }
-function locateQuote(text: string, input: CheckInput, paragraphs: Paragraph[], ref: QuoteRef): LocateResult
+function locateQuote(text: string, input: CheckInput, paragraphs: readonly Paragraph[], ref: QuoteRef): LocateResult
+// target.paragraphIds には文境界・書記素境界で切られて一部だけ重なる段落も入る。照合は inputRange で行い、
+// 「引用の開始位置が target.range 内か」で担当を決める
 // not-found / ambiguous は「位置特定失敗」として通常一覧に表示する。
 // outside-target は参考文脈内から始まる候補で、通常一覧に出さず診断記録にだけ残す。
 
@@ -187,8 +205,9 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 ### PR2 shared：検査範囲と参考文脈の分割
 
 - 仕様：5.2、6.1（手順 2〜5）、6.5（再確認の入力範囲）
-- 作る：`chunk/plan.ts`、`chunk/sentence.ts`（文境界の検出。句点・感嘆符・疑問符・閉じ括弧の後）
-- 提供：`ChunkSettings`、`TargetRange`、`ContextWindow`、`CheckInput`、`planTargets`、`buildCheckInput`、`buildRecheckInput`
+- 作る：`text/grapheme-index.ts`、`chunk/settings.ts`、`chunk/sentence.ts`（文境界の検出。終端記号 `。！？!?` とそれに続く閉じ括弧の並びの直後。閉じ括弧単独は境界にしない）、`chunk/plan.ts`
+- 提供：`GraphemeIndex` と変換関数、`ChunkSettings`（`maxInputGraphemes` を含む）、`validateChunkSettings`、`roundingDelta`、`InvalidChunkSettingsError`、`InputTooLongError`、`findSentenceBoundaries`、`TargetRange`、`ContextWindow`、`CheckInput`、`planTargets`、`buildCheckInput`、`buildRecheckInput`
+- 詳細計画：`docs/plans/2026-09-07-pr2-chunk-plan.md`（丸めの規則、数値例、解釈で迷った点）
 - 規則：
   - 段落境界を優先し、目標の ±20% 内で最も近い境界、同距離なら外側
   - 適切な境界がなければ文境界、それでも長ければ書記素クラスタ境界。CRLF や結合文字の途中で切らない
@@ -279,6 +298,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
   - `server/src/run/executor.ts`：生成要求を直列に実行する小さな実行器（同時実行 1）。PR9 のキューはこれを包む
   - `packages/cli/`（新規パッケージ。`bin/shuten-eval.ts`）：原稿ファイルと設定を読み、パイプラインを呼び、結果を JSON に出す。`--mode full-text` で全文を 1 要求で送る比較用の経路
 - 規則：
+  - 分割前に `validateChunkSettings` を呼ぶ。`maxInputGraphemes` はモデルのコンテキスト長から換算する（係数は実測で決める）。`InputTooLongError` と `InvalidChunkSettingsError` はどちらも「設定変更を案内」の終了理由にし、本文を縮めない
   - 要求は直列。各要求の直前に `ensureLoaded`
   - タイムアウトや abort の後に生成終了を確認できなければ、後続の要求を送らずにパイプラインを終了し、その旨を結果に残す（PR9 の「復旧待ち」に相当する終了理由）
   - 失敗した単位を含む途中結果をそのまま JSON に残す。失敗を指摘ゼロにしない
