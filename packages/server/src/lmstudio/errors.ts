@@ -15,7 +15,10 @@ export class LmStudioError extends Error {
   /** `truncated` のとき非 null。 */
   readonly usage: Usage | null;
   readonly finishReason: string | null;
-  /** 応答本文。要求本文とヘッダーは入れない（API キーを含まないようにするため）。 */
+  /**
+   * 応答本文。ただし `ensureLoaded` の `model-not-loaded` では該当 `ModelInfo`（見つからなければ
+   * null）が入る。要求本文とヘッダーは入れない（API キーを含まないようにするため）。
+   */
   readonly raw: unknown;
 
   constructor(

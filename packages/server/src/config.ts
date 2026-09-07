@@ -77,14 +77,18 @@ export function parseLmStudioUrl(raw: string): string {
       `SHUTEN_LM_STUDIO_URL にクエリやフラグメントを含めることはできません: ${JSON.stringify(raw)}`,
     );
   }
+  if (url.username !== "" || url.password !== "") {
+    // パスワードが例外メッセージやログ・実行記録（仕様書 8.1 節）に漏れないよう raw は出さない。
+    throw new Error("SHUTEN_LM_STUDIO_URL に資格情報を含めることはできません");
+  }
   return trimmed.replace(/\/+$/, "");
 }
 
-/** LM Studio の API キーを読む。未設定・空文字・空白のみは null。 */
+/** LM Studio の API キーを読む。未設定・空文字・空白のみは null。値は trim して返す。 */
 export function parseLmStudioApiKey(raw: string | undefined): string | null {
   if (raw === undefined) {
     return null;
   }
   const trimmed = raw.trim();
-  return trimmed === "" ? null : raw;
+  return trimmed === "" ? null : trimmed;
 }

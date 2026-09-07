@@ -74,6 +74,21 @@ describe("parseLmStudioUrl", () => {
   it("フラグメント付きの URL を拒否する", () => {
     expect(() => parseLmStudioUrl("http://127.0.0.1:1234/#frag")).toThrow();
   });
+
+  it("資格情報（userinfo）付きの URL を拒否する", () => {
+    expect(() => parseLmStudioUrl("http://user:pass@127.0.0.1:1234")).toThrow();
+  });
+
+  it("資格情報付き URL の例外メッセージにパスワードを含めない", () => {
+    let thrown: unknown;
+    try {
+      parseLmStudioUrl("http://user:hunter2@127.0.0.1:1234");
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeDefined();
+    expect(String(thrown)).not.toContain("hunter2");
+  });
 });
 
 describe("parseLmStudioApiKey", () => {
@@ -92,6 +107,11 @@ describe("parseLmStudioApiKey", () => {
 
   it("値があればそのまま返す", () => {
     expect(parseLmStudioApiKey("sk-secret-token")).toBe("sk-secret-token");
+  });
+
+  it("前後の空白（改行を含む）を trim して返す", () => {
+    expect(parseLmStudioApiKey(" sk-secret-token ")).toBe("sk-secret-token");
+    expect(parseLmStudioApiKey("\nsk-secret-token\n")).toBe("sk-secret-token");
   });
 
   it("例外メッセージに API キーの値を含めない（不正な URL との組み合わせで確認）", () => {

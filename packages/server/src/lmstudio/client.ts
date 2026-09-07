@@ -199,6 +199,7 @@ export function createLmStudioClient(clientOptions: LmStudioClientOptions): LmSt
     const models = await listModels(options);
     const found = models.find((model) => model.id === modelId);
     if (found === undefined || found.state !== LOADED_STATE) {
+      // ここでの raw は HTTP 応答本文ではなく、一覧から見つかった ModelInfo（無ければ null）。
       throw new LmStudioError("model-not-loaded", `モデル ${modelId} がロードされていない`, {
         raw: found ?? null,
       });
