@@ -1,3 +1,4 @@
+import type { Perspective } from "@shuten/shared";
 import { checkOutputJsonSchema, recheckOutputJsonSchema } from "@shuten/shared";
 
 import type { ChatRequest } from "../lmstudio/types.ts";
@@ -23,9 +24,18 @@ function generationFields(
   };
 }
 
+/**
+ * 観点ごとの初回検査 system プロンプト。`Perspective` に対応表として持たせることで、
+ * 観点が増えたときに（三項演算子の既定分岐に無言で落ちず）型で網羅性を保つ。
+ */
+const CHECK_SYSTEM_PROMPTS: Record<Perspective, string> = {
+  typo: TYPO_SYSTEM_PROMPT,
+  naturalness: NATURALNESS_SYSTEM_PROMPT,
+};
+
 /** 初回検査の system プロンプトを観点から選ぶ。 */
 function checkSystemPrompt(perspective: CheckRequestInput["perspective"]): string {
-  return perspective === "typo" ? TYPO_SYSTEM_PROMPT : NATURALNESS_SYSTEM_PROMPT;
+  return CHECK_SYSTEM_PROMPTS[perspective];
 }
 
 /** 初回検査の ChatRequest を組み立てる。 */
