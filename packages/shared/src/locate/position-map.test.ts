@@ -10,7 +10,7 @@ import {
   overlapsTransformedChunk,
 } from "./position-map.ts";
 
-describe("applyTransform", () => {
+describe("applyTransform の変換", () => {
   it("newline は CRLF と単独 CR を LF に統一する", () => {
     expect(applyTransform("a\r\nb\rc\n", "newline")).toBe("a\nb\nc\n");
   });
@@ -25,7 +25,7 @@ describe("applyTransform", () => {
   });
 });
 
-describe("buildComparisonText（text C）", () => {
+describe("buildComparisonText 本文 C", () => {
   const textC = "\u{20BB7}野家。\r\nか\u3099き\n終わり";
   const indexC = buildGraphemeIndex(textC);
   const full = { start: 0, end: 14 };
@@ -72,7 +72,7 @@ describe("buildComparisonText（text C）", () => {
   });
 });
 
-describe("buildComparisonText（text D）", () => {
+describe("buildComparisonText 本文 D", () => {
   const textD = "か\u3099\u0301る";
   const indexD = buildGraphemeIndex(textD);
 

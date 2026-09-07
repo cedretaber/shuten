@@ -681,6 +681,95 @@ describe("locateQuote 本文 H", () => {
   });
 });
 
+describe("locateQuote 本文 J", () => {
+  // 段落 3 に候補が無く、距離 2 の候補が段落 0 と段落 4 の 2 件ある（同順位が候補の無い段落を挟んで生じる）。
+  const text = "か\u3099一\nか\u3099二\nか\u3099三\n四\nか\u3099五";
+  const target: Range = { start: 8, end: 12 };
+  const inputRange: Range = { start: 0, end: 17 };
+
+  const rows: readonly Row[] = [
+    {
+      name: "J1 段落 2 に近い順、候補の無い段落を挟んだ同順位",
+      paragraphId: 2,
+      quote: "が",
+      before: "",
+      after: "",
+      expected: F(
+        "not-found",
+        [],
+        D(
+          [
+            C("nfc", "か\u3099", { start: 8, end: 10 }),
+            C("nfc", "か\u3099", { start: 4, end: 6 }),
+            C("nfc", "か\u3099", { start: 0, end: 2 }),
+          ],
+          1,
+          true,
+        ),
+      ),
+    },
+  ];
+
+  it.each(rows)("$name", (row) => {
+    expect(runRow(text, target, inputRange, row)).toEqual(row.expected);
+  });
+});
+
+describe("locateQuote 本文 K", () => {
+  // 段落 0 は本文に存在するが入力範囲外。段落 1 は入力範囲と部分的に重なる。段落 2 には一致が無い。
+  // 段落: 0 [0,3) "一二\n"、1 [3,7) "三一二\n"、2 [7,9) "四\n"、3 [9,13) "一二五\n"、4 [13,16) "一二六"
+  const text = "一二\n三一二\n四\n一二五\n一二六";
+  const target: Range = { start: 9, end: 13 };
+  const inputRange: Range = { start: 4, end: 16 };
+
+  const rows: readonly Row[] = [
+    {
+      name: "K1 入力範囲外の段落 ID はヒントなしとして飛ばし、after で絞る",
+      paragraphId: 0,
+      quote: "一二",
+      before: "",
+      after: "五",
+      expected: L(9, 11),
+    },
+    {
+      name: "K2 入力範囲内にあるが一致の無い段落 ID は打ち切って ambiguous",
+      paragraphId: 2,
+      quote: "一二",
+      before: "",
+      after: "五",
+      expected: F(
+        "ambiguous",
+        [
+          [4, 6],
+          [9, 11],
+          [13, 15],
+        ],
+        null,
+      ),
+    },
+    {
+      name: "K3 入力範囲と部分的に重なる段落 ID は有効なヒント",
+      paragraphId: 1,
+      quote: "一二",
+      before: "",
+      after: "",
+      expected: F("outside-target", [[4, 6]], null),
+    },
+    {
+      name: "K4 対象の段落 ID で絞る",
+      paragraphId: 3,
+      quote: "一二",
+      before: "",
+      after: "",
+      expected: L(9, 11),
+    },
+  ];
+
+  it.each(rows)("$name", (row) => {
+    expect(runRow(text, target, inputRange, row)).toEqual(row.expected);
+  });
+});
+
 describe("ランダム検査", () => {
   /** 固定シードの擬似乱数（mulberry32）。 */
   function mulberry32(seed: number): () => number {

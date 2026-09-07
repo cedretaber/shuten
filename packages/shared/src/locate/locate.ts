@@ -38,14 +38,14 @@ export function locateQuote(
     return { status: "failed", reason: "not-found", exactMatches: [], diagnostic: null };
   }
   const quote = ref.quote;
-  // 原文側で完全一致を収める。inputRange 内（開始・終了ともに）の一致のみ。
+  // 原文側で完全一致を集める。inputRange 内（開始・終了ともに）の一致のみ。
   const matches: Range[] = [];
-  let p = text.indexOf(quote, ir.start);
-  while (p !== -1 && p + quote.length <= ir.end) {
-    if (isGraphemeBoundary(index, p) && isGraphemeBoundary(index, p + quote.length)) {
-      matches.push({ start: p, end: p + quote.length });
+  let pos = text.indexOf(quote, ir.start);
+  while (pos !== -1 && pos + quote.length <= ir.end) {
+    if (isGraphemeBoundary(index, pos) && isGraphemeBoundary(index, pos + quote.length)) {
+      matches.push({ start: pos, end: pos + quote.length });
     }
-    p = text.indexOf(quote, p + 1);
+    pos = text.indexOf(quote, pos + 1);
   }
   if (matches.length === 0) {
     return {
@@ -59,7 +59,14 @@ export function locateQuote(
   const strip = (s: string): string => s.replace(/\r|\n/g, "");
   const before = strip(ref.before);
   const after = strip(ref.after);
-  const hasRefParagraph = paragraphs.some((p) => p.id === ref.paragraphId);
+  // 段落 ID は入力範囲と重なる段落の中で探す。入力範囲外の段落 ID は、存在しない ID と同じくヒントなしとして飛ばす
+  // （完全一致はすべて入力範囲内にあるので、入力範囲外の段落を指すヒントは必ず全候補と矛盾する）。
+  const hasRefParagraph = paragraphs.some(
+    (paragraph) =>
+      paragraph.id === ref.paragraphId &&
+      paragraph.range.start < ir.end &&
+      ir.start < paragraph.range.end,
+  );
   const filters: Array<(m: Range) => boolean> = [];
   if (hasRefParagraph) {
     filters.push((m) => {

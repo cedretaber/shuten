@@ -68,7 +68,7 @@ export function diagnoseQuote(
     if (cmp.text === slice && q === ref.quote) {
       continue;
     }
-    // 空引用は何にも一致しない（不変条件）。
+    // 空引用は何にも一致しない（不変条件）。locateQuote は空引用を先に弾くので、直接呼ばれたときの防御。
     if (q.length === 0) {
       continue;
     }
