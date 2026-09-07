@@ -66,28 +66,38 @@ export interface ChatResult {
   readonly raw: unknown;
 }
 
+/**
+ * クライアントは環境変数を読まない。接続先・API キー・`fetch` はすべて引数で受け取る（決定 2）。
+ * UI から接続先を上書きする経路（PR10・PR11）と、モックでの単体テストが同じ入口を使えるようにする。
+ */
 export interface LmStudioClientOptions {
   readonly baseUrl: string;
-  readonly apiKey?: string | undefined;
+  readonly apiKey?: string | null | undefined;
+  /** 未指定なら globalThis.fetch を使う。 */
+  readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
-/** 呼び出し単位で渡す共通オプション。 */
+/** `listModels`・`ensureLoaded` で渡す共通オプション。 */
 export interface RequestOptions {
   readonly signal?: AbortSignal | undefined;
   /** ミリ秒単位のタイムアウト。呼び出し元の signal とは独立に扱う。 */
   readonly timeoutMs?: number | undefined;
 }
 
-export type ChatOptions = RequestOptions;
+/** `chat` で渡すオプション。生成は既定値を置かないため `timeoutMs` は必須（決定 2・決定 8）。 */
+export interface ChatOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly timeoutMs: number;
+}
 
 export interface LmStudioClient {
   /** `GET /api/v0/models` でモデル一覧とロード状態を取る。 */
-  listModels(options?: RequestOptions | undefined): Promise<readonly ModelInfo[]>;
+  listModels(options?: RequestOptions): Promise<ModelInfo[]>;
   /**
    * `id` が完全一致するモデルを一覧から探し、`state === LOADED_STATE` を確認する。
    * 見つからない、または未ロードなら `LmStudioError`（`model-not-loaded`）を投げる。
    */
-  ensureLoaded(modelId: string, options?: RequestOptions | undefined): Promise<ModelInfo>;
+  ensureLoaded(modelId: string, options?: RequestOptions): Promise<ModelInfo>;
   /** `POST /v1/chat/completions` で 1 回の生成要求を送る。内部で `ensureLoaded` は呼ばない。 */
-  chat(request: ChatRequest, options?: ChatOptions | undefined): Promise<ChatResult>;
+  chat(request: ChatRequest, options: ChatOptions): Promise<ChatResult>;
 }
