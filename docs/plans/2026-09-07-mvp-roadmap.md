@@ -82,7 +82,7 @@ interface QuoteRef { paragraphId: number; quote: string; before: string; after: 
 function floorGraphemeBoundary(index: GraphemeIndex, offset: number): number   // offset 以下で最大の書記素境界
 function ceilGraphemeBoundary(index: GraphemeIndex, offset: number): number    // offset 以上で最小の書記素境界
 
-// locate/position-map.ts（PR3。比較用文字列と原文の位置対応。内部用。applyTransform だけ公開）
+// locate/position-map.ts（PR3。比較用文字列と原文の位置対応。DiagnosticTransform と applyTransform だけ公開）
 type DiagnosticTransform = "newline" | "nfc" | "newline+nfc"
 function applyTransform(text: string, transform: DiagnosticTransform): string
 
@@ -240,7 +240,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 作る：`locate/quote-ref.ts`、`locate/locate.ts`、`locate/diagnostic.ts`、`locate/position-map.ts`（正規化後の文字列から原文への位置対応）、`text/grapheme-index.ts` に境界の丸めを追加
 - 提供：`QuoteRef`、`LocateResult`、`LocateFailureReason`、`Diagnostic`、`DiagnosticCandidate`、`DiagnosticTransform`、`DIAGNOSTIC_CANDIDATE_LIMIT`、`locateQuote`、`applyTransform`、`floorGraphemeBoundary`、`ceilGraphemeBoundary`
 - 規則：
-  - 完全一致を `inputRange` 内で探す（書記素境界で始まり終わる一致だけ。重なる出現も数える）。1 件なら確定。複数なら段落 ID → `before` → `after` の順に 1 件になるまで絞る。存在しない段落 ID と空のヒントは飛ばし、有効なヒントが全候補と矛盾したらそこで打ち切る。`before` / `after` は CR/LF を除いて比べる（引用本体は完全一致）
+  - 完全一致を `inputRange` 内で探す（書記素境界で始まり終わる一致だけ。重なる出現も数える）。1 件なら確定。複数なら段落 ID → `before` → `after` の順に 1 件になるまで絞る。入力範囲内に存在しない段落 ID と空のヒントは飛ばし、有効なヒントが全候補と矛盾したらそこで打ち切る。`before` / `after` は CR/LF を除いて比べる（引用本体は完全一致）
   - 絞った結果の開始位置が `target.range` 外なら `outside-target`（診断記録に残す。付け替えない。通常一覧に出さない）。2 件以上残り、すべて対象外なら `outside-target`、1 件でも対象内なら `ambiguous`
   - `not-found` と `ambiguous` は位置特定失敗として保存し、通常一覧に表示する（強調はしない）
   - 完全一致ゼロのときだけ診断：改行統一、NFC、両方の 3 変換で比較し、指定段落に近い順（段落 ID の差）に最大 3 件。同順位（`tied`）と打ち切り件数（`omitted`）を記録。位置対応は書記素クラスタ単位で、取れない候補は `range: null`
