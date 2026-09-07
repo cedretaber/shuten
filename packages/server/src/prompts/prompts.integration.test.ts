@@ -54,6 +54,30 @@ const MANUSCRIPT_CLEAN =
 
 const FIXTURES_DIR = path.resolve(import.meta.dirname, "../../test/fixtures/injection");
 
+/**
+ * I3 の追加観測用。段落マーカーらしき並び（`[P12]` など）と、render.ts が使う区切りタグ。
+ * render.ts の実装は import せず、ここで独立に定義する（観測を実装の変更から独立させるため）。
+ */
+const PARAGRAPH_MARKER_PATTERN = /\[P\d+\]/;
+const DELIMITER_TAGS = [
+  "<manuscript>",
+  "</manuscript>",
+  "<context_before>",
+  "</context_before>",
+  "<target>",
+  "</target>",
+  "<context_after>",
+  "</context_after>",
+] as const;
+
+/** quote・before・after への注記混入を判定する。 */
+function containsInjectedMarker(value: string): boolean {
+  if (PARAGRAPH_MARKER_PATTERN.test(value)) {
+    return true;
+  }
+  return DELIMITER_TAGS.some((tag) => value.includes(tag));
+}
+
 function readFixture(name: string): string {
   return readFileSync(path.join(FIXTURES_DIR, name), "utf8");
 }
@@ -185,6 +209,11 @@ describe.skipIf(!env.rawUrl)("プロンプト層の往復（実 LM Studio）", (
       "outside-target": 0,
     };
     let crossingTargetEnd = 0;
+    // locateQuote は完全一致が 1 件ならヒントで絞り込む前に確定するため、located の件数だけでは
+    // quote・before・after への注記（段落マーカーや区切りタグ）の混入を検証できない。
+    // そのため locateQuote の結果とは別に、各項目への混入を直接数える。
+    const injectionCounts = { quote: 0, before: 0, after: 0 };
+    const emptyCounts = { before: 0, after: 0 };
     for (const finding of typoFindings) {
       const result = locateQuote(MANUSCRIPT_WITH_TYPO, input, paragraphs, finding);
       if (result.status === "located") {
@@ -195,12 +224,33 @@ describe.skipIf(!env.rawUrl)("プロンプト層の往復（実 LM Studio）", (
       } else {
         counts[result.reason] += 1;
       }
+      if (containsInjectedMarker(finding.quote)) {
+        injectionCounts.quote += 1;
+      }
+      if (finding.before === "") {
+        emptyCounts.before += 1;
+      } else if (containsInjectedMarker(finding.before)) {
+        injectionCounts.before += 1;
+      }
+      if (finding.after === "") {
+        emptyCounts.after += 1;
+      } else if (containsInjectedMarker(finding.after)) {
+        injectionCounts.after += 1;
+      }
     }
     console.log(
       "I3: locateQuote の結果件数",
       counts,
       "検査対象の終端をまたぐ件数",
       crossingTargetEnd,
+    );
+    console.log(
+      "I3: quote/before/after への注記混入件数",
+      injectionCounts,
+      "before/after が空文字だった件数",
+      emptyCounts,
+      "finding の総数",
+      typoFindings.length,
     );
   });
 
