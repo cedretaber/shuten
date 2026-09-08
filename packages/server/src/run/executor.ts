@@ -335,15 +335,20 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     parse: (result: ChatResult) => T,
     timeoutMs: number,
   ): Promise<ExecOutcome<T>> {
-    // queue が渡されていれば runOne 全体（ensureLoaded → chat → parse → 再試行）を
-    // 1 ジョブとして共有キューに投入し、他の executor（＝他の実行）とも直列化する。
-    // 下の tail による直列化はキューを渡さない経路（runPipeline）の挙動を変えないために
-    // そのまま残す。二重に直列化されても正しさは損なわれない。
-    const runJob = (): Promise<ExecOutcome<T>> =>
-      queue !== undefined
-        ? queue.enqueue(() => runOne(request, parse, timeoutMs))
-        : runOne(request, parse, timeoutMs);
-    const started = tail.then(runJob);
+    if (queue !== undefined) {
+      // queue が渡されているときは、この executor 固有の tail を経由せず、execute の
+      // 呼び出し順そのままで共有キューに投入する。tail を経由すると、この executor が
+      // 前のジョブの完了を待ってから投入するのに対し、他の executor（＝他の実行）は
+      // 即座に投入できてしまい、共有キューへの投入順（＝実行順）が execute の呼び出し順と
+      // ずれる（例：A1 → A2 → B1 の順で呼んでも A1 → B1 → A2 の順で実行されてしまう）。
+      //
+      // runOne は executor 内の可変状態（halt / requestCount / firstModelInfo）を書き換えるが、
+      // 共有キューが同時実行数を 1 に保つ（FIFO で前のジョブが解決してから次を始める）ため、
+      // 複数 executor 間でこの状態が競合することはない。
+      return queue.enqueue(() => runOne(request, parse, timeoutMs));
+    }
+    // キューなしの経路（runPipeline / CLI）は従来どおり、この executor 内の tail で直列化する。
+    const started = tail.then(() => runOne(request, parse, timeoutMs));
     tail = started.then(
       () => undefined,
       () => undefined,

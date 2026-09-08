@@ -240,6 +240,73 @@ describe("createRequestQueue", () => {
     expect(queue.size).toBe(0);
   });
 
+  it("Q4b: 呼び出し順が A1 → A2 → B1（A・B は別々の executor）のとき、共有キューへの投入・実行順も A1 → A2 → B1 になる", async () => {
+    const timeline: string[] = [];
+    const queue = createRequestQueue();
+    const gateA1 = deferred<void>();
+    const gateA2 = deferred<void>();
+    const gateB1 = deferred<void>();
+
+    const clientA = createTrackingClient("A", timeline, {
+      gates: [gateA1, gateA2],
+      outcomes: ["ok", "ok"],
+    });
+    const clientB = createTrackingClient("B", timeline, {
+      gates: [gateB1],
+      outcomes: ["ok"],
+    });
+    const executorA = createExecutor(clientA, { queue });
+    const executorB = createExecutor(clientB, { queue });
+
+    // A1 → A2 → B1 の順で、互いの完了を待たずに呼び出す。A2 は同じ executorA からの 2 回目の
+    // 呼び出し（executor 固有の tail を経由すると A1 の完了待ちになってしまう箇所）。
+    const promiseA1 = executorA.execute(REQUEST, parse, 1000);
+    const promiseA2 = executorA.execute(REQUEST, parse, 1000);
+    const promiseB1 = executorB.execute(REQUEST, parse, 1000);
+
+    // A1 の chat が保留中の間は、A2 も B1 もまだ ensureLoaded すら呼ばれていないはず
+    // （共有キューが同時実行数を 1 に保つ）。
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(timeline).toEqual(["A:ensureLoaded1", "A:chat1-start"]);
+
+    gateA1.resolve();
+    await promiseA1;
+    // キューが次のジョブ（A2）を取り出して開始するまでの数マイクロタスクを流す。
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A1 の次に実行されるのは呼び出し順どおり A2。B1 はまだ始まらない
+    // （投入順が呼び出し順とずれていれば、ここで B:ensureLoaded1 が先に来てしまう）。
+    expect(timeline).toEqual([
+      "A:ensureLoaded1",
+      "A:chat1-start",
+      "A:chat1-end",
+      "A:ensureLoaded2",
+      "A:chat2-start",
+    ]);
+
+    gateA2.resolve();
+    await promiseA2;
+
+    gateB1.resolve();
+    await promiseB1;
+
+    expect(timeline).toEqual([
+      "A:ensureLoaded1",
+      "A:chat1-start",
+      "A:chat1-end",
+      "A:ensureLoaded2",
+      "A:chat2-start",
+      "A:chat2-end",
+      "B:ensureLoaded1",
+      "B:chat1-start",
+      "B:chat1-end",
+    ]);
+  });
+
   it("Q4: queue を渡さない createExecutor は従来どおり同時実行が重ならない", async () => {
     let active = 0;
     let maxActive = 0;
