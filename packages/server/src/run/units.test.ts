@@ -388,6 +388,70 @@ describe("executeCheckUnit", () => {
     expect(outcome.elapsedMs).toBe(5);
     expect(outcome.usage).toBeNull();
   });
+
+  it("U6: chat 由来の timeout は recoveryConfirmMs === 0 なら unit.status が failed のまま（CLI・runPipeline の非退行）", async () => {
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 1,
+        failure: CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 10,
+        halt: {
+          reason: "recovery-needed",
+          message: "生成要求がタイムアウトしたため実行を停止した",
+          failure: CHAT_FAILURE,
+          generationUnconfirmed: true,
+        },
+      }),
+    );
+
+    const outcome = await executeCheckUnit(baseCheckArgs(executor, { recoveryConfirmMs: 0 }));
+
+    expect(outcome.unit.status).toBe("failed");
+    if (outcome.unit.status === "failed") {
+      expect(outcome.unit.failure).toEqual(CHAT_FAILURE);
+      expect(outcome.unit.attempts).toBe(1);
+    }
+    expect(outcome.failure).toEqual(CHAT_FAILURE);
+    expect(outcome.elapsedMs).toBe(10);
+    expect(outcome.usage).toBeNull();
+  });
+
+  it("U7: chat 由来の timeout は recoveryConfirmMs > 0 なら unit.status が pending になり、失敗の事実は残る（決定 20）", async () => {
+    const halt: RunStop = {
+      reason: "recovery-needed",
+      message: "生成要求がタイムアウトしたため実行を停止した",
+      failure: CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 1,
+        failure: CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 1500,
+        halt,
+      }),
+    );
+
+    const outcome = await executeCheckUnit(
+      baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500 }),
+    );
+
+    expect(outcome.unit.status).toBe("pending");
+    if (outcome.unit.status === "pending") {
+      expect(outcome.unit.attempts).toBe(1);
+      expect(outcome.unit.note).toBe("応答が上限内に届かなかった。生成終了は未確認");
+    }
+    // status を pending にしても失敗の事実は捨てない（決定 20）。
+    expect(outcome.failure).toEqual(CHAT_FAILURE);
+    expect(outcome.failure?.reason).toBe("timeout");
+    expect(outcome.halt).toEqual(halt);
+    expect(outcome.elapsedMs).toBe(1500);
+    expect(outcome.usage).toBeNull();
+  });
 });
 
 describe("executeRecheckUnit", () => {
@@ -610,6 +674,84 @@ describe("executeRecheckUnit", () => {
     expect(outcome.halt).toEqual(halt);
     // result.status が pending でも elapsedMs は数値として残る（PR9b の決定 20 が使う）。
     expect(outcome.elapsedMs).toBe(5);
+    expect(outcome.usage).toBeNull();
+  });
+
+  it("chat 由来の timeout は recoveryConfirmMs === 0 なら result.status が failed のまま（CLI・runPipeline の非退行）", async () => {
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<
+        ExecOutcome<{
+          reason: string;
+          reasonKind: string;
+          verdict: string;
+          suggestionValid: boolean;
+        }>
+      >({
+        ok: false,
+        attempts: 1,
+        failure: CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 10,
+        halt: {
+          reason: "recovery-needed",
+          message: "生成要求がタイムアウトしたため実行を停止した",
+          failure: CHAT_FAILURE,
+          generationUnconfirmed: true,
+        },
+      }),
+    );
+
+    const outcome = await executeRecheckUnit(baseRecheckArgs(executor, { recoveryConfirmMs: 0 }));
+
+    expect(outcome.result.status).toBe("failed");
+    if (outcome.result.status === "failed") {
+      expect(outcome.result.failure).toEqual(CHAT_FAILURE);
+      expect(outcome.result.attempts).toBe(1);
+    }
+    expect(outcome.failure).toEqual(CHAT_FAILURE);
+    expect(outcome.elapsedMs).toBe(10);
+    expect(outcome.usage).toBeNull();
+  });
+
+  it("chat 由来の timeout は recoveryConfirmMs > 0 なら result.status が pending になり、失敗の事実は残る（決定 20）", async () => {
+    const halt: RunStop = {
+      reason: "recovery-needed",
+      message: "生成要求がタイムアウトしたため実行を停止した",
+      failure: CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<
+        ExecOutcome<{
+          reason: string;
+          reasonKind: string;
+          verdict: string;
+          suggestionValid: boolean;
+        }>
+      >({
+        ok: false,
+        attempts: 1,
+        failure: CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 1250,
+        halt,
+      }),
+    );
+
+    const outcome = await executeRecheckUnit(
+      baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 250 }),
+    );
+
+    expect(outcome.result.status).toBe("pending");
+    if (outcome.result.status === "pending") {
+      expect(outcome.result.attempts).toBe(1);
+      expect(outcome.result.note).toBe("応答が上限内に届かなかった。生成終了は未確認");
+    }
+    // status を pending にしても失敗の事実は捨てない（決定 20）。
+    expect(outcome.failure).toEqual(CHAT_FAILURE);
+    expect(outcome.failure?.reason).toBe("timeout");
+    expect(outcome.halt).toEqual(halt);
+    expect(outcome.elapsedMs).toBe(1250);
     expect(outcome.usage).toBeNull();
   });
 

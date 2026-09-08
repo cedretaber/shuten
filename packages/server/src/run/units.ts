@@ -38,12 +38,33 @@ export function localFailure(reason: UnitFailure["reason"], message: string): Un
  *   決定 5(b) のとおり当該単位は未完了のまま残す。
  * - `chat` 由来でも `model-not-loaded`（実行中のアンロード）と `aborted`（停止操作）は
  *   失敗ではない（仕様書 7 節・8.2 節）。
+ * - `chat` 由来の `timeout` は、`recoveryConfirmMs > 0`（オーケストレーター経路）のときだけ
+ *   `pending` にする（決定 20）。ハード上限（`budgetMs + recoveryConfirmMs`）に達しても
+ *   「生成終了を確認できない」だけで、応答が実際に来ないと決まったわけではないため、
+ *   停止からの打ち切り（`aborted`）と同じ扱いにする。`recoveryConfirmMs === 0`
+ *   （CLI と `runPipeline` の経路）では従来どおり `failed`。
  */
-function isPendingFailure(failure: UnitFailure): boolean {
+function isPendingFailure(failure: UnitFailure, recoveryConfirmMs: number): boolean {
   if (failure.origin !== "chat") {
     return true;
   }
-  return failure.reason === "model-not-loaded" || failure.reason === "aborted";
+  if (failure.reason === "model-not-loaded" || failure.reason === "aborted") {
+    return true;
+  }
+  return recoveryConfirmMs > 0 && failure.reason === "timeout";
+}
+
+/**
+ * `pending` にする失敗の `note`（DB では `pending_note`）に入れる文言（決定 20）。
+ * ハード上限超過によるタイムアウトだけは、既存の失敗メッセージ（「生成要求がタイムアウトした」等）
+ * ではなく、決定 20 が定める「生成終了は未確認」の趣旨の文言に差し替える。他の理由（未送信、
+ * 実行中のアンロード、停止操作）は従来どおり失敗メッセージそのものを使う。
+ */
+function pendingNote(failure: UnitFailure, recoveryConfirmMs: number): string {
+  if (recoveryConfirmMs > 0 && failure.origin === "chat" && failure.reason === "timeout") {
+    return "応答が上限内に届かなかった。生成終了は未確認";
+  }
+  return failure.message;
 }
 
 /**
@@ -116,6 +137,7 @@ export interface CheckUnitOutcome {
  * （入力超過の判定は呼び出し元の責務。決定は `pipeline.ts` を参照）。
  */
 export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOutcome> {
+  const recoveryConfirmMs = args.recoveryConfirmMs ?? 0;
   const inputGraphemes = countGraphemes(sliceRange(args.text, args.input.inputRange));
   const request = buildCheckRequest({
     text: args.text,
@@ -130,7 +152,7 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
     request,
     parseCheckResponse,
     args.checkMs,
-    args.recoveryConfirmMs ?? 0,
+    recoveryConfirmMs,
     args.onSlow,
   );
 
@@ -179,13 +201,13 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
       generationUnconfirmed: false,
     };
   }
-  const unit: CheckUnitResult = isPendingFailure(outcome.failure)
+  const unit: CheckUnitResult = isPendingFailure(outcome.failure, recoveryConfirmMs)
     ? {
         status: "pending",
         targetIndex: args.targetIndex,
         perspective: args.perspective,
         attempts: outcome.attempts,
-        note: outcome.failure.message,
+        note: pendingNote(outcome.failure, recoveryConfirmMs),
       }
     : {
         status: "failed",
@@ -254,6 +276,7 @@ export interface RecheckUnitOutcome {
  * `suppressed` だけはこの関数が短絡する（ブリーフの推奨どおり）。
  */
 export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<RecheckUnitOutcome> {
+  const recoveryConfirmMs = args.recoveryConfirmMs ?? 0;
   if (args.suppressed) {
     return {
       result: { status: "suppressed" },
@@ -303,7 +326,7 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
     request,
     parseRecheckResponse,
     args.recheckMs,
-    args.recoveryConfirmMs ?? 0,
+    recoveryConfirmMs,
     args.onSlow,
   );
 
@@ -327,13 +350,13 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
 
   // LM Studio 由来の input-too-long（HTTP 400）も再確認では実行を止めない（決定 5(c)）。
   const halt = outcome.halt;
-  if (isPendingFailure(outcome.failure)) {
+  if (isPendingFailure(outcome.failure, recoveryConfirmMs)) {
     return {
       result: {
         status: "pending",
         attempts: outcome.attempts,
         inputRange: input.inputRange,
-        note: outcome.failure.message,
+        note: pendingNote(outcome.failure, recoveryConfirmMs),
       },
       failure: outcome.failure,
       halt,
