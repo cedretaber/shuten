@@ -21,14 +21,14 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 ## 現在の状態
 
 scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.8）。
-実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR6（プロンプトと要求の組み立て）まで完了。次は PR7（検査パイプラインと評価ハーネス）。
+実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR7（検査パイプラインと評価ハーネス）まで完了。次は PR8（DB スキーマと永続化）。
 
 ## 技術スタック
 
 | 領域 | 選択 |
 | --- | --- |
 | 言語・ランタイム | TypeScript（strict）、Node.js LTS |
-| 構成 | pnpm workspace の monorepo（`packages/shared`, `packages/server`, `packages/web`） |
+| 構成 | pnpm workspace の monorepo（`packages/shared`, `packages/server`, `packages/web`, `packages/cli`） |
 | バックエンド | Hono（Node.js） |
 | フロントエンド | React + Vite |
 | 保存 | SQLite。better-sqlite3 + Drizzle |
@@ -74,6 +74,24 @@ Vite は `/api` をサーバーへプロキシする。
 を実行する（未設定なら全件 skip）。モデルは `SHUTEN_LM_STUDIO_MODEL` で指定でき、未指定ならロード済みの
 `llm` / `vlm` の最初のものを使う。
 
+## 評価ハーネス（`packages/cli`）
+
+原稿ファイルに検査パイプラインを回し、結果 JSON を出す試運転用の CLI。
+
+```sh
+node packages/cli/bin/shuten-eval.ts --manuscript <path> --model <id>
+```
+
+接続先と API キーは引数では渡さない（シェル履歴に残さないため）。環境変数
+`SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`）と `SHUTEN_LM_STUDIO_API_KEY`（省略可）から読む。
+
+終了コードは 0 = `completed`、1 = 引数・入出力の誤り、2 = `partially-failed`、3 = `stopped`。
+進捗は標準エラーへ、結果 JSON は `--out` を指定しなければ標準出力へ出す。
+
+`--mode full-text` では本文全体が 1 要求になるため、`--max-input-graphemes` を本文の書記素数より
+大きい値に上げる必要がある（既定の 12,000 では長い原稿で停止する）。
+分割長などの既定値は実測前の暫定値で、試運転の結果を見て調整する。
+
 Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/windows-verification.md)。
 
 ## リポジトリ構成
@@ -82,6 +100,7 @@ Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/
 packages/shared   位置換算、分割、照合、許容語判定、共有型（ビルドなし、ソースを直接参照）
 packages/server   Hono の HTTP API、実行キュー、SQLite 永続化、LM Studio クライアント、静的配信
 packages/web      React + Vite の UI
+packages/cli      評価用 CLI。原稿ファイルに検査パイプラインを回して結果 JSON を出す
 docs/             仕様書、参照資料、決定記録、検証記録、手順
 ```
 

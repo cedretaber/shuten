@@ -21,6 +21,7 @@
 - `packages/shared` — 位置換算、段落・書記素クラスタ分割、引用照合、許容語判定、共有型
 - `packages/server` — HTTP API、単一実行キュー、永続化、LM Studio クライアント、静的配信
 - `packages/web` — UI
+- `packages/cli` — 評価用 CLI。原稿ファイルに検査パイプラインを回して結果 JSON を出す
 
 単位ごとに責務を 1 つに絞り、テストしやすい境界を作る。
 特に「分割」「照合」「統合・抑制」「LM Studio クライアント」「永続化」は独立させる。

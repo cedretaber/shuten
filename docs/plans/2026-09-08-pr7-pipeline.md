@@ -663,6 +663,18 @@ PR9 の永続化では、ロードマップの実行状態（`running`、`recove
   本 PR の `full-text` は分割の効果を見る対照にとどめる。
 - `<think>` の分離（実測で必要になったモデルが出たときに、決定記録 0003 への追記と同時に）。
 - `before` / `after` の長さの調整、思考の有無で分けたタイムアウト値（試運転の観測を材料にする）。
+- **保存済みの検査対象範囲を `runPipeline` に渡す口がない**（PR9）。現状 `runPipeline` は毎回
+  `planTargets`（内部で `Intl.Segmenter`）を呼び直して検査対象を作る。不変条件「再開時も
+  保存済みの範囲を使う」を満たすには、`TargetPlan[]` を注入できる入口（または完了済み単位を
+  飛ばすための入力）が要る。`PipelineArgs` の破壊的変更になるので PR9 で設計を決める。
+- **`TargetPlan` を実行中に運ぶイベントがない**（PR9）。`TargetPlan` は結果 JSON にしか出ないため、
+  PR9 の永続化層がイベント購読だけで仕様 8.1 の「検査単位＝対象範囲」を保存できない。
+  `target-planned` イベントを足すか、`check-started` に `inputRange` を載せる必要がある。
+- **`truncateRaw` の 2,000 文字境界をサロゲートペアで検証していない**（PR8）。
+  `packages/server/src/lmstudio/client.ts` の `truncateRaw` は `slice(0, RAW_TEXT_LIMIT)` で
+  UTF-16 単位に切るので、境界がサロゲートペアの途中に来ると孤立サロゲートが残る。
+  現状 `raw` は結果 JSON に出ないので実害はないが、PR8 で `raw` を SQLite に永続化する時点で
+  孤立サロゲートの混入経路になる。切り方を書記素境界に直すか、永続化の前に落とす。
 
 PR6 からの持ち越しのうち、**段落マーカー・タグの引用への混入と、検査対象の終端をまたぐ引用の観測**は
 本 PR で行う。集計コードは書かず、試運転（I3）で数え、`docs/experiments/` の記録に残す。
