@@ -64,6 +64,8 @@ PR9 のオーケストレーションは、PR7 のパイプラインが出す結
 | `server/src/db/hash.ts` | `hashBody(text)`。UTF-8 の SHA-256 を小文字 16 進で返す |
 | `server/src/db/json.ts` | JSON 列の読み戻し用 zod スキーマと列挙タプル（決定 8） |
 | `server/src/db/records.ts` | リポジトリの入出力レコード型（PR7 の結果型に依存しない） |
+| `server/src/db/errors.ts` | `MalformedBodyError`（孤立サロゲートの拒否。決定 17） |
+| `server/src/db/path.ts` | `resolveDatabaseFile(config)`（決定 2） |
 | `server/src/db/repositories/manuscripts.ts` | 原稿版 |
 | `server/src/db/repositories/runs.ts` | 検査実行と検査対象（`runs`、`run_targets`） |
 | `server/src/db/repositories/check-units.ts` | 検査単位 |
@@ -127,10 +129,10 @@ API を作る PR10 の変更になる。
 | --- | --- | --- |
 | `id` | text PK | |
 | `manuscript_version_id` | text not null → `manuscript_versions.id` | |
-| `model_id` | text not null | |
+| `model_id` | text not null | モデル ID の正本。`generation_settings` には入れない（決定 11） |
 | `model_info` | text(json) nullable | `ensureLoaded` が返した `ModelInfo`。量子化・コンテキスト長 |
 | `endpoint_url` | text not null | 接続先のルート URL。**API キーは持たない**（決定 10） |
-| `generation_settings` | text(json) not null | `GenerationSettings`。既定値を DB 側に置かない（決定 11） |
+| `generation_settings` | text(json) not null | `Omit<GenerationSettings, "model">`。既定値を DB 側に置かない（決定 11） |
 | `chunk_settings` | text(json) not null | `ChunkSettings` |
 | `timeouts` | text(json) not null | `{ checkMs, recheckMs }`。再開で設定を変えないため実行に紐づけて保存する |
 | `perspectives` | text(json) not null | 観点の配列 |
@@ -147,6 +149,8 @@ API を作る PR10 の変更になる。
 | `started_at` | integer(timestamp_ms) not null | |
 | `finished_at` | integer(timestamp_ms) nullable | |
 
+一意制約：`(start_operation_id)`、および複合外部キーの参照先として `(id, manuscript_version_id)`（決定 16）。
+
 ### `run_targets`
 
 | 列 | 型 | 備考 |
@@ -160,13 +164,15 @@ API を作る PR10 の変更になる。
 | `input_start` / `input_end` | integer not null | 初回検査の入力範囲 |
 | `paragraph_ids` | text(json) not null | 段落 ID の配列 |
 
+一意制約：`(run_id, target_index)`、`(id, run_id)`（決定 16）。
+
 ### `check_units`
 
 | 列 | 型 | 備考 |
 | --- | --- | --- |
 | `id` | text PK | |
 | `run_id` | text not null → `runs.id` | |
-| `target_id` | text not null → `run_targets.id` | `(target_id, perspective)` に一意制約 |
+| `target_id` | text not null | `(target_id, run_id)` → `run_targets(id, run_id)`（決定 16） |
 | `perspective` | text not null | |
 | `status` | text not null | `UnitStatus`（決定 3） |
 | `attempts` | integer not null default 0 | 送信した生成要求の回数 |
@@ -177,14 +183,16 @@ API を作る PR10 の変更になる。
 | `elapsed_ms` | integer nullable | |
 | `started_at` / `finished_at` | integer(timestamp_ms) nullable | |
 
+一意制約：`(target_id, perspective)`、`(id, run_id)`（決定 16）。
+
 ### `candidates`（元候補）
 
 | 列 | 型 | 備考 |
 | --- | --- | --- |
 | `id` | text PK | |
 | `run_id` | text not null → `runs.id` | |
-| `check_unit_id` | text not null → `check_units.id` | |
-| `finding_id` | text nullable → `findings.id` | 統合先。`outside-target` は null（決定 4） |
+| `check_unit_id` | text not null | `(check_unit_id, run_id)` → `check_units(id, run_id)`（決定 16） |
+| `finding_id` | text nullable | `(finding_id, run_id)` → `findings(id, run_id)`。統合先。`outside-target` は null（決定 4） |
 | `perspective` | text not null | |
 | `llm` | text(json) not null | `LlmFinding` をそのまま。引用を破壊しない |
 | `locate_status` | text not null | `located` / `not-found` / `ambiguous` / `outside-target` |
@@ -192,25 +200,30 @@ API を作る PR10 の変更になる。
 | `merge_key` | text nullable | `mergeKey()` の値。修正案なしは null |
 | `created_at` | integer(timestamp_ms) not null | |
 
+一意制約：`(id, run_id)`（決定 16）。
+
 ### `findings`（指摘）
 
 | 列 | 型 | 備考 |
 | --- | --- | --- |
 | `id` | text PK | |
 | `run_id` | text not null → `runs.id` | |
-| `manuscript_version_id` | text not null → `manuscript_versions.id` | 8.1 の項目 |
-| `target_id` | text not null → `run_targets.id` | |
+| `manuscript_version_id` | text not null | `(run_id, manuscript_version_id)` → `runs(id, manuscript_version_id)`（決定 16） |
+| `target_id` | text not null | `(target_id, run_id)` → `run_targets(id, run_id)`（決定 16） |
 | `locate_status` | text not null | `located` / `not-found` / `ambiguous` |
 | `start` / `end` | integer nullable | 位置特定失敗では null（8.1「未確定可」） |
-| `paragraph_id` | integer not null | LLM が申告した段落 ID |
+| `paragraph_id` | integer not null | 位置確定時は本文から導いた段落、失敗時は候補の申告値（決定 15） |
 | `quote` | text not null | |
 | `suggestion` | text nullable | |
-| `reason` | text not null | |
 | `category` | text not null | 統合後の分類 |
 | `initial_verdict` | text not null | 初回判定。再確認で上書きしない（決定 5） |
 | `merge_key` | text nullable | `(run_id, merge_key)` に部分一意索引（決定 6） |
 | `suppression_word` / `suppression_rule_version` | text nullable | 許容語抑制の理由。抑制なしは null |
 | `created_at` | integer(timestamp_ms) not null | |
+
+指摘の「理由」の列は置かない。`MergedFinding` に `reason` がなく、統合元ごとに違いうるため、
+読み出し時に元候補から組み立てる（決定 18）。
+一意制約：`(run_id, merge_key)` の部分索引（決定 6）、`(id, run_id)`（決定 16）。
 
 ### `recheck_units`
 
@@ -218,7 +231,7 @@ API を作る PR10 の変更になる。
 | --- | --- | --- |
 | `id` | text PK | 再確認の固有 ID（仕様 6.5。PR7 からの持ち越し） |
 | `run_id` | text not null → `runs.id` | |
-| `finding_id` | text not null → `findings.id` | 一意制約（1 指摘に 1 件。再確認ループはしない） |
+| `finding_id` | text not null | `(finding_id, run_id)` → `findings(id, run_id)`（決定 16）。一意制約（1 指摘に 1 件） |
 | `input_start` / `input_end` | integer nullable | 入力を組み立てる前に終わったら null |
 | `status` | text not null | `UnitStatus` |
 | `not_applicable_reason` | text nullable | `disabled` / `suppressed` / `unlocated` |
@@ -240,7 +253,7 @@ API を作る PR10 の変更になる。
 
 | 列 | 型 | 備考 |
 | --- | --- | --- |
-| `candidate_id` | text PK → `candidates.id` | 1 候補に 1 件 |
+| `candidate_id` | text PK | `(candidate_id, run_id)` → `candidates(id, run_id)`（決定 16）。1 候補に 1 件 |
 | `run_id` | text not null → `runs.id` | |
 | `quote` | text not null | LLM の引用 |
 | `reason` | text not null | `LocateFailureReason` |
@@ -255,7 +268,7 @@ API を作る PR10 の変更になる。
 
 | 列 | 型 | 備考 |
 | --- | --- | --- |
-| `finding_id` | text PK → `findings.id` | 指摘 1 件につき 1 行 |
+| `finding_id` | text PK → `findings.id` | 指摘 1 件につき必ず 1 行（決定 5） |
 | `status` | text not null | `JudgmentStatus`（決定 5） |
 | `note` | text nullable | 任意メモ |
 | `updated_at` | integer(timestamp_ms) not null | |
@@ -277,6 +290,11 @@ API を作る PR10 の変更になる。
 カレントディレクトリが違い、cwd 基準だと片方が壊れるため。
 `src/index.ts` では `createApp` の前に呼び、例外は捕まえずに（接続先 URL・API キーを出さずに）
 プロセスを非ゼロ終了させる。
+
+DB ファイルは `db/path.ts` の `resolveDatabaseFile(config)` で `path.join(config.dataDir, "shuten.db")`
+に固定する。`dataDir` は既に `config.ts` が `SHUTEN_DATA_DIR`（既定 `.data`）から絶対パスに解決していて、
+`index.ts` が `mkdirSync` している。`.gitignore` は `.data/` と `*.db` の両方を除外済み。
+`createApp` の引数は本 PR では変えない（DB ハンドルを渡すのは PR10）。
 
 ### 決定 3：状態名は DB の 5 値、パイプラインの 3 値はその部分集合
 
@@ -333,8 +351,9 @@ export type JudgmentStatus = (typeof JUDGMENT_STATUSES)[number];
 `adopt-planned` としたのは、仕様が「採用予定」は本文への修正適用ではないと繰り返し
 強調しているため（5.3、不変条件）。`adopt` だと適用したように読める。
 
-行がなければ「未判断」。明示的に未判断へ戻す操作は行を消さず `undecided` にして
-`updated_at` を残す（「判断は変更できる」の履歴を消さないため）。
+**指摘を作るときに `undecided` の行を必ず一緒に作る**。未判断の表し方を「行なし」と `undecided` の
+2 通りにすると読み出し側が両方を扱うことになるので、常に 1 指摘 1 行にする。
+未判断へ戻す操作も行を消さず `undecided` に更新し、`updated_at` を残す。
 
 ### 決定 6：`mergeKey` は実行 ID で名前空間を切る
 
@@ -396,6 +415,11 @@ DB への保存はこれに当たらない。エクスポート時の伏せ方�
 `temperature`・`reasoningEffort`・`maxTokens` は仕様書 13 節の未決事項であり、
 スキーマに既定値を書くと DB 側で勝手に確定してしまう。値は常に呼び出し側が明示する。
 
+モデル ID は `runs.model_id` だけに置き、JSON には入れない（`Omit<GenerationSettings, "model">`）。
+`GenerationSettings.model` をそのまま JSON にすると `model_id` と二重管理になり、
+食い違ったときにどちらを使うかが決まらない。読み出しでは `model_id` を足して
+`GenerationSettings` に戻す。
+
 ### 決定 12：`createDatabase` は `close()` できる形にする
 
 再起動を模したテスト（一度閉じて開き直す）に SQLite ハンドルが要る。
@@ -452,29 +476,84 @@ function claimUnit(db, id: string, from: UnitStatus, to: UnitStatus): boolean
 
 いずれの場合も、LLM が申告した生の値は `candidates.llm` に残っているので情報は失われない。
 
-## 解釈で迷った点（レビューで確認したい）
+### 決定 16：実行をまたぐ参照を複合外部キーで塞ぐ
 
-1. **`run_targets` を 8.1 の表に足してよいか。** 8.1 の一覧に検査対象の表はないが、
-   8.2 の「再開では保存済み範囲を使う」と不変条件「分割範囲の正本はサーバーが保存した値」を
-   満たすには、検査単位とは別に対象範囲を持つ場所が要る。検査単位に範囲を複製する案も取れるが、
-   観点 2 つで同じ範囲を二重に持つことになり、片方だけずれる余地ができるので分けた。
-2. **`candidates` を独立の表にしてよいか。** 8.1 の指摘の項目「元候補への参照」と
-   「再確認前の候補と撤回理由も保存」を満たすための表で、8.1 に単独の行はない。
-3. **仕様 8.1 の指摘の項目「再確認結果」を `findings` の列にしなくてよいか。**
-   決定 5 のとおり関連で表す案にした。列に複製すると `recheck_units` との二重管理になる。
-4. **`recheck_units` を「対象外」でも 1 行作るか。** 再確認なし（`disabled`）、抑制済み
-   （`suppressed`）、位置特定失敗（`unlocated`）でも行を作り `not-applicable` にする案にした。
-   8.1 が再確認単位に「対象外理由」を持たせているので、行がないと理由を書く場所がない。
-5. **`endpoint_url` の保存**（決定 10）。8.1 が「接続先」を求めている一方で、
-   PR7 では URL を出力に出さない規則を置いた。DB は出力ではないと読んだが、確認したい。
-6. **`judgments` の「未判断」を行なしと `undecided` の両方で表せてよいか。**
-   行なし＝未判断とし、一度判断した後に戻す操作だけ `undecided` の行を残す。
-   「未判断」の表し方が 2 通りになるが、更新日時を消さないことを優先した。
+`run_id` と親の ID を別々の外部キーにすると、実行 A の候補を実行 B の指摘に紐づけられてしまう。
+不変条件「重複統合は同一の検査実行内に限る。別実行の候補・再確認結果・採否を混ぜない」を
+DB の制約として表すため、子は `(親 ID, run_id)` の**複合外部キー**で親を参照する。
+参照先には `(id, run_id)` の一意制約を置く（SQLite は親側に UNIQUE 索引を要求する）。
 
-7. **`findings.paragraph_id` を位置確定時は本文から導いてよいか**（決定 15）。
-   8.1 は指摘の項目に「段落ID」を挙げるだけで出所を書いていない。
-8. **`start_operation_id` を本 PR で持つか**（決定 14）。制御は PR9 だが、
-   後から一意制約を足すマイグレーションを増やしたくないので列だけ先に作る案にした。
+| 子 | 参照 |
+| --- | --- |
+| `run_targets` | `(run_id)` → `runs(id)` |
+| `check_units` | `(target_id, run_id)` → `run_targets(id, run_id)` |
+| `candidates` | `(check_unit_id, run_id)` → `check_units(id, run_id)`、`(finding_id, run_id)` → `findings(id, run_id)` |
+| `findings` | `(target_id, run_id)` → `run_targets(id, run_id)`、`(run_id, manuscript_version_id)` → `runs(id, manuscript_version_id)` |
+| `recheck_units` | `(finding_id, run_id)` → `findings(id, run_id)` |
+| `diagnostics` | `(candidate_id, run_id)` → `candidates(id, run_id)` |
+
+`candidates.finding_id` は null を許すが、SQLite の複合外部キーは既定（MATCH SIMPLE）で
+どれか 1 列でも null なら制約を検査しないので、`outside-target` の行は通る。
+
+`findings.manuscript_version_id` は `run_id` から辿れば導けるが、仕様 8.1 が指摘の項目として
+挙げているので列として持ち、`runs` との複合参照で食い違いを起こせなくする。
+
+SQLite の外部キーは既定で即時検査なので、書き込みの順序が決まる。
+`runs` → `run_targets` → `check_units` → `findings`（と `judgments`）→ `candidates` → `diagnostics` → `recheck_units`。
+`candidates.finding_id` が `findings` を指すので、統合結果を先に書いてから候補を書く
+（候補を先に書いて後から `finding_id` を更新する形でもよい。リポジトリはどちらでも通るようにし、
+1 つの検査対象分をまとめて 1 トランザクションで書く）。
+
+`drizzle-orm` の `foreignKey({ columns, foreignColumns })` は複数列を取れる
+（`sqlite-core/foreign-keys.d.ts` の `TColumns extends [AnySQLiteColumn, ...AnySQLiteColumn[]]`）。
+生成 SQL に `FOREIGN KEY (a, b) REFERENCES t(x, y)` が出ることは、決定 6 の部分索引と一緒に
+生成結果を見て確認する。
+
+### 決定 17：孤立サロゲートを持つ本文は永続化層が拒否する
+
+`ingestUtf8Bytes` は厳密デコードなので孤立サロゲートを作らないが、PR10 の貼り付け経路は
+JS 文字列を受け取る。better-sqlite3 は JS 文字列を UTF-8 にして書くため、孤立サロゲートは
+U+FFFD に置き換わり、「保存本文は BOM 除外以外を加工しない」に反した保存になる。
+さらに、置換前にハッシュを取ると `body` と `body_hash` も食い違う。
+
+そこで、原稿版を保存する入口で `body.isWellFormed()`（Node 20 以降。Node 24 で確認済み）を検査し、
+false なら `MalformedBodyError` を投げて行を作らない。ハッシュは検査を通った後に計算する。
+PR10 の API 入力でも検証してよいが、永続化層自身がこの不変条件を守る。
+
+### 決定 18：指摘の「理由」は列にせず元候補から組み立てる
+
+`MergedFinding`（PR4）に `reason` はなく、統合された元候補は別々の理由を返しうる
+（`mergeKey` は範囲・引用・修正案だけで、理由を含まない）。
+代表値を 1 つ選ぶと、どの候補の理由かが読み出し側から分からなくなる。
+
+`findings` に `reason` 列を置かず、読み出しレコードに
+`reasons: readonly { candidateId: string; perspective: Perspective; reason: string }[]` を持たせ、
+`candidates.llm.reason` から候補の順で組み立てる。位置特定失敗の指摘は候補 1 件なので 1 要素になる。
+仕様 5.4 の「指摘理由」は表示項目であり、正本は元候補の理由（8.1 の「元候補への参照」）だと読む。
+
+## レビューで決着した点（2026-09-09）
+
+計画の初稿で判断を保留した 8 点は、設計レビューで次のとおり決着した。
+
+| # | 論点 | 決着 |
+| --- | --- | --- |
+| 1 | 8.1 にない `run_targets` を足すか | 足す。保存済み範囲の正本として必要 |
+| 2 | 8.1 にない `candidates` を足すか | 足す。元候補と撤回理由の保持に必要 |
+| 3 | 「再確認結果」を列でなく関連で表すか | 関連で表す。`findings` への複製はしない（決定 5） |
+| 4 | 対象外でも `recheck_units` を作るか | 作る。対象外理由を書く場所になる（決定 4） |
+| 5 | `endpoint_url` を保存するか | 保存する。8.1 の要求で、ローカル DB への保存は PR7 の出力制限と矛盾しない（決定 10） |
+| 6 | 「未判断」を行なしと `undecided` の 2 通りで表すか | **表さない**。指摘の作成時に `undecided` の行を必ず作り、常に 1 指摘 1 行にする（決定 5 を修正） |
+| 7 | 位置確定時の段落 ID を本文から導くか | 導く（決定 15）。`findings` の表の説明も直した |
+| 8 | `start_operation_id` を本 PR で持つか | 持つ。一意制約まで初回マイグレーションに含める（決定 14） |
+
+あわせて、初稿の 4 つの欠陥を指摘されたので直した。
+
+| 指摘 | 対応 |
+| --- | --- |
+| `run_id` と親 ID が独立した外部キーで、実行をまたぐ参照を止められない | 決定 16（複合外部キー）を追加 |
+| 孤立サロゲートの保存を PR10 に先送りしていた（本文が U+FFFD に変わり、`body_hash` とも食い違う） | 決定 17（永続化層で拒否）を追加。テスト R1b を「保存に失敗し行が残らない」に変更 |
+| `findings.reason` の導出規則がなかった（`MergedFinding` に `reason` がない） | 決定 18（列を置かず元候補から組み立てる）を追加 |
+| `runs.model_id` と `generation_settings.model` の二重管理 | 決定 11 で JSON 側から `model` を外した |
 
 ## PR9・PR10・PR13 への持ち越し
 
@@ -485,11 +564,8 @@ function claimUnit(db, id: string, from: UnitStatus, to: UnitStatus): boolean
 - UI からの接続先上書きを保存する `settings` 表（PR10）。
 - `LmStudioClient` の `close()` / `dispose()`（PR10。PR7 からの持ち越し）。
 - 一括エクスポート形式と、そこでの接続先 URL の扱い（PR13）。
-- **貼り付け経路の孤立サロゲート**（PR10）。ファイル取り込み（`ingestUtf8Bytes`）は
-  厳密デコードなので孤立サロゲートを作らないが、PR10 の貼り付け API は JS 文字列を受け取る。
-  better-sqlite3 は JS 文字列を UTF-8 にして書くため、孤立サロゲートは U+FFFD に置き換わり、
-  「本文を加工しない」に反した保存になる。本 PR ではテスト R1b で現状の往復挙動を記録するにとどめ、
-  取り込み時に拒否する判断は PR10 で行う。
+- **貼り付け経路の孤立サロゲートを API 側でも弾くか**（PR10）。本 PR は決定 17 で
+  永続化層が拒否するようにしたので保存は守られる。ユーザーに何を返すかは PR10 で決める。
 - `truncateRaw` のサロゲートペア境界（PR7 からの持ち越し）は、決定 9 により
   **本 PR で永続化の経路を開かないことで閉じる**。`raw` を保存する必要が出たら再検討する。
 
@@ -517,6 +593,10 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | S5 | 同じ `target_id` と同じ `perspective` の `check_units` を 2 行入れると一意制約違反 |
 | S6 | 同じ `finding_id` の `recheck_units` を 2 行入れると一意制約違反 |
 | S6b | 同じ `start_operation_id` の `runs` を 2 行入れると一意制約違反。null は何行でも入る |
+| S8 | 実行 A の候補に実行 B の指摘の ID を入れると外部キー違反（決定 16） |
+| S9 | 実行 A の検査単位に実行 B の検査対象の ID を入れると外部キー違反 |
+| S10 | `findings.manuscript_version_id` に `runs` と違う原稿版 ID を入れると外部キー違反 |
+| S11 | `candidates.finding_id` が null なら（`outside-target`）複合外部キーを通る |
 | S7 | `runs` の挿入型に API キーの列がない（型レベル。`@ts-expect-error` で確認） |
 
 ### R：リポジトリの往復
@@ -524,7 +604,7 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | # | 内容 |
 | --- | --- |
 | R1 | 原稿版：CRLF・単独 CR・本文中の U+FEFF・サロゲートペア・異体字セレクタ・ZWJ 絵文字を含む本文がそのまま戻る |
-| R1b | 原稿版：孤立サロゲートを含む文字列を保存したときの往復結果を記録する（現状の挙動の文書化。取り込みでの拒否は PR10） |
+| R1b | 原稿版：孤立サロゲートを含む本文の保存が `MalformedBodyError` になり、DB に行が残らない（決定 17） |
 | R2 | 原稿版：`body_hash` が CRLF 版と LF 版で異なる（改行が本文の一部であることの確認） |
 | R3 | 検査実行：`chunk_settings`・`generation_settings`・`allowed_words`・`model_info` が値として往復する |
 | R4 | 検査実行：`model_info` が null でも往復する |
@@ -538,10 +618,12 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | R12 | 再確認：`not-applicable` で `not_applicable_reason` の 3 値がそれぞれ保存できる |
 | R13 | 位置診断：`transform_candidates` が最大 3 件・`range: null` を含む形で往復し、`ambiguous` では null |
 | R14 | 採否：同じ指摘に 2 回書いても行は 1 つで、`updated_at` が更新される |
-| R15 | 採否：`undecided` に戻しても行が残る |
+| R15 | 採否：指摘を作ると `undecided` の行が必ずでき、`undecided` に戻しても行が残る |
 | R16 | `claimUnit` は状態が一致するときだけ true を返し、二度目は false（同時取得の防止） |
 | R16b | `claimRun` も同じ（`running` → `stopped` は 1 回だけ成功する） |
 | R17 | 指摘の読み出しに再確認結果と採否が付き、再確認の書き込みが採否を変えない |
+| R18 | 指摘の読み出しの `reasons` が、理由の異なる 2 候補を統合した指摘で 2 要素になり、候補の順に並ぶ（決定 18） |
+| R19 | 検査実行の読み出しで `GenerationSettings` に `model_id` が入って戻る（決定 11） |
 
 ### D：再起動をまたぐ保持（`persistence.test.ts`）
 
@@ -563,7 +645,7 @@ D1・D2 は WAL ファイルを含めて閉じてから開く。**Windows では
 
 ## 進め方
 
-1. 本計画をレビューに出し、「解釈で迷った点」の 6 項目に決着を付ける。
+1. 本計画のレビューは完了（「レビューで決着した点」）。以降は決定 1〜18 に従う。
 2. 着手前に 2 点だけ確かめる：`.gitignore` が `drizzle/` を除外していないこと（現状していない）、
    `import.meta.dirname` が現在の TS 設定と `@types/node` で型付くこと。
 3. `db/schema.ts` を書き、`pnpm --filter @shuten/server db:generate` で SQL を生成してコミット。
@@ -573,7 +655,7 @@ D1・D2 は WAL ファイルを含めて閉じてから開く。**Windows では
 6. リポジトリを 7 ファイル。テストは M → S → R → D → J の順に足す。
 7. `src/index.ts` に `applyMigrations` を挿す（決定 2）。
 8. `pnpm check` を通す。Windows は CI で確認する。
-9. PR を作り、「解釈で迷った点」の決着をそのまま本文に載せる。
+9. PR を作り、「レビューで決着した点」の 2 つの表をそのまま本文に載せる。
 
 担当：Claude がスキーマ設計と決定、実装とテストは qwen（`qwen-delegate`。スペックは英語で書き、
 不変条件を MUST / MUST NOT として明記する）、Claude が実ファイルを読んで検証する。
