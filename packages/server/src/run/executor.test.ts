@@ -300,6 +300,28 @@ describe("createExecutor", () => {
     expect(outcome.halt?.failure).toBeNull();
   });
 
+  it("E11c: ensureLoaded の途中で中断されると chat を送らず generationUnconfirmed にしない", async () => {
+    const controller = new AbortController();
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        // 一覧は取れたが、その待ち時間の間に停止要求が来た状況。
+        controller.abort();
+        return model("llm");
+      },
+    });
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.failure.origin).toBe("local");
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+  });
+
   it("E12: 最初の ensureLoaded の ModelInfo が modelInfo に残る", async () => {
     let count = 0;
     const client = createMockClient({
