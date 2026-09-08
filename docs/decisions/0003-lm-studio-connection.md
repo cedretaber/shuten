@@ -96,7 +96,14 @@ PR7 の試運転（gemma、思考あり）で、`checkTimeoutMs` に 900,000ms �
 
 - `undici` は **7 系（7.29.1 に固定）** を使う。`undici@8` の `Agent` は Node 24 の `fetch` に渡すと
   `UND_ERR_INVALID_ARG` で動かない。
-- 効いていることの確認は実 HTTP サーバーを使う回帰テスト（`client.test.ts` の C47・C48）で行う。
-  `headersTimeout` を短くした Agent を渡すと `connection` になり、無効化した既定のクライアントでは
-  遅い応答でも成功する。なお undici のタイマーは約 500ms 刻みなので、1 秒未満の `headersTimeout` でも
-  発火は 1 秒前後になる。テストの遅延はそれを踏まえた値にしてある。
+- 効いていることの確認は実 HTTP サーバーを使う回帰テスト（`client.test.ts` の C47〜C49）で行う。
+  役割はそれぞれ異なる。**C47** は `headersTimeout` を短くした Agent を渡すと `connection` になることを見る、
+  dispatcher が実際に効いていることを判別できる唯一のテスト。**C49** は既定のクライアント（実 `fetch` ＋
+  既定の Agent）に短い `timeoutMs` を渡し、undici 7 の Agent を Node 内蔵 `fetch` に渡すという版の境界を
+  通っても自前のタイマーが先に効いて `timeout` になることを見る、本番経路の回帰テスト。**C48** は遅延
+  2000ms のサーバーに既定のクライアントで要求して成功することを見るが、この遅延は修正前の既定値
+  （undici の `headersTimeout` 300 秒）でも打ち切られないため、単体では dispatcher が効いていることの
+  証明にはならない。役割は既定のクライアント（実 `fetch`）が壊れていないことのスモークテストで、
+  undici の版が非互換になったとき（`UND_ERR_INVALID_ARG` など）に落ちて気づけるようにする。
+  なお undici のタイマーは約 500ms 刻みなので、1 秒未満の `headersTimeout` でも発火は 1 秒前後になる。
+  テストの遅延はそれを踏まえた値にしてある。

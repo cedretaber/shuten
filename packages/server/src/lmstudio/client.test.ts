@@ -813,6 +813,8 @@ describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
    * 応答ヘッダーを遅らせるローカルサーバー。生成完了までヘッダーが来ない状況の縮小版。
    * undici のタイマーは約 500ms 刻みで、`headersTimeout` に 1 秒未満を指定しても発火は
    * 1 秒前後になる。遅延を縮めると C47 が先に成功してしまうので、この値は小さくしないこと。
+   * C49 はこの遅延より十分短い `timeoutMs`（500ms）を指定して自前タイマーの方が先に効くことを見るので、
+   * ここも縮めると C49 の判別力が失われる。
    */
   const HEADER_DELAY_MS = 2000;
   let server: Server | null = null;
@@ -860,8 +862,23 @@ describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
   }, 10_000);
 
   it("C48 既定のクライアントは timeoutMs より前に打ち切られず成功する", async () => {
+    // この遅延（2000ms）は修正前の既定値（undici の headersTimeout 300 秒）でも打ち切られないため、
+    // このテスト単体では dispatcher が効いていることの証明にはならない（判別しているのは C47）。
+    // ここでの役割は、既定のクライアント（実 fetch）が壊れていないことのスモークテスト。
     const client = createLmStudioClient({ baseUrl });
     const models = await client.listModels({ timeoutMs: 5000 });
     expect(models.map((model) => model.id)).toEqual(["m1"]);
+  }, 10_000);
+
+  it("C49 既定のクライアントは実 fetch + timeoutMs でも自前タイマーが先に効いて timeout になる", async () => {
+    // C18〜C21・C32・L2 の timeout/aborted 分類はすべてモック fetch。ここでは undici 7 の Agent を
+    // Node 内蔵の実 fetch に dispatcher として渡す本番経路を通し、その境界でも自前タイマー
+    // （timeoutMs）が undici 側の既定タイムアウトより先に効くことを確認する。
+    const client = createLmStudioClient({ baseUrl });
+    const started = performance.now();
+    const error = await catchLmStudioError(client.listModels({ timeoutMs: 500 }));
+    const elapsed = performance.now() - started;
+    expect(error.kind).toBe("timeout");
+    expect(elapsed).toBeLessThan(HEADER_DELAY_MS);
   }, 10_000);
 });
