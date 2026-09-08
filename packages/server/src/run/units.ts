@@ -14,7 +14,7 @@ import {
   sliceRange,
 } from "@shuten/shared";
 
-import type { ChatRequest, ChatResult } from "../lmstudio/types.ts";
+import type { ChatRequest, ChatResult, Usage } from "../lmstudio/types.ts";
 import { buildCheckRequest, buildRecheckRequest } from "../prompts/build.ts";
 import { parseCheckResponse, parseRecheckResponse } from "../prompts/parse.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
@@ -104,6 +104,10 @@ export interface CheckUnitOutcome {
   /** unit.status が pending でも非 null になりうる（PR9b の決定 20 が使う）。 */
   readonly failure: UnitFailure | null;
   readonly halt: RunStop | null;
+  /** executor.execute が計測した所要時間。unit.status が pending でも入る（PR9b の決定 20 が使う）。 */
+  readonly elapsedMs: number;
+  /** unit.status が pending でも取れたときは入る（PR9b の決定 20 が使う）。 */
+  readonly usage: Usage | null;
 }
 
 /**
@@ -155,7 +159,14 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
       elapsedMs: outcome.elapsedMs,
       findingCount: outcome.value.findings.length,
     };
-    return { unit, candidates, failure: null, halt: null };
+    return {
+      unit,
+      candidates,
+      failure: null,
+      halt: null,
+      elapsedMs: outcome.elapsedMs,
+      usage: outcome.usage,
+    };
   }
 
   let halt = outcome.halt;
@@ -186,7 +197,14 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
         inputGraphemes,
         elapsedMs: outcome.elapsedMs,
       };
-  return { unit, candidates: [], failure: outcome.failure, halt };
+  return {
+    unit,
+    candidates: [],
+    failure: outcome.failure,
+    halt,
+    elapsedMs: outcome.elapsedMs,
+    usage: outcome.usage,
+  };
 }
 
 export interface RecheckUnitArgs {
@@ -220,6 +238,14 @@ export interface RecheckUnitOutcome {
   /** result.status が pending でも非 null になりうる（CheckUnitOutcome と同じ理由）。 */
   readonly failure: UnitFailure | null;
   readonly halt: RunStop | null;
+  /**
+   * executor.execute が計測した所要時間。result.status が pending でも入る
+   * （CheckUnitOutcome と同じ理由）。suppressed で短絡したとき、および
+   * buildRecheckInput が InputTooLongError を投げて生成要求を送らなかったときは 0。
+   */
+  readonly elapsedMs: number;
+  /** result.status が pending でも取れたときは入る（CheckUnitOutcome と同じ理由）。 */
+  readonly usage: Usage | null;
 }
 
 /**
@@ -229,7 +255,13 @@ export interface RecheckUnitOutcome {
  */
 export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<RecheckUnitOutcome> {
   if (args.suppressed) {
-    return { result: { status: "suppressed" }, failure: null, halt: null };
+    return {
+      result: { status: "suppressed" },
+      failure: null,
+      halt: null,
+      elapsedMs: 0,
+      usage: null,
+    };
   }
 
   let input: CheckInput;
@@ -252,6 +284,8 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
       },
       failure,
       halt: null,
+      elapsedMs: 0,
+      usage: null,
     };
   }
 
@@ -286,6 +320,8 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
       },
       failure: null,
       halt: null,
+      elapsedMs: outcome.elapsedMs,
+      usage: outcome.usage,
     };
   }
 
@@ -301,6 +337,8 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
       },
       failure: outcome.failure,
       halt,
+      elapsedMs: outcome.elapsedMs,
+      usage: outcome.usage,
     };
   }
   return {
@@ -314,5 +352,7 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
     },
     failure: outcome.failure,
     halt,
+    elapsedMs: outcome.elapsedMs,
+    usage: outcome.usage,
   };
 }

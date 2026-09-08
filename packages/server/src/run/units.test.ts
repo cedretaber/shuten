@@ -351,6 +351,9 @@ describe("executeCheckUnit", () => {
     expect(outcome.failure?.reason).toBe("model-not-loaded");
     expect(outcome.failure?.origin).toBe("ensure-loaded");
     expect(outcome.halt).toEqual(halt);
+    // unit.status が pending でも elapsedMs は数値として残る（PR9b の決定 20 が使う）。
+    expect(outcome.elapsedMs).toBe(5);
+    expect(outcome.usage).toBeNull();
   });
 
   it("chat 由来の aborted（停止操作）は unit.status が pending になり、failure は非 null で残る（決定 20）", async () => {
@@ -381,6 +384,9 @@ describe("executeCheckUnit", () => {
     expect(outcome.failure?.reason).toBe("aborted");
     expect(outcome.failure?.origin).toBe("chat");
     expect(outcome.halt).toEqual(halt);
+    // unit.status が pending でも elapsedMs は数値として残る（PR9b の決定 20 が使う）。
+    expect(outcome.elapsedMs).toBe(5);
+    expect(outcome.usage).toBeNull();
   });
 });
 
@@ -562,6 +568,9 @@ describe("executeRecheckUnit", () => {
     expect(outcome.failure?.reason).toBe("model-not-loaded");
     expect(outcome.failure?.origin).toBe("ensure-loaded");
     expect(outcome.halt).toEqual(halt);
+    // result.status が pending でも elapsedMs は数値として残る（PR9b の決定 20 が使う）。
+    expect(outcome.elapsedMs).toBe(5);
+    expect(outcome.usage).toBeNull();
   });
 
   it("chat 由来の aborted（停止操作）は result.status が pending になり、failure は非 null で残る（決定 20）", async () => {
@@ -599,6 +608,9 @@ describe("executeRecheckUnit", () => {
     expect(outcome.failure?.reason).toBe("aborted");
     expect(outcome.failure?.origin).toBe("chat");
     expect(outcome.halt).toEqual(halt);
+    // result.status が pending でも elapsedMs は数値として残る（PR9b の決定 20 が使う）。
+    expect(outcome.elapsedMs).toBe(5);
+    expect(outcome.usage).toBeNull();
   });
 
   it("localFailure は origin: local の UnitFailure を作る", () => {

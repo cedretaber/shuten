@@ -969,6 +969,32 @@ PR9a の実装で、設計段階では見えていなかった点がいくつか
   PR9b はこの順序を必ず守ること。** 対象の統合結果を読むのは、その対象の全検査単位が `pending` /
   `running` を持たなくなった時点に限る。
 
+- **位置特定失敗の指摘に境界検証が掛からない。** `assertFindingBoundary`（`run/persist.ts`）を呼ぶのは
+  `run/merge-store.ts` の 2 箇所（`createFinding` / `attachToFinding`）だけで、どちらも位置確定済み
+  （`locateStatus: "located"`）の経路である。`db/repositories/findings.ts` の `saveUnlocatedCandidate`
+  は境界検証を通らずに書き込む。決定 17 が定める 4 項目のうち「`mergeKey` は位置確定済みの指摘にだけ
+  付く」「孤立サロゲートを含まない」は、位置特定に失敗した指摘（`not-found` / `ambiguous` /
+  `outside-target`）にも意味がある不変条件のはずである。PR9b が `saveUnlocatedCandidate` を呼ぶ実装を
+  追加するときに、呼び出し側で該当する検査を通すか、`run/persist.ts` に位置特定失敗用の検証入口を
+  新設するかを決めること。PR9a には `saveUnlocatedCandidate` を呼ぶ経路が無いため、現時点での実害はない。
+
+- **`run/state.ts` は本番コードから 1 箇所も呼ばれていない。** `canTransitionRun` / `canTransitionUnit`
+  は `db/repositories` の `claimUnit` / `finishCheckUnit` / `finishRun` のどこからも参照されておらず、
+  「状態を書く経路はすべてこれを通す」という `state.ts` 冒頭のコメントの前提は、まだコードとして
+  強制されていない。PR9a は状態機械の判定ロジックだけを用意する基盤 PR であり、実装をまだ持たない
+  PR9b のオーケストレーターに接続できないのは分割の意図どおりである（`createRequestQueue`
+  （`run/queue.ts`）と `merge-store.ts` の `mergeCandidateIntoRun` も同様に、PR9a の時点では
+  本番コードから未接続）。PR9b でオーケストレーターを実装するときに、状態を書く箇所が必ず
+  `canTransitionRun` / `canTransitionUnit` を経由するように接続すること。
+
+- **`PersistBoundaryError` のメッセージには原稿の断片（最大 20 コード単位）が入る。** `run/persist.ts`
+  の `previewQuote` は、境界検証に違反した引用の先頭 20 コード単位（書記素ではない）をエラー
+  メッセージに含める。プロセス内で検査対象を絞り込むための例外としては妥当だが、決定 14 が
+  「想定外の例外のメッセージをそのまま `stop_message` に入れない」と定めているとおり、PR9b が
+  `PersistBoundaryError` を捕捉して停止理由（`stop_message` 等）に転記する経路を作るときは、
+  接続先 URL・API キーだけでなく原稿の断片も DB に残さないこと（メッセージ全体を捨てるか、
+  原稿由来の部分を除いた要約に置き換える）。
+
 ## PR10 以降への持ち越し（本 PR では作らない）
 
 - HTTP API・SSE の口（PR10）。本 PR のオーケストレーターは関数として呼べる形にとどめる。

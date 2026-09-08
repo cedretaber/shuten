@@ -112,6 +112,10 @@ function aggregateVerdict(verdicts: readonly InitialVerdict[]): InitialVerdict {
  * - `mergeKey(candidate)` が null（修正案なし）→ 常に新しい指摘を作る（仕様書 6.4）。
  * - 非 null → 同じ `run_id` の `findings` を `merge_key` で引く（`findFindingByMergeKey`。
  *   照合は必ず同じ実行 ID の中だけ）。
+ *   `target_id` を照合条件に加えていないが、誤統合（別の検査対象の候補同士が統合される）は
+ *   起きない。`mergeKey` は `range.start:range.end` を含み、位置確定済みの候補の `range` は
+ *   常に自分の検査対象の範囲内から始まる。検査対象どうしは重ならないので、`run_id` が同じで
+ *   `range` が一致するなら同じ検査対象に属すると確定する（詳細計画の決定 9）。
  *   - 見つかれば、候補をその指摘に紐づけ、統合先に紐づく全候補を読み直して集約・抑制を
  *     再計算する。`judgments` には一切触れない（仕様 5.4「再確認や統合は作者の採否を
  *     上書きしない」）。
