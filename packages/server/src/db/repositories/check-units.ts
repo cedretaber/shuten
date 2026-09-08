@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 
 import type { Usage } from "../../lmstudio/types.ts";
 import type { UnitStatus } from "../../run/status.ts";
@@ -165,6 +165,21 @@ export function listCheckUnits(db: AppDatabase, runId: string): CheckUnitRecord[
     .select()
     .from(checkUnits)
     .where(eq(checkUnits.runId, runId))
+    .orderBy(asc(checkUnits.targetId), asc(checkUnits.perspective))
+    .all();
+  return rows.map(rowToCheckUnitRecord);
+}
+
+/**
+ * 検査実行に属する未完了（`pending` / `running`）の検査単位を列挙する（PR9 の再開が使う）。
+ * `not-applicable` は対象外（対象外なので再開しない）。`done` / `failed` も含めない
+ * （失敗単位の個別再試行は PR9 が別の経路で扱う。仕様書 8.2 節）。
+ */
+export function listUnfinishedCheckUnits(db: AppDatabase, runId: string): CheckUnitRecord[] {
+  const rows = db
+    .select()
+    .from(checkUnits)
+    .where(and(eq(checkUnits.runId, runId), inArray(checkUnits.status, ["pending", "running"])))
     .orderBy(asc(checkUnits.targetId), asc(checkUnits.perspective))
     .all();
   return rows.map(rowToCheckUnitRecord);

@@ -10,6 +10,7 @@ import { insertManuscriptVersion } from "./manuscripts.ts";
 import {
   claimRun,
   findRun,
+  finishRun,
   type InsertRunInput,
   insertRun,
   insertRunTarget,
@@ -195,6 +196,53 @@ describe("db/repositories/runs", () => {
     const second = claimRun(db, run.id, "running", "stopped");
     expect(second).toBe(false);
     expect(findRun(db, run.id)?.status).toBe("stopped");
+    close();
+  });
+
+  it("R20: finishRun は status・stopReason・stopMessage・generationUnconfirmed・finishedAt を更新し、他の列を変えない", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+
+    // 停止理由が null の完了（completed）。
+    const completedRun = insertRun(db, baseRunInput({ id: "r-completed", status: "running" }));
+    const finishedAt1 = new Date("2026-09-09T01:00:00.000Z");
+    finishRun(db, completedRun.id, {
+      status: "completed",
+      stopReason: null,
+      stopMessage: null,
+      generationUnconfirmed: false,
+      finishedAt: finishedAt1,
+    });
+    const completed = findRun(db, completedRun.id);
+    expect(completed?.status).toBe("completed");
+    expect(completed?.stopReason).toBeNull();
+    expect(completed?.stopMessage).toBeNull();
+    expect(completed?.generationUnconfirmed).toBe(false);
+    expect(completed?.finishedAt).toEqual(finishedAt1);
+    // status・stopReason・stopMessage・generationUnconfirmed・finishedAt 以外の列は変わらない。
+    expect(completed?.modelId).toBe(completedRun.modelId);
+    expect(completed?.generationSettings).toEqual(completedRun.generationSettings);
+    expect(completed?.allowedWords).toEqual(completedRun.allowedWords);
+    expect(completed?.chunkSettings).toEqual(completedRun.chunkSettings);
+
+    // 停止理由のある停止（stopped + generationUnconfirmed = true）。
+    const stoppedRun = insertRun(db, baseRunInput({ id: "r-stopped", status: "running" }));
+    const finishedAt2 = new Date("2026-09-09T02:00:00.000Z");
+    finishRun(db, stoppedRun.id, {
+      status: "stopped",
+      stopReason: "aborted",
+      stopMessage: "ユーザーが停止しました",
+      generationUnconfirmed: true,
+      finishedAt: finishedAt2,
+    });
+    const stopped = findRun(db, stoppedRun.id);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.stopReason).toBe("aborted");
+    expect(stopped?.stopMessage).toBe("ユーザーが停止しました");
+    expect(stopped?.generationUnconfirmed).toBe(true);
+    expect(stopped?.finishedAt).toEqual(finishedAt2);
+    expect(stopped?.modelId).toBe(stoppedRun.modelId);
+    expect(stopped?.allowedWords).toEqual(stoppedRun.allowedWords);
     close();
   });
 
