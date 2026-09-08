@@ -13,6 +13,7 @@ import type {
 
 import type { ModelInfo, Usage } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
+import type { RunStatus } from "./status.ts";
 
 /** 結果 JSON の版。破壊的に形を変えるときだけ上げる。 */
 export const RESULT_VERSION: string = "1";
@@ -116,7 +117,13 @@ export interface TargetPlan {
   readonly input: CheckInput;
 }
 
-export type RunStatus = "completed" | "partially-failed" | "stopped";
+/**
+ * パイプライン実行（`runPipeline`）が返す状態。DB の実行状態（`./status.ts` の `RunStatus`）の
+ * うち、1 回のパイプライン呼び出しの結果として取りうるものだけを `Extract` で絞り込む
+ * （「実行中」「復旧待ち」はパイプライン呼び出しの外で管理する状態なのでここには含まれない）。
+ * `Extract` で導くことで、`status.ts` の値が変わったときにコンパイルで気づける。
+ */
+export type PipelineRunStatus = Extract<RunStatus, "completed" | "partially-failed" | "stopped">;
 
 export type StopReason =
   | "model-not-loaded"
@@ -189,7 +196,7 @@ export interface RunConditions {
 }
 
 export interface PipelineResult {
-  readonly status: RunStatus;
+  readonly status: PipelineRunStatus;
   readonly stop: RunStop | null;
   readonly conditions: RunConditions;
   readonly targets: readonly TargetPlan[];

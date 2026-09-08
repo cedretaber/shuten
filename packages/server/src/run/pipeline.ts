@@ -38,8 +38,8 @@ import type {
   FindingResult,
   PipelineMode,
   PipelineResult,
+  PipelineRunStatus,
   RecheckResult,
-  RunStatus,
   RunStop,
   TargetPlan,
   UnitFailure,
@@ -165,7 +165,7 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
   /** 結果を組み立てる。停止・正常終了のどちらもここを通る。 */
   const finish = (targetCount: number): PipelineResult => {
     const finishedAtMs = now();
-    const status: RunStatus =
+    const status: PipelineRunStatus =
       stop !== null
         ? "stopped"
         : checkUnits.some((unit) => unit.status === "failed") ||

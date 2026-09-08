@@ -7,7 +7,7 @@ import type { GenerationSettings } from "@shuten/server/prompts/types.ts";
 import type { PipelineEvent } from "@shuten/server/run/events.ts";
 import type { PipelineArgs } from "@shuten/server/run/pipeline.ts";
 import { runPipeline as runPipelineImpl } from "@shuten/server/run/pipeline.ts";
-import type { PipelineResult, RunStatus } from "@shuten/server/run/result.ts";
+import type { PipelineResult, PipelineRunStatus } from "@shuten/server/run/result.ts";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
 import { parseArgs } from "./args.ts";
@@ -115,7 +115,7 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function exitCodeForStatus(status: RunStatus): number {
+function exitCodeForStatus(status: PipelineRunStatus): number {
   switch (status) {
     case "completed":
       return 0;

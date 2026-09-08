@@ -1,6 +1,6 @@
 import type { LmStudioClient, LmStudioClientOptions } from "@shuten/server/lmstudio/types.ts";
 import type { PipelineArgs } from "@shuten/server/run/pipeline.ts";
-import type { PipelineResult, RunStatus, RunStop } from "@shuten/server/run/result.ts";
+import type { PipelineResult, PipelineRunStatus, RunStop } from "@shuten/server/run/result.ts";
 import { RESULT_VERSION } from "@shuten/server/run/result.ts";
 import { ingestUtf8Bytes } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ function stubClient(): LmStudioClient {
   };
 }
 
-function buildResult(status: RunStatus, stop: RunStop | null = null): PipelineResult {
+function buildResult(status: PipelineRunStatus, stop: RunStop | null = null): PipelineResult {
   return {
     status,
     stop,
@@ -209,7 +209,7 @@ describe("main C7: 結果 JSON の往復", () => {
   });
 });
 
-describe("main C8: 終了コードが RunStatus に対応する", () => {
+describe("main C8: 終了コードが PipelineRunStatus に対応する", () => {
   it("completed は 0", async () => {
     const captured = buildIO({ runPipeline: () => Promise.resolve(buildResult("completed")) });
     expect(await main(REQUIRED, {}, captured.io)).toBe(0);

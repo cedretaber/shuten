@@ -1,6 +1,6 @@
 import type { Perspective } from "@shuten/shared";
 
-import type { CheckUnitResult, RecheckResult, RunStatus, RunStop } from "./result.ts";
+import type { CheckUnitResult, PipelineRunStatus, RecheckResult, RunStop } from "./result.ts";
 
 /**
  * パイプラインの進捗イベント（決定 10）。1 つのコールバックに union で流す。PR10 の SSE がそのまま流せる形にする。
@@ -34,4 +34,8 @@ export type PipelineEvent =
       readonly findingId: string;
       readonly result: RecheckResult;
     }
-  | { readonly type: "run-finished"; readonly status: RunStatus; readonly stop: RunStop | null };
+  | {
+      readonly type: "run-finished";
+      readonly status: PipelineRunStatus;
+      readonly stop: RunStop | null;
+    };
