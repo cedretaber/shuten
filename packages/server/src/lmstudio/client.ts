@@ -1,3 +1,5 @@
+import { Agent, type Dispatcher } from "undici";
+
 import { LmStudioError } from "./errors.ts";
 import type {
   ChatOptions,
@@ -58,6 +60,16 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
+/**
+ * `fetch` の init に undici の `dispatcher` を載せるための型。Node の `fetch` は
+ * `RequestInit.dispatcher` を受け付けるが、その型定義は `@types/node` が同梱する
+ * `undici-types` のもので、`undici` パッケージが公開する `Dispatcher` とは別の宣言になる。
+ * 実体は同じなので、`dispatcher` だけ差し替えた型を定義し、`fetch` に渡すときに戻す。
+ */
+type FetchInit = Omit<RequestInit, "dispatcher"> & {
+  readonly dispatcher?: Dispatcher | undefined;
+};
+
 interface RawResponse {
   readonly status: number;
   readonly text: string;
@@ -79,7 +91,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
 async function sendRequest(
   fetchImpl: typeof globalThis.fetch,
   url: string,
-  init: RequestInit,
+  init: FetchInit,
   callerSignal: AbortSignal | undefined,
   timeoutMs: number,
 ): Promise<RawResponse> {
@@ -96,7 +108,9 @@ async function sendRequest(
   const onCallerAbort = (): void => controller.abort();
   callerSignal?.addEventListener("abort", onCallerAbort);
   try {
-    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const requestInit: FetchInit = { ...init, signal: controller.signal };
+    // 上記のとおり `dispatcher` の宣言元が違うだけなので、ここで元の型に戻す。
+    const response = await fetchImpl(url, requestInit as unknown as RequestInit);
     const text = await response.text();
     return { status: response.status, text };
   } catch (err) {
@@ -165,6 +179,19 @@ export function createLmStudioClient(clientOptions: LmStudioClientOptions): LmSt
   const baseUrl = clientOptions.baseUrl;
   const apiKey = clientOptions.apiKey ?? null;
   const fetchImpl = clientOptions.fetch ?? globalThis.fetch;
+  /**
+   * undici（Node の `fetch` の実体）が持つ独自のタイムアウトを無効にするための Dispatcher。
+   * クライアント 1 つにつき 1 つだけ作り、すべての要求で使い回す。
+   *
+   * `headersTimeout` の既定は 300 秒で、`stream: false` で生成を頼む我々の使い方では
+   * 応答ヘッダーが生成の完了までこない。つまり既定のままだと 300 秒が生成時間の事実上の上限になり、
+   * 呼び出し元が `timeoutMs` に 15 分を渡しても 300 秒で切られる。しかもその切断は我々の
+   * `AbortSignal` でもタイマーでもないため、`sendRequest` は `timeout` ではなく `connection` に
+   * 分類してしまい、仕様書 7 節が求める「接続失敗とタイムアウトの区別」が壊れる（実測 301,289ms）。
+   * そこで両方 0 にして無効化し、打ち切りの責任を `sendRequest` のタイマーだけに一本化する。
+   */
+  const dispatcher: Dispatcher =
+    clientOptions.dispatcher ?? new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
   async function listModels(options?: RequestOptions): Promise<ModelInfo[]> {
     const signal = options?.signal;
@@ -174,7 +201,7 @@ export function createLmStudioClient(clientOptions: LmStudioClientOptions): LmSt
     const { status, text } = await sendRequest(
       fetchImpl,
       url,
-      { method: "GET", headers },
+      { method: "GET", headers, dispatcher },
       signal,
       timeoutMs,
     );
@@ -215,7 +242,7 @@ export function createLmStudioClient(clientOptions: LmStudioClientOptions): LmSt
     const { status, text } = await sendRequest(
       fetchImpl,
       url,
-      { method: "POST", headers, body: requestBody },
+      { method: "POST", headers, body: requestBody, dispatcher },
       signal,
       timeoutMs,
     );

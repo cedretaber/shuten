@@ -21,6 +21,7 @@
 - `packages/shared` — 位置換算、段落・書記素クラスタ分割、引用照合、許容語判定、共有型
 - `packages/server` — HTTP API、単一実行キュー、永続化、LM Studio クライアント、静的配信
 - `packages/web` — UI
+- `packages/cli` — 評価用 CLI。原稿ファイルに検査パイプラインを回して結果 JSON を出す
 
 単位ごとに責務を 1 つに絞り、テストしやすい境界を作る。
 特に「分割」「照合」「統合・抑制」「LM Studio クライアント」「永続化」は独立させる。
@@ -34,6 +35,9 @@
 - `erasableSyntaxOnly`：`enum`、`namespace`、パラメータプロパティ、`import x = require()` を使わない。
 - `shared` はビルドしない。`exports` は `src/index.ts` を直接指す。公開する関数は `src/index.ts` から再エクスポートする。
 - 依存の版は完全固定（`^` なし）。更新は意図的に行い、コミットメッセージに理由を書く。
+- `@shuten/server` の `undici` は **7 系**に固定する。`undici@8` の `Agent` を Node 24 の内蔵 `fetch` に
+  `dispatcher` として渡すと `UND_ERR_INVALID_ARG` になるため。版を上げるときは
+  `packages/server/src/lmstudio/client.test.ts` の C47〜C49 が通ることを確認する。詳細は決定記録 0003。
 - Node.js の完全版は `.node-version` と `package.json` の `volta` に同じ値で固定し、`engines` はサポート範囲を示す。
   更新時は 3 箇所を同時に変える。pnpm は `packageManager` で固定。
 - `package.json` の scripts は Windows でも動く書き方に限定する（`rm -rf`、`&&` 以外のシェル構文、環境変数の inline 代入を使わない）。

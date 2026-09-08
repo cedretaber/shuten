@@ -74,3 +74,57 @@ gemma は思考の有無にかかわらず助詞抜けを見逃して 2 件。�
 変更内容を最小限にする」と指示する。文全体を引用して必要な文字だけを直した応答はこの条件を満たしており、
 引用を短くする改善とは分けて扱う。
 所要時間と思考量はモデル固有の値で、モデルを変えれば再計測が必要。
+
+## Node の `fetch`（undici）の既定タイムアウトを無効化する（2026-09-08、PR7 の試運転）
+
+PR7 の試運転（gemma、思考あり）で、`checkTimeoutMs` に 900,000ms を渡した要求が **301,289ms** で
+失敗した。原因は Node の `fetch` の実体である undici の **`headersTimeout` の既定 300 秒**である。
+我々は `stream: false` で生成を頼むので、応答ヘッダーは生成が終わるまで来ない。つまり既定のままでは
+300 秒が生成時間の事実上の上限になり、それより長いタイムアウトを設定しても意味がない。
+
+さらに悪いことに、この打ち切りは我々の `AbortSignal` でもタイマーでもないため、`client.ts` の
+`sendRequest` は `timeout` ではなく `connection`（`status` は null）に分類する。PR7 の executor は
+`connection` を「応答を受け取れなかった通信失敗」＝生成が走り続けている可能性ありと解釈するので、
+実行全体が `connection-lost`・`generationUnconfirmed: true` で止まっていた。仕様書 7 節が求める
+「接続失敗とタイムアウトの区別」と「タイムアウトは代表的な入力長・出力長・推論モードで測って余裕を持たせる」
+の両方に反する。
+
+**決定**：クライアント 1 つにつき `new Agent({ headersTimeout: 0, bodyTimeout: 0 })` を 1 つ作り、
+`listModels` と `chat` の `fetch` に `dispatcher` として渡して undici 側のタイムアウトを無効にする。
+打ち切りの責任は `sendRequest` の `AbortSignal` とタイマーだけが持つ。`LmStudioClientOptions` には
+任意の `dispatcher` を足し、テストと将来の呼び出し元が差し替えられるようにした。
+
+- `undici` は **7 系（7.29.1 に固定）** を使う。`undici@8` の `Agent` は Node 24 の `fetch` に渡すと
+  `UND_ERR_INVALID_ARG` で動かない。
+- 効いていることの確認は実 HTTP サーバーを使う回帰テスト（`client.test.ts` の C47〜C49）で行う。
+  役割はそれぞれ異なる。**C47** は `headersTimeout` を短くした Agent を渡すと `connection` になることを見る、
+  dispatcher が実際に効いていることを判別できる唯一のテスト。**C49** は既定のクライアント（実 `fetch` ＋
+  既定の Agent）に短い `timeoutMs` を渡し、undici 7 の Agent を Node 内蔵 `fetch` に渡すという版の境界を
+  通っても自前のタイマーが先に効いて `timeout` になることを見る、本番経路の回帰テスト。**C48** は遅延
+  2000ms のサーバーに既定のクライアントで要求して成功することを見るが、この遅延は修正前の既定値
+  （undici の `headersTimeout` 300 秒）でも打ち切られないため、単体では dispatcher が効いていることの
+  証明にはならない。役割は既定のクライアント（実 `fetch`）が壊れていないことのスモークテストで、
+  undici の版が非互換になったとき（`UND_ERR_INVALID_ARG` など）に落ちて気づけるようにする。
+  なお undici のタイマーは約 500ms 刻みなので、1 秒未満の `headersTimeout` でも発火は 1 秒前後になる。
+  テストの遅延はそれを踏まえた値にしてある。
+
+## 当面の通常運用では思考を無効にする（2026-09-09、PR7 の試運転）
+
+PR7 の試運転（`docs/experiments/2026-09-08-pipeline-trial/`）では、思考ありによる校正品質の改善を
+確認できなかった。一方で負担は大きい。gemma は思考ありで 1 要求 51.8〜431.1 秒かかり、
+qwen は短文（657 字・2 観点）に対し 2 温度とも `max_tokens: 16,000` のほぼ全量を思考に使って
+`finish_reason == "length"` で打ち切られ、2 温度・4 単位・8 要求のすべてが `truncated` に終わって
+指摘 0 件だった。gemma は同じ切り出し入力（3,317 字）を思考なしなら 1 要求 8〜11 秒で処理している。
+
+**決定**：当面の通常運用では思考を無効にする。`reasoning_effort` を省略してモデル既定に委ねるのではなく、
+**`reasoning_effort: "none"` を明示的に送る**（モデル既定は qwen では思考ありのため）。
+評価用 CLI の `--reasoning-effort` の既定も `none` にした（`packages/cli/src/args.ts`）。
+
+これは**今回のモデル（`qwen/qwen3.8-27b` Q4_K_M、`google/gemma-4-31b-qat` Q4_0）・量子化・
+プロンプト版 `"1"`・生成設定（`max_tokens: 16,000`、`seed: 1`、`temperature` 0 と 0.7）での判断**であり、
+思考ありという方式やモデルの校正能力一般についての結論ではない。
+
+- 思考ありは廃止しない。仕様書 10 節の比較実験の条件として残し、13 節の未決事項（モデルと生成設定）は
+  未決のままにする。思考ありで動かすときは `--reasoning-effort low|medium|high` を明示的に渡す
+- 将来 UI を作るとき（PR11）も、思考の初期設定は無効にする
+- 確定は正解データを用いる PR13 の評価で行う。この決定はそれまでの暫定である

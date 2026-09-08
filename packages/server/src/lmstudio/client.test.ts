@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+
+import { Agent } from "undici";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createLmStudioClient, DEFAULT_MODEL_LIST_TIMEOUT_MS } from "./client.ts";
 import { LmStudioError } from "./errors.ts";
@@ -46,10 +49,28 @@ function textResponse(status: number, text: string): Response {
   return new Response(text, { status });
 }
 
-/** `response.text()` が reject する疑似 Response（C16d 用）。 */
+/** `response.text()` が reject する疑似 Response（C16d・L4 用）。 */
 function rejectingTextResponse(status: number): Response {
   const response = new Response("", { status });
   vi.spyOn(response, "text").mockRejectedValue(new Error("body stream broken"));
+  return response;
+}
+
+/**
+ * 応答ヘッダーはすぐ返るが、`text()` は呼び出し元に渡された `AbortSignal`（`sendRequest` 内の
+ * 内部コントローラ）が中断されるまで解決しない疑似 Response（L2 用）。
+ * タイムアウトで `fetch` 自体が中断される C19 とは異なり、本文読み取り中の中断を再現する。
+ */
+function hangingBodyResponse(status: number, signal: AbortSignal | undefined): Response {
+  const response = new Response("", { status });
+  vi.spyOn(response, "text").mockImplementation(
+    () =>
+      new Promise<string>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason);
+        });
+      }),
+  );
   return response;
 }
 
@@ -313,6 +334,17 @@ describe("chat: malformed", () => {
     expect(error.kind).toBe("malformed");
   });
 
+  it("L3 truncateRaw は JSON として解析できない長い本文を raw の先頭 2,000 文字に切り詰める", async () => {
+    const longText = "あ".repeat(2500);
+    const { fetchImpl } = makeFetch(() => textResponse(200, longText));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+    expect(error.kind).toBe("malformed");
+    expect(error.raw).toBe(longText.slice(0, 2000));
+    expect(typeof error.raw).toBe("string");
+    expect((error.raw as string).length).toBe(2000);
+  });
+
   it("C11 choices が空配列なら malformed", async () => {
     const { fetchImpl } = makeFetch(() => jsonResponse(200, { choices: [] }));
     const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
@@ -440,6 +472,14 @@ describe("chat: HTTP 状態と error マーカーによる分類", () => {
     expect(error.kind).toBe("connection");
   });
 
+  it("L4 応答ヘッダー受信後に本文読み取り中で切断されると connection・status は null（HTTP 応答の有無を status で区別する前提）", async () => {
+    const { fetchImpl } = makeFetch(() => rejectingTextResponse(200));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+    expect(error.kind).toBe("connection");
+    expect(error.status).toBeNull();
+  });
+
   it("C17 fetch が TypeError(fetch failed) で reject したら connection", async () => {
     const fetchImpl = (() =>
       Promise.reject(new TypeError("fetch failed"))) as unknown as typeof globalThis.fetch;
@@ -471,6 +511,18 @@ describe("chat: 中断とタイムアウト", () => {
   it("C19 timeoutMs を過ぎると timeout になる", async () => {
     vi.useFakeTimers();
     const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: hangingFetch });
+    const promise = client.chat(baseChatRequest, { timeoutMs: 1000 });
+    const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+  });
+
+  it("L2 応答ヘッダー受信後、本文読み取り中に timeoutMs を過ぎても timeout になる（C19 は fetch 自体の中断）", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl } = makeFetch((_url, init) =>
+      hangingBodyResponse(200, init.signal ?? undefined),
+    );
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
     const promise = client.chat(baseChatRequest, { timeoutMs: 1000 });
     const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
     await vi.advanceTimersByTimeAsync(1000);
@@ -657,6 +709,18 @@ describe("listModels", () => {
     await vi.advanceTimersByTimeAsync(500);
     await assertion;
   });
+
+  it("L1 timeoutMs を渡さないと既定の 10 秒（DEFAULT_MODEL_LIST_TIMEOUT_MS）ちょうどで timeout になる", async () => {
+    vi.useFakeTimers();
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: hangingFetch });
+    const promise = client.listModels();
+    const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
+    // 既定値の 1ms 手前ではまだタイムアウトしていないことを確認してから、既定値ちょうどまで進める。
+    await vi.advanceTimersByTimeAsync(DEFAULT_MODEL_LIST_TIMEOUT_MS - 1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+  });
 });
 
 describe("ensureLoaded", () => {
@@ -706,4 +770,115 @@ describe("ensureLoaded", () => {
     const error = await catchLmStudioError(client.ensureLoaded("m1"));
     expect(error.kind).toBe("connection");
   });
+});
+
+describe("dispatcher（undici のタイムアウト無効化）", () => {
+  it("C44 既定のクライアントは listModels の init に dispatcher を渡す", async () => {
+    const { fetchImpl, calls } = makeFetch(() => jsonResponse(200, modelListBody([])));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    await client.listModels();
+    expect(firstCall(calls).init.dispatcher).toBeDefined();
+  });
+
+  it("C45 既定のクライアントは chat の init に dispatcher を渡す", async () => {
+    const { fetchImpl, calls } = makeFetch(() => jsonResponse(200, successBody()));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    await client.chat(baseChatRequest, { timeoutMs: 1000 });
+    expect(firstCall(calls).init.dispatcher).toBeDefined();
+  });
+
+  it("C46 options.dispatcher を渡すとそれが listModels と chat の両方で使われる", async () => {
+    const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+    try {
+      const { fetchImpl, calls } = makeFetch((url) =>
+        url.endsWith("/api/v0/models")
+          ? jsonResponse(200, modelListBody([]))
+          : jsonResponse(200, successBody()),
+      );
+      const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl, dispatcher });
+      await client.listModels();
+      await client.chat(baseChatRequest, { timeoutMs: 1000 });
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call.init.dispatcher).toBe(dispatcher);
+      }
+    } finally {
+      await dispatcher.close();
+    }
+  });
+});
+
+describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
+  /**
+   * 応答ヘッダーを遅らせるローカルサーバー。生成完了までヘッダーが来ない状況の縮小版。
+   * undici のタイマーは約 500ms 刻みで、`headersTimeout` に 1 秒未満を指定しても発火は
+   * 1 秒前後になる。遅延を縮めると C47 が先に成功してしまうので、この値は小さくしないこと。
+   * C49 はこの遅延より十分短い `timeoutMs`（500ms）を指定して自前タイマーの方が先に効くことを見るので、
+   * ここも縮めると C49 の判別力が失われる。
+   */
+  const HEADER_DELAY_MS = 2000;
+  let server: Server | null = null;
+  let baseUrl = "";
+
+  beforeEach(async () => {
+    const created = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "m1", state: LOADED_STATE }] }));
+      }, HEADER_DELAY_MS);
+    });
+    await new Promise<void>((resolve) => {
+      created.listen(0, "127.0.0.1", resolve);
+    });
+    const address = created.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("待ち受けポートを取得できなかった");
+    }
+    server = created;
+    baseUrl = `http://127.0.0.1:${String(address.port)}`;
+  });
+
+  afterEach(async () => {
+    const running = server;
+    server = null;
+    if (running !== null) {
+      running.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        running.close(() => resolve());
+      });
+    }
+  });
+
+  it("C47 headersTimeout を短くした dispatcher を渡すと connection になる（dispatcher が効いている証明）", async () => {
+    const dispatcher = new Agent({ headersTimeout: 200, bodyTimeout: 200 });
+    try {
+      const client = createLmStudioClient({ baseUrl, dispatcher });
+      const error = await catchLmStudioError(client.listModels({ timeoutMs: 5000 }));
+      expect(error.kind).toBe("connection");
+      expect(error.status).toBeNull();
+    } finally {
+      await dispatcher.close();
+    }
+  }, 10_000);
+
+  it("C48 既定のクライアントは timeoutMs より前に打ち切られず成功する", async () => {
+    // この遅延（2000ms）は修正前の既定値（undici の headersTimeout 300 秒）でも打ち切られないため、
+    // このテスト単体では dispatcher が効いていることの証明にはならない（判別しているのは C47）。
+    // ここでの役割は、既定のクライアント（実 fetch）が壊れていないことのスモークテスト。
+    const client = createLmStudioClient({ baseUrl });
+    const models = await client.listModels({ timeoutMs: 5000 });
+    expect(models.map((model) => model.id)).toEqual(["m1"]);
+  }, 10_000);
+
+  it("C49 既定のクライアントは実 fetch + timeoutMs でも自前タイマーが先に効いて timeout になる", async () => {
+    // C18〜C21・C32・L2 の timeout/aborted 分類はすべてモック fetch。ここでは undici 7 の Agent を
+    // Node 内蔵の実 fetch に dispatcher として渡す本番経路を通し、その境界でも自前タイマー
+    // （timeoutMs）が undici 側の既定タイムアウトより先に効くことを確認する。
+    const client = createLmStudioClient({ baseUrl });
+    const started = performance.now();
+    const error = await catchLmStudioError(client.listModels({ timeoutMs: 500 }));
+    const elapsed = performance.now() - started;
+    expect(error.kind).toBe("timeout");
+    expect(elapsed).toBeLessThan(HEADER_DELAY_MS);
+  }, 10_000);
 });

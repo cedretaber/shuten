@@ -1,6 +1,6 @@
 import { parseLmStudioApiKey } from "../config.ts";
+import { isGenerationCapable } from "./models.ts";
 import type { ModelInfo } from "./types.ts";
-import { LOADED_STATE } from "./types.ts";
 
 /**
  * 実 LM Studio を使う統合テスト（`*.integration.test.ts`）が共通で使うヘルパー。
@@ -8,15 +8,8 @@ import { LOADED_STATE } from "./types.ts";
  * `describe.skipIf` と `ctx.skip()` は各テストファイル側に残す。
  */
 
-/**
- * ロード済みで、かつ種別（type）が生成（chat）に使える（llm・vlm）ことを判定する。
- * 仕様書 7 節（v0.8）「モデル種別（llm、vlm、embeddings など）で生成に使えるモデルを絞る」に基づく
- * 絞り込みであり、`ensureLoaded` が種別を弾かない（未知の種別名でロード済みモデルを拒否しないため）
- * のとは別の判断として、明示指定・自動選択の両方に共通して適用する。
- */
-export function isGenerationCapable(model: ModelInfo): boolean {
-  return model.state === LOADED_STATE && (model.type === "llm" || model.type === "vlm");
-}
+/** 本番経路（`run/executor.ts`）と共用するため実体は `models.ts` に置き、ここでは再輸出する。 */
+export { isGenerationCapable };
 
 /** 統合テストの接続設定。`SHUTEN_LM_STUDIO_URL` は trim 済みの生値のまま返す（URL としての検証はしない）。 */
 export interface IntegrationEnv {

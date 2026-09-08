@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
   "scripts": {
     "dev": "node --watch src/index.ts",
     "start": "node src/index.ts",
@@ -17,6 +21,7 @@
     "better-sqlite3": "13.0.3",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.7",
+    "undici": "7.29.1",
     "zod": "4.5.4"
   },
   "devDependencies": {
