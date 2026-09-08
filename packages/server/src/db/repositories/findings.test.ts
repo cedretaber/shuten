@@ -7,12 +7,15 @@ import { candidateLlmSchema, parseJsonColumn } from "../json.ts";
 import { applyMigrations } from "../migrate.ts";
 import { candidates, judgments } from "../schema.ts";
 import { insertCheckUnit } from "./check-units.ts";
+import { listDiagnostics } from "./diagnostics.ts";
 import {
   attachCandidateToFinding,
   findFinding,
   insertCandidate,
   insertFinding,
   listFindings,
+  saveUnlocatedCandidate,
+  type UnlocatedLocateResult,
 } from "./findings.ts";
 import { insertManuscriptVersion } from "./manuscripts.ts";
 import { insertRun, insertRunTarget } from "./runs.ts";
@@ -203,30 +206,177 @@ describe("db/repositories/findings", () => {
     close();
   });
 
-  it("R10: 指摘：outside-target の候補には findings の行を作らない（決定 4 の表どおりに書く関数の検査）", () => {
+  it("R10: saveUnlocatedCandidate は outside-target で candidates だけを増やし、findings は作らない（決定 4 の表どおりに書く関数の検査）", () => {
     const { db, close } = setupDb();
-    const { run, typoUnit } = setupTargets(db);
+    const { run, target, typoUnit } = setupTargets(db);
 
-    const before = listFindings(db, run.id);
-    expect(before).toHaveLength(0);
+    const findingsBefore = listFindings(db, run.id).length;
+    const diagnosticsBefore = listDiagnostics(db, run.id).length;
 
-    insertCandidate(db, {
-      id: "c1",
+    const locate: UnlocatedLocateResult = {
+      status: "failed",
+      reason: "outside-target",
+      exactMatches: [{ start: 20, end: 22 }],
+      diagnostic: null,
+    };
+    const result = saveUnlocatedCandidate(db, {
       runId: run.id,
       checkUnitId: typoUnit.id,
-      findingId: null,
       candidateIndex: 0,
       llm: makeLlm(),
-      locateStatus: "outside-target",
-      range: null,
-      mergeKey: null,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      searchRange: { start: 0, end: 10 },
+      locate,
+      candidateId: "c-outside",
     });
 
-    // outside-target の候補を書いても findings の行は増えない。
-    const after = listFindings(db, run.id);
-    expect(after).toHaveLength(0);
+    // candidates は 1 行増える。finding_id は null（決定 4）。
+    const candidateRow = db.select().from(candidates).where(eq(candidates.id, "c-outside")).get();
+    expect(candidateRow).toBeDefined();
+    expect(candidateRow?.findingId).toBeNull();
+    expect(candidateRow?.locateStatus).toBe("outside-target");
+    expect(result.candidate.findingId).toBeNull();
+    expect(result.finding).toBeNull();
+
+    // findings は増えない（outside-target は指摘を作らない）。
+    expect(listFindings(db, run.id)).toHaveLength(findingsBefore);
+
+    // diagnostics は 1 行増え、変換候補 4 列はすべて null（ambiguous / outside-target の規則）。
+    const diagnosticsAfter = listDiagnostics(db, run.id);
+    expect(diagnosticsAfter).toHaveLength(diagnosticsBefore + 1);
+    expect(result.diagnostic.transformVersion).toBeNull();
+    expect(result.diagnostic.transformCandidates).toBeNull();
+    expect(result.diagnostic.omitted).toBeNull();
+    expect(result.diagnostic.tied).toBeNull();
     close();
   });
+
+  it("saveUnlocatedCandidate は not-found で findings を 1 行作り、judgments に undecided、diagnostics に変換候補を残す", () => {
+    const { db, close } = setupDb();
+    const { run, target, typoUnit } = setupTargets(db);
+
+    const findingsBefore = listFindings(db, run.id).length;
+
+    const locate: UnlocatedLocateResult = {
+      status: "failed",
+      reason: "not-found",
+      exactMatches: [],
+      diagnostic: {
+        transformVersion: "1",
+        candidates: [{ transform: "newline", text: "候補", range: { start: 3, end: 5 } }],
+        omitted: 1,
+        tied: false,
+      },
+    };
+    const result = saveUnlocatedCandidate(db, {
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      candidateIndex: 0,
+      llm: makeLlm({ paragraphId: 2 }),
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      searchRange: { start: 0, end: 10 },
+      locate,
+      candidateId: "c-not-found",
+      findingId: "f-not-found",
+    });
+
+    expect(listFindings(db, run.id)).toHaveLength(findingsBefore + 1);
+    expect(result.finding).not.toBeNull();
+    expect(result.finding?.range).toBeNull();
+    expect(result.finding?.mergeKey).toBeNull();
+    expect(result.finding?.paragraphId).toBe(2);
+    expect(result.candidate.findingId).toBe("f-not-found");
+
+    const judgment = db
+      .select()
+      .from(judgments)
+      .where(eq(judgments.findingId, "f-not-found"))
+      .get();
+    expect(judgment).toBeDefined();
+    expect(judgment?.status).toBe("undecided");
+
+    expect(result.diagnostic.transformVersion).toBe("1");
+    expect(result.diagnostic.transformCandidates).toEqual([
+      { transform: "newline", text: "候補", range: { start: 3, end: 5 } },
+    ]);
+    close();
+  });
+
+  it("saveUnlocatedCandidate は ambiguous で findings を 1 行作るが、diagnostics の変換候補 4 列は null", () => {
+    const { db, close } = setupDb();
+    const { run, target, typoUnit } = setupTargets(db);
+
+    const findingsBefore = listFindings(db, run.id).length;
+
+    const locate: UnlocatedLocateResult = {
+      status: "failed",
+      reason: "ambiguous",
+      exactMatches: [
+        { start: 1, end: 3 },
+        { start: 5, end: 7 },
+      ],
+      diagnostic: null,
+    };
+    const result = saveUnlocatedCandidate(db, {
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      candidateIndex: 0,
+      llm: makeLlm(),
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      searchRange: { start: 0, end: 10 },
+      locate,
+      candidateId: "c-ambiguous",
+      findingId: "f-ambiguous",
+    });
+
+    expect(listFindings(db, run.id)).toHaveLength(findingsBefore + 1);
+    expect(result.finding).not.toBeNull();
+    expect(result.finding?.range).toBeNull();
+    expect(result.diagnostic.transformVersion).toBeNull();
+    expect(result.diagnostic.transformCandidates).toBeNull();
+    expect(result.diagnostic.omitted).toBeNull();
+    expect(result.diagnostic.tied).toBeNull();
+    close();
+  });
+
+  it.each(["ambiguous", "outside-target"] as const)(
+    "saveUnlocatedCandidate は %s に変換候補を渡すと例外になる（不変条件：黙って捨てない）",
+    (reason) => {
+      const { db, close } = setupDb();
+      const { run, target, typoUnit } = setupTargets(db);
+
+      const locate: UnlocatedLocateResult = {
+        status: "failed",
+        reason,
+        exactMatches: [],
+        // ambiguous / outside-target では本来 null のはずの診断を、呼び出し側の組み立てミスとして渡す。
+        diagnostic: {
+          transformVersion: "1",
+          candidates: [{ transform: "nfc", text: "候補", range: null }],
+          omitted: 0,
+          tied: false,
+        },
+      };
+
+      expect(() =>
+        saveUnlocatedCandidate(db, {
+          runId: run.id,
+          checkUnitId: typoUnit.id,
+          candidateIndex: 0,
+          llm: makeLlm(),
+          manuscriptVersionId: "mv1",
+          targetId: target.id,
+          searchRange: { start: 0, end: 10 },
+          locate,
+          candidateId: `c-${reason}-invalid`,
+        }),
+      ).toThrow(/not-found のときだけ/);
+      close();
+    },
+  );
 
   it("R18・R18b: reasons が理由の異なる2候補で2要素になり、candidate_index の昇順に並ぶ（perspective は check_units 由来）", () => {
     const { db, close } = setupDb();

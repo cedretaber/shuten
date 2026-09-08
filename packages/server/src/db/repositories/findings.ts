@@ -1,20 +1,23 @@
-import type { Perspective, Range } from "@shuten/shared";
+import type { LlmFinding, LocateResult, Perspective, Range } from "@shuten/shared";
 import { asc, eq, sql } from "drizzle-orm";
 
 import type { AppDatabase } from "../client.ts";
 import { createId } from "../ids.ts";
 import { candidateLlmSchema, parseJsonColumn } from "../json.ts";
-import type { CandidateRecord, FindingRecord } from "../records.ts";
-import { candidates, checkUnits, findings, judgments } from "../schema.ts";
+import type { CandidateRecord, DiagnosticRecord, FindingRecord } from "../records.ts";
+import { candidates, checkUnits, diagnostics, findings, judgments } from "../schema.ts";
 
 /**
  * 指摘・元候補の永続化（仕様書 6.3 / 6.4 / 8.1 節）。
  *
- * 位置特定失敗の振り分け（決定 4）はここでは行わない。`insertFinding` / `insertCandidate` /
- * `attachCandidateToFinding` は素直に 1 行を書くだけの部品で、`locateStatus` ごとにどれを
- * 呼ぶか（`outside-target` では `insertFinding` を呼ばない、など）は呼び出し側（PR9）が決める。
- * この形にしておけば「`outside-target` の候補には `findings` の行を作らない」という決定 4 の表が
- * 自然に守られる（`insertCandidate` は `candidates` 表にしか書かないため）。
+ * `located` は重複統合（`mergeCandidates`）が先に来るため、1 候補 → 1 指摘の関数にはできない。
+ * `insertFinding` / `insertCandidate` / `attachCandidateToFinding` は素直に 1 行を書くだけの部品
+ * で、統合後の指摘を書いてから（あるいは候補を先に書いてから後で紐づける形で）候補を書く、という
+ * 組み立ては呼び出し側（PR9）が行う。
+ *
+ * 一方、決定 4 の表の下 3 行（`not-found` / `ambiguous` / `outside-target`）は 1 候補につき
+ * 高々 1 指摘・1 診断で完結し、統合を経ないため、`saveUnlocatedCandidate` にその振り分けを
+ * まとめて実装する（本タスクの中心）。
  */
 
 /** ---------------------------------------------------------------------- */
@@ -270,4 +273,201 @@ export function attachCandidateToFinding(
   findingId: string,
 ): void {
   db.update(candidates).set({ findingId }).where(eq(candidates.id, candidateId)).run();
+}
+
+/** ---------------------------------------------------------------------- */
+/** 位置特定失敗の振り分け（決定 4） */
+/** ---------------------------------------------------------------------- */
+
+/** `LocateResult` の失敗側だけを取り出した型。位置特定に失敗した 1 候補の内容。 */
+export type UnlocatedLocateResult = Extract<LocateResult, { readonly status: "failed" }>;
+
+/** `saveUnlocatedCandidate` の入力。 */
+export interface SaveUnlocatedCandidateInput {
+  readonly runId: string;
+  readonly checkUnitId: string;
+  /** 実行内で 0 始まりの生成順（決定 19）。 */
+  readonly candidateIndex: number;
+  /** LLM の応答をそのまま。引用を破壊しない。 */
+  readonly llm: LlmFinding;
+  /** `not-found` / `ambiguous` で `findings` の行を作るときに使う。 */
+  readonly manuscriptVersionId: string;
+  readonly targetId: string;
+  /** 位置診断の検索範囲（要求の入力範囲）。 */
+  readonly searchRange: Range;
+  /** `locateQuote`（`@shuten/shared`）の失敗側の結果をそのまま渡す。 */
+  readonly locate: UnlocatedLocateResult;
+  readonly candidateId?: string;
+  /** `not-found` / `ambiguous` のときの指摘 ID。省略時は `createId()`。 */
+  readonly findingId?: string;
+  readonly createdAt?: Date;
+}
+
+/** `saveUnlocatedCandidate` の返り値。 */
+export interface SaveUnlocatedCandidateResult {
+  readonly candidate: CandidateRecord;
+  /** `outside-target` では作らないので null。 */
+  readonly finding: FindingRecord | null;
+  readonly diagnostic: DiagnosticRecord;
+}
+
+/**
+ * `not-found` / `transformCandidates` などの位置診断 4 列を `Diagnostic | null` から組み立てる。
+ * `Diagnostic` は 4 列がひとまとまりなので、null かそろって非 null かのどちらかにしかならない。
+ */
+function toDiagnosticColumns(diagnostic: UnlocatedLocateResult["diagnostic"]): {
+  readonly transformVersion: string | null;
+  readonly transformCandidates: DiagnosticRecord["transformCandidates"];
+  readonly omitted: number | null;
+  readonly tied: boolean | null;
+} {
+  if (diagnostic === null) {
+    return { transformVersion: null, transformCandidates: null, omitted: null, tied: null };
+  }
+  return {
+    transformVersion: diagnostic.transformVersion,
+    transformCandidates: diagnostic.candidates,
+    omitted: diagnostic.omitted,
+    tied: diagnostic.tied,
+  };
+}
+
+/**
+ * 位置特定に失敗した 1 候補を、決定 4 の表（下 3 行）どおりに保存する。
+ *
+ * | `locate.reason` | `candidates` | `findings` | `diagnostics` |
+ * | --- | --- | --- | --- |
+ * | `not-found` | 1 行（`findingId` あり） | 1 行（位置は null） | 1 行（変換候補あり） |
+ * | `ambiguous` | 1 行（`findingId` あり） | 1 行（位置は null） | 1 行（変換候補は null） |
+ * | `outside-target` | 1 行（`findingId` は null） | 作らない | 1 行（変換候補は null） |
+ *
+ * - `findings` を作るときは `mergeKey` / `suppression` を null にし、`judgments` に `undecided` の
+ *   行も同一トランザクションで作る（決定 5）。`paragraphId` は位置が確定していないので候補の
+ *   申告値（`llm.paragraphId`）を使う（決定 15）。
+ * - `transformVersion` / `transformCandidates` / `omitted` / `tied` は `not-found` のときだけ
+ *   非 null にできる。`ambiguous` / `outside-target` で `locate.diagnostic` が非 null なら、
+ *   黙って捨てずに例外にする（`docs/reference/invariants.md`「失敗・形式不正を正常な値に
+ *   置き換えない」）。`LocateResult`（PR3）は元々この規則を満たすはずなので、ここでの例外は
+ *   呼び出し側の組み立てミスを検出するための防御。
+ * - すべて 1 トランザクションで書く。
+ */
+export function saveUnlocatedCandidate(
+  db: AppDatabase,
+  input: SaveUnlocatedCandidateInput,
+): SaveUnlocatedCandidateResult {
+  if (input.locate.reason !== "not-found" && input.locate.diagnostic !== null) {
+    throw new Error(
+      `位置診断の変換候補は not-found のときだけ持てます（locate.reason: ${input.locate.reason}）`,
+    );
+  }
+
+  const candidateId = input.candidateId ?? createId();
+  const createdAt = input.createdAt ?? new Date();
+  const diagnosticColumns = toDiagnosticColumns(input.locate.diagnostic);
+
+  // `finding` はトランザクションのコールバックの戻り値として受け取る（`let` を外側で
+  // 書き換える形にすると、クロージャ越しの再代入を TypeScript の制御フロー解析が正しく
+  // 追えず、コールバック後の型が `never` に潰れることがあるため）。
+  const finding: FindingRecord | null = db.transaction((tx): FindingRecord | null => {
+    let createdFinding: FindingRecord | null = null;
+    if (input.locate.reason === "not-found" || input.locate.reason === "ambiguous") {
+      const findingId = input.findingId ?? createId();
+      tx.insert(findings)
+        .values({
+          id: findingId,
+          runId: input.runId,
+          manuscriptVersionId: input.manuscriptVersionId,
+          targetId: input.targetId,
+          locateStatus: input.locate.reason,
+          start: null,
+          end: null,
+          paragraphId: input.llm.paragraphId,
+          quote: input.llm.quote,
+          suggestion: input.llm.suggestion,
+          category: input.llm.category,
+          initialVerdict: input.llm.verdict,
+          mergeKey: null,
+          suppressionWord: null,
+          suppressionRuleVersion: null,
+          createdAt,
+        })
+        .run();
+      tx.insert(judgments)
+        .values({ findingId, status: "undecided", note: null, updatedAt: createdAt })
+        .run();
+      createdFinding = {
+        id: findingId,
+        runId: input.runId,
+        manuscriptVersionId: input.manuscriptVersionId,
+        targetId: input.targetId,
+        locateStatus: input.locate.reason,
+        range: null,
+        paragraphId: input.llm.paragraphId,
+        quote: input.llm.quote,
+        suggestion: input.llm.suggestion,
+        category: input.llm.category,
+        initialVerdict: input.llm.verdict,
+        mergeKey: null,
+        suppression: null,
+        createdAt,
+      };
+    }
+
+    tx.insert(candidates)
+      .values({
+        id: candidateId,
+        runId: input.runId,
+        checkUnitId: input.checkUnitId,
+        // outside-target は統合先を持たない（決定 4）。
+        findingId: createdFinding?.id ?? null,
+        candidateIndex: input.candidateIndex,
+        llm: input.llm,
+        locateStatus: input.locate.reason,
+        start: null,
+        end: null,
+        mergeKey: null,
+        createdAt,
+      })
+      .run();
+
+    tx.insert(diagnostics)
+      .values({
+        candidateId,
+        runId: input.runId,
+        quote: input.llm.quote,
+        reason: input.locate.reason,
+        searchStart: input.searchRange.start,
+        searchEnd: input.searchRange.end,
+        exactMatches: input.locate.exactMatches,
+        ...diagnosticColumns,
+      })
+      .run();
+
+    return createdFinding;
+  });
+
+  return {
+    candidate: {
+      id: candidateId,
+      runId: input.runId,
+      checkUnitId: input.checkUnitId,
+      findingId: finding?.id ?? null,
+      candidateIndex: input.candidateIndex,
+      llm: input.llm,
+      locateStatus: input.locate.reason,
+      range: null,
+      mergeKey: null,
+      createdAt,
+    },
+    finding,
+    diagnostic: {
+      candidateId,
+      runId: input.runId,
+      quote: input.llm.quote,
+      reason: input.locate.reason,
+      searchRange: input.searchRange,
+      exactMatches: input.locate.exactMatches,
+      ...diagnosticColumns,
+    },
+  };
 }
