@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+
+import { Agent } from "undici";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createLmStudioClient, DEFAULT_MODEL_LIST_TIMEOUT_MS } from "./client.ts";
 import { LmStudioError } from "./errors.ts";
@@ -767,4 +770,98 @@ describe("ensureLoaded", () => {
     const error = await catchLmStudioError(client.ensureLoaded("m1"));
     expect(error.kind).toBe("connection");
   });
+});
+
+describe("dispatcher（undici のタイムアウト無効化）", () => {
+  it("C44 既定のクライアントは listModels の init に dispatcher を渡す", async () => {
+    const { fetchImpl, calls } = makeFetch(() => jsonResponse(200, modelListBody([])));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    await client.listModels();
+    expect(firstCall(calls).init.dispatcher).toBeDefined();
+  });
+
+  it("C45 既定のクライアントは chat の init に dispatcher を渡す", async () => {
+    const { fetchImpl, calls } = makeFetch(() => jsonResponse(200, successBody()));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    await client.chat(baseChatRequest, { timeoutMs: 1000 });
+    expect(firstCall(calls).init.dispatcher).toBeDefined();
+  });
+
+  it("C46 options.dispatcher を渡すとそれが listModels と chat の両方で使われる", async () => {
+    const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+    try {
+      const { fetchImpl, calls } = makeFetch((url) =>
+        url.endsWith("/api/v0/models")
+          ? jsonResponse(200, modelListBody([]))
+          : jsonResponse(200, successBody()),
+      );
+      const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl, dispatcher });
+      await client.listModels();
+      await client.chat(baseChatRequest, { timeoutMs: 1000 });
+      expect(calls).toHaveLength(2);
+      for (const call of calls) {
+        expect(call.init.dispatcher).toBe(dispatcher);
+      }
+    } finally {
+      await dispatcher.close();
+    }
+  });
+});
+
+describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
+  /**
+   * 応答ヘッダーを遅らせるローカルサーバー。生成完了までヘッダーが来ない状況の縮小版。
+   * undici のタイマーは約 500ms 刻みで、`headersTimeout` に 1 秒未満を指定しても発火は
+   * 1 秒前後になる。遅延を縮めると C47 が先に成功してしまうので、この値は小さくしないこと。
+   */
+  const HEADER_DELAY_MS = 2000;
+  let server: Server | null = null;
+  let baseUrl = "";
+
+  beforeEach(async () => {
+    const created = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ data: [{ id: "m1", state: LOADED_STATE }] }));
+      }, HEADER_DELAY_MS);
+    });
+    await new Promise<void>((resolve) => {
+      created.listen(0, "127.0.0.1", resolve);
+    });
+    const address = created.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("待ち受けポートを取得できなかった");
+    }
+    server = created;
+    baseUrl = `http://127.0.0.1:${String(address.port)}`;
+  });
+
+  afterEach(async () => {
+    const running = server;
+    server = null;
+    if (running !== null) {
+      running.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        running.close(() => resolve());
+      });
+    }
+  });
+
+  it("C47 headersTimeout を短くした dispatcher を渡すと connection になる（dispatcher が効いている証明）", async () => {
+    const dispatcher = new Agent({ headersTimeout: 200, bodyTimeout: 200 });
+    try {
+      const client = createLmStudioClient({ baseUrl, dispatcher });
+      const error = await catchLmStudioError(client.listModels({ timeoutMs: 5000 }));
+      expect(error.kind).toBe("connection");
+      expect(error.status).toBeNull();
+    } finally {
+      await dispatcher.close();
+    }
+  }, 10_000);
+
+  it("C48 既定のクライアントは timeoutMs より前に打ち切られず成功する", async () => {
+    const client = createLmStudioClient({ baseUrl });
+    const models = await client.listModels({ timeoutMs: 5000 });
+    expect(models.map((model) => model.id)).toEqual(["m1"]);
+  }, 10_000);
 });

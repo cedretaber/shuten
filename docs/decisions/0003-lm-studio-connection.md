@@ -74,3 +74,29 @@ gemma は思考の有無にかかわらず助詞抜けを見逃して 2 件。�
 変更内容を最小限にする」と指示する。文全体を引用して必要な文字だけを直した応答はこの条件を満たしており、
 引用を短くする改善とは分けて扱う。
 所要時間と思考量はモデル固有の値で、モデルを変えれば再計測が必要。
+
+## Node の `fetch`（undici）の既定タイムアウトを無効化する（2026-09-08、PR7 の試運転）
+
+PR7 の試運転（gemma、思考あり）で、`checkTimeoutMs` に 900,000ms を渡した要求が **301,289ms** で
+失敗した。原因は Node の `fetch` の実体である undici の **`headersTimeout` の既定 300 秒**である。
+我々は `stream: false` で生成を頼むので、応答ヘッダーは生成が終わるまで来ない。つまり既定のままでは
+300 秒が生成時間の事実上の上限になり、それより長いタイムアウトを設定しても意味がない。
+
+さらに悪いことに、この打ち切りは我々の `AbortSignal` でもタイマーでもないため、`client.ts` の
+`sendRequest` は `timeout` ではなく `connection`（`status` は null）に分類する。PR7 の executor は
+`connection` を「応答を受け取れなかった通信失敗」＝生成が走り続けている可能性ありと解釈するので、
+実行全体が `connection-lost`・`generationUnconfirmed: true` で止まっていた。仕様書 7 節が求める
+「接続失敗とタイムアウトの区別」と「タイムアウトは代表的な入力長・出力長・推論モードで測って余裕を持たせる」
+の両方に反する。
+
+**決定**：クライアント 1 つにつき `new Agent({ headersTimeout: 0, bodyTimeout: 0 })` を 1 つ作り、
+`listModels` と `chat` の `fetch` に `dispatcher` として渡して undici 側のタイムアウトを無効にする。
+打ち切りの責任は `sendRequest` の `AbortSignal` とタイマーだけが持つ。`LmStudioClientOptions` には
+任意の `dispatcher` を足し、テストと将来の呼び出し元が差し替えられるようにした。
+
+- `undici` は **7 系（7.29.1 に固定）** を使う。`undici@8` の `Agent` は Node 24 の `fetch` に渡すと
+  `UND_ERR_INVALID_ARG` で動かない。
+- 効いていることの確認は実 HTTP サーバーを使う回帰テスト（`client.test.ts` の C47・C48）で行う。
+  `headersTimeout` を短くした Agent を渡すと `connection` になり、無効化した既定のクライアントでは
+  遅い応答でも成功する。なお undici のタイマーは約 500ms 刻みなので、1 秒未満の `headersTimeout` でも
+  発火は 1 秒前後になる。テストの遅延はそれを踏まえた値にしてある。

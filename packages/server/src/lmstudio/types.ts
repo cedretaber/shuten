@@ -4,6 +4,8 @@
  * ワイヤ形式（snake_case の JSON）はここには出さない。`wire.ts` が相互変換を担う。
  */
 
+import type { Dispatcher } from "undici";
+
 /** 思考の強さ。トップレベルの `reasoning_effort` に対応する（決定 0003）。 */
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 
@@ -75,6 +77,12 @@ export interface LmStudioClientOptions {
   readonly apiKey?: string | null | undefined;
   /** 未指定なら globalThis.fetch を使う。 */
   readonly fetch?: typeof globalThis.fetch | undefined;
+  /**
+   * `fetch` に渡す undici の Dispatcher。未指定ならクライアントが
+   * タイムアウトを無効化した Agent を 1 つ作って使う（`client.ts` の注釈を参照）。
+   * テストと、将来接続設定を外から差し替える呼び出し元のための継ぎ目。
+   */
+  readonly dispatcher?: Dispatcher | undefined;
 }
 
 /** `listModels`・`ensureLoaded` で渡す共通オプション。 */
