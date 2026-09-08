@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChatRequest, ChatResult } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
 import type { ExecOutcome, Executor } from "./executor.ts";
-import type { UnitFailure } from "./result.ts";
+import type { RunStop, UnitFailure } from "./result.ts";
 import type { CheckUnitArgs, RecheckUnitArgs } from "./units.ts";
 import { executeCheckUnit, executeRecheckUnit, localFailure } from "./units.ts";
 
@@ -52,6 +52,22 @@ const DONE_OUTCOME: ExecOutcome<{ findings: [] }> = {
 const CHAT_FAILURE: UnitFailure = {
   reason: "timeout",
   message: "生成要求がタイムアウトした",
+  finishReason: null,
+  origin: "chat",
+};
+
+/** `ensureLoaded`（門で止めた／`chat` を送っていない）由来の失敗。常に pending 扱い（決定 5(b)）。 */
+const ENSURE_LOADED_FAILURE: UnitFailure = {
+  reason: "model-not-loaded",
+  message: "モデルのロード状態を確認できず（未ロード）実行を停止した",
+  finishReason: null,
+  origin: "ensure-loaded",
+};
+
+/** `chat` 由来でも停止操作（aborted）は失敗ではなく pending 扱い（仕様書 7 節・8.2 節）。 */
+const ABORTED_CHAT_FAILURE: UnitFailure = {
+  reason: "aborted",
+  message: "生成要求が中断されたため実行を停止した",
   finishReason: null,
   origin: "chat",
 };
@@ -306,6 +322,66 @@ describe("executeCheckUnit", () => {
     expect(outcome.halt?.reason).toBe("settings");
     expect(outcome.halt?.failure?.reason).toBe("input-too-long");
   });
+
+  it("origin: ensure-loaded 由来の失敗は unit.status が pending になり、failure は非 null で残る（決定 20）", async () => {
+    const halt: RunStop = {
+      reason: "model-not-loaded",
+      message: ENSURE_LOADED_FAILURE.message,
+      failure: ENSURE_LOADED_FAILURE,
+      generationUnconfirmed: false,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 0,
+        failure: ENSURE_LOADED_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeCheckUnit(baseCheckArgs(executor));
+
+    expect(outcome.unit.status).toBe("pending");
+    if (outcome.unit.status === "pending") {
+      expect(outcome.unit.note).toBe(ENSURE_LOADED_FAILURE.message);
+    }
+    expect(outcome.failure).toEqual(ENSURE_LOADED_FAILURE);
+    expect(outcome.failure?.reason).toBe("model-not-loaded");
+    expect(outcome.failure?.origin).toBe("ensure-loaded");
+    expect(outcome.halt).toEqual(halt);
+  });
+
+  it("chat 由来の aborted（停止操作）は unit.status が pending になり、failure は非 null で残る（決定 20）", async () => {
+    const halt: RunStop = {
+      reason: "aborted",
+      message: ABORTED_CHAT_FAILURE.message,
+      failure: ABORTED_CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 1,
+        failure: ABORTED_CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeCheckUnit(baseCheckArgs(executor));
+
+    expect(outcome.unit.status).toBe("pending");
+    if (outcome.unit.status === "pending") {
+      expect(outcome.unit.note).toBe(ABORTED_CHAT_FAILURE.message);
+    }
+    expect(outcome.failure).toEqual(ABORTED_CHAT_FAILURE);
+    expect(outcome.failure?.reason).toBe("aborted");
+    expect(outcome.failure?.origin).toBe("chat");
+    expect(outcome.halt).toEqual(halt);
+  });
 });
 
 describe("executeRecheckUnit", () => {
@@ -449,6 +525,80 @@ describe("executeRecheckUnit", () => {
     await executeRecheckUnit(baseRecheckArgs(executor, { suppressed: true, onStarted }));
 
     expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it("origin: ensure-loaded 由来の失敗は result.status が pending になり、failure は非 null で残る（決定 20）", async () => {
+    const halt: RunStop = {
+      reason: "model-not-loaded",
+      message: ENSURE_LOADED_FAILURE.message,
+      failure: ENSURE_LOADED_FAILURE,
+      generationUnconfirmed: false,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<
+        ExecOutcome<{
+          reason: string;
+          reasonKind: string;
+          verdict: string;
+          suggestionValid: boolean;
+        }>
+      >({
+        ok: false,
+        attempts: 0,
+        failure: ENSURE_LOADED_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeRecheckUnit(baseRecheckArgs(executor));
+
+    expect(outcome.result.status).toBe("pending");
+    if (outcome.result.status === "pending") {
+      expect(outcome.result.note).toBe(ENSURE_LOADED_FAILURE.message);
+    }
+    expect(outcome.failure).toEqual(ENSURE_LOADED_FAILURE);
+    expect(outcome.failure?.reason).toBe("model-not-loaded");
+    expect(outcome.failure?.origin).toBe("ensure-loaded");
+    expect(outcome.halt).toEqual(halt);
+  });
+
+  it("chat 由来の aborted（停止操作）は result.status が pending になり、failure は非 null で残る（決定 20）", async () => {
+    const halt: RunStop = {
+      reason: "aborted",
+      message: ABORTED_CHAT_FAILURE.message,
+      failure: ABORTED_CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<
+        ExecOutcome<{
+          reason: string;
+          reasonKind: string;
+          verdict: string;
+          suggestionValid: boolean;
+        }>
+      >({
+        ok: false,
+        attempts: 1,
+        failure: ABORTED_CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeRecheckUnit(baseRecheckArgs(executor));
+
+    expect(outcome.result.status).toBe("pending");
+    if (outcome.result.status === "pending") {
+      expect(outcome.result.note).toBe(ABORTED_CHAT_FAILURE.message);
+    }
+    expect(outcome.failure).toEqual(ABORTED_CHAT_FAILURE);
+    expect(outcome.failure?.reason).toBe("aborted");
+    expect(outcome.failure?.origin).toBe("chat");
+    expect(outcome.halt).toEqual(halt);
   });
 
   it("localFailure は origin: local の UnitFailure を作る", () => {
