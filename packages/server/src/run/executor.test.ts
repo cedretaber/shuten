@@ -1,0 +1,538 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { LmStudioError } from "../lmstudio/errors.ts";
+import type {
+  ChatRequest,
+  ChatResult,
+  LmStudioClient,
+  ModelInfo,
+  Usage,
+} from "../lmstudio/types.ts";
+import { createExecutor } from "./executor.ts";
+
+const REQUEST: ChatRequest = {
+  model: "test-model",
+  messages: [{ role: "user", content: "本文" }],
+  maxTokens: 1024,
+  temperature: 0,
+};
+
+const USAGE: Usage = {
+  promptTokens: 10,
+  completionTokens: 20,
+  totalTokens: 30,
+  reasoningTokens: null,
+};
+
+function model(type: string | null, id = "test-model"): ModelInfo {
+  return {
+    id,
+    type,
+    state: "loaded",
+    quantization: null,
+    maxContextLength: null,
+    loadedContextLength: null,
+  };
+}
+
+function chatResult(
+  content: string,
+  finishReason = "stop",
+  usage: Usage | null = USAGE,
+): ChatResult {
+  return { content, reasoningContent: null, finishReason, usage, raw: {} };
+}
+
+/** 呼び出し順を記録するモック。ensureLoaded と chat の挙動だけ差し替える。 */
+function createMockClient(behavior: {
+  ensureLoaded?: (modelId: string) => Promise<ModelInfo>;
+  chat?: (request: ChatRequest) => Promise<ChatResult>;
+  calls?: string[];
+}): LmStudioClient {
+  const calls = behavior.calls ?? [];
+  return {
+    listModels: vi.fn(async () => []),
+    ensureLoaded: vi.fn(async (modelId: string) => {
+      calls.push("ensureLoaded");
+      return behavior.ensureLoaded !== undefined
+        ? await behavior.ensureLoaded(modelId)
+        : model("llm");
+    }),
+    chat: vi.fn(async (request: ChatRequest) => {
+      calls.push("chat");
+      return behavior.chat !== undefined ? await behavior.chat(request) : chatResult("ok");
+    }),
+  };
+}
+
+/** 単調増加する時計。now() が呼ばれるたびに 1 進む（elapsedMs を必ず正にする）。 */
+function createClock(): () => number {
+  let value = 0;
+  return () => {
+    value += 1;
+    return value;
+  };
+}
+
+const parse = (result: ChatResult): string => result.content;
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+describe("createExecutor", () => {
+  it("E1: chat の直前に必ず ensureLoaded が呼ばれる", async () => {
+    const calls: string[] = [];
+    const client = createMockClient({ calls });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toEqual(["ensureLoaded", "chat"]);
+  });
+
+  it("E2: 同時に 2 つ execute しても chat が重ならない", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const client = createMockClient({
+      chat: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await Promise.resolve();
+        active -= 1;
+        return chatResult("ok");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    await Promise.all([
+      executor.execute(REQUEST, parse, 1000),
+      executor.execute(REQUEST, parse, 1000),
+    ]);
+
+    expect(maxActive).toBe(1);
+    expect(executor.requestCount).toBe(2);
+  });
+
+  it("E3: malformed は 1 回だけ再試行し、2 回目も失敗なら attempts 2・halt なし", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("malformed", "解析できなかった");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.failure.reason).toBe("malformed");
+    expect(outcome.failure.origin).toBe("chat");
+    expect(outcome.halt).toBeNull();
+  });
+
+  it("E4: truncated も 1 回再試行し、maxTokens を変えずに送る", async () => {
+    const sent: number[] = [];
+    let count = 0;
+    const client = createMockClient({
+      chat: async (request) => {
+        sent.push(request.maxTokens);
+        count += 1;
+        if (count === 1) {
+          throw new LmStudioError("truncated", "打ち切られた", { usage: USAGE });
+        }
+        return chatResult("ok");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.attempts).toBe(2);
+    expect(sent).toEqual([1024, 1024]);
+  });
+
+  it("E5: stop 以外の finishReason は truncated にし、実際の値を failure に残す", async () => {
+    const client = createMockClient({
+      chat: async () => chatResult("{}", "tool_calls"),
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.failure.reason).toBe("truncated");
+    expect(outcome.failure.finishReason).toBe("tool_calls");
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.halt).toBeNull();
+  });
+
+  it("E6: HTTP 応答ありの connection が 2 回続くと connection-lost で停止する", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("connection", "拒否された", { status: 500 });
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.halt?.reason).toBe("connection-lost");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(outcome.halt?.failure?.origin).toBe("chat");
+  });
+
+  it("E7: chat の model-not-loaded は再試行せず model-not-loaded で停止する", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("model-not-loaded", "アンロードされた");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.halt?.reason).toBe("model-not-loaded");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(client.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("E8: ensureLoaded の model-not-loaded では chat を呼ばず attempts 0", async () => {
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        throw new LmStudioError("model-not-loaded", "未ロード");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.failure.origin).toBe("ensure-loaded");
+    expect(outcome.halt?.reason).toBe("model-not-loaded");
+  });
+
+  it("E9: ensureLoaded の timeout は connection-lost（recovery-needed にしない）", async () => {
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        throw new LmStudioError("timeout", "一覧取得がタイムアウトした");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.halt?.reason).toBe("connection-lost");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(outcome.failure.reason).toBe("timeout");
+  });
+
+  it("E10: chat の timeout は recovery-needed かつ generationUnconfirmed", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.halt?.reason).toBe("recovery-needed");
+    expect(outcome.halt?.generationUnconfirmed).toBe(true);
+  });
+
+  it("E11: chat 中の中断は aborted かつ generationUnconfirmed", async () => {
+    const controller = new AbortController();
+    const client = createMockClient({
+      chat: async () => {
+        controller.abort();
+        throw new LmStudioError("aborted", "呼び出し元によって要求が中断された");
+      },
+    });
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.generationUnconfirmed).toBe(true);
+  });
+
+  it("E11b: 呼び出し前から中断されていれば ensureLoaded も chat も呼ばない", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const client = createMockClient({});
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.ensureLoaded).not.toHaveBeenCalled();
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(outcome.halt?.failure).toBeNull();
+  });
+
+  it("E12: 最初の ensureLoaded の ModelInfo が modelInfo に残る", async () => {
+    let count = 0;
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        count += 1;
+        return model("llm", count === 1 ? "first" : "second");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    expect(executor.modelInfo).toBeNull();
+    await executor.execute(REQUEST, parse, 1000);
+    await executor.execute(REQUEST, parse, 1000);
+
+    expect(executor.modelInfo?.id).toBe("first");
+  });
+
+  it("E13: 失敗しても usage と elapsedMs が載る（truncated で usage が非 null）", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("truncated", "打ち切られた", { usage: USAGE });
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.usage).toEqual(USAGE);
+    expect(outcome.elapsedMs).toBeGreaterThan(0);
+  });
+
+  it("E14: requestCount が再試行を含む送信回数と一致する", async () => {
+    let count = 0;
+    const client = createMockClient({
+      chat: async () => {
+        count += 1;
+        if (count === 1) {
+          throw new LmStudioError("malformed", "解析できなかった");
+        }
+        return chatResult("ok");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    await executor.execute(REQUEST, parse, 1000);
+    await executor.execute(REQUEST, parse, 1000);
+
+    expect(executor.requestCount).toBe(3);
+  });
+
+  it("E15: HTTP 応答を受け取った connection は 1 回再試行する", async () => {
+    let count = 0;
+    const client = createMockClient({
+      chat: async () => {
+        count += 1;
+        if (count === 1) {
+          throw new LmStudioError("connection", "500 が返った", { status: 500 });
+        }
+        return chatResult("ok");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.attempts).toBe(2);
+  });
+
+  it("E16: 応答を受け取れなかった connection は再試行せず generationUnconfirmed", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("connection", "接続に失敗した");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(1);
+    expect(client.chat).toHaveBeenCalledTimes(1);
+    expect(outcome.halt?.reason).toBe("connection-lost");
+    expect(outcome.halt?.generationUnconfirmed).toBe(true);
+  });
+
+  it("E17: ensureLoaded 中の aborted は chat を呼ばず aborted で停止する", async () => {
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        throw new LmStudioError("aborted", "一覧取得が中断された");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+  });
+
+  it("E18: 生成に使えない種別では chat を呼ばず settings で停止する", async () => {
+    for (const type of ["embeddings", "unknown-type", null]) {
+      const client = createMockClient({ ensureLoaded: async () => model(type) });
+      const executor = createExecutor(client, { now: createClock() });
+
+      const outcome = await executor.execute(REQUEST, parse, 1000);
+
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) return;
+      expect(client.chat).not.toHaveBeenCalled();
+      expect(outcome.attempts).toBe(0);
+      expect(outcome.failure.reason).toBe("model-not-loaded");
+      expect(outcome.failure.origin).toBe("ensure-loaded");
+      expect(outcome.halt?.reason).toBe("settings");
+      expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    }
+
+    for (const type of ["llm", "vlm"]) {
+      const client = createMockClient({ ensureLoaded: async () => model(type) });
+      const executor = createExecutor(client, { now: createClock() });
+
+      const outcome = await executor.execute(REQUEST, parse, 1000);
+
+      expect(outcome.ok).toBe(true);
+      expect(client.chat).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("E19: 直列待ちの間に中断されると、順番が回った要求は何も呼ばない", async () => {
+    const controller = new AbortController();
+    const gate = deferred<ChatResult>();
+    const entered = deferred<void>();
+    const client = createMockClient({
+      chat: async () => {
+        entered.resolve(undefined);
+        return await gate.promise;
+      },
+    });
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const first = executor.execute(REQUEST, parse, 1000);
+    const second = executor.execute(REQUEST, parse, 1000);
+    // 1 つ目が chat に入って（＝2 つ目が待ち行列にいる）から中断する。
+    await entered.promise;
+    controller.abort();
+    gate.resolve(chatResult("ok"));
+
+    expect((await first).ok).toBe(true);
+    const outcome = await second;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.ensureLoaded).toHaveBeenCalledTimes(1);
+    expect(client.chat).toHaveBeenCalledTimes(1);
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.halt?.reason).toBe("aborted");
+  });
+
+  it("E20: 1 つ目のタイムアウトで停止すると、2 つ目は同じ halt を送信せずに返す", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const [first, second] = await Promise.all([
+      executor.execute(REQUEST, parse, 1000),
+      executor.execute(REQUEST, parse, 1000),
+    ]);
+
+    expect(client.ensureLoaded).toHaveBeenCalledTimes(1);
+    expect(client.chat).toHaveBeenCalledTimes(1);
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    if (first.ok || second.ok) return;
+    expect(second.attempts).toBe(0);
+    expect(second.halt).toBe(first.halt);
+    expect(second.halt?.generationUnconfirmed).toBe(true);
+  });
+
+  it("E21: 停止後の execute は保持している halt を上書きしない", async () => {
+    const controller = new AbortController();
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("connection", "接続に失敗した");
+      },
+    });
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const first = await executor.execute(REQUEST, parse, 1000);
+    controller.abort();
+    const second = await executor.execute(REQUEST, parse, 1000);
+
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    if (first.ok || second.ok) return;
+    expect(second.halt).toBe(first.halt);
+    expect(second.halt?.reason).toBe("connection-lost");
+    expect(second.halt?.generationUnconfirmed).toBe(true);
+    expect(client.ensureLoaded).toHaveBeenCalledTimes(1);
+    expect(client.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it("E22: 再試行前の ensureLoaded が model-not-loaded でも attempts は 1 のまま", async () => {
+    let loads = 0;
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        loads += 1;
+        if (loads === 1) {
+          return model("llm");
+        }
+        throw new LmStudioError("model-not-loaded", "アンロードされた");
+      },
+      chat: async () => {
+        throw new LmStudioError("malformed", "解析できなかった");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.attempts).toBe(1);
+    expect(client.chat).toHaveBeenCalledTimes(1);
+    expect(outcome.failure.origin).toBe("ensure-loaded");
+    expect(outcome.halt?.reason).toBe("model-not-loaded");
+  });
+});
