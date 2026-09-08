@@ -24,6 +24,7 @@ import type { GenerationSettings } from "../prompts/types.ts";
 import { JUDGMENT_STATUSES, type JudgmentStatus } from "../run/judgment.ts";
 import type { StopReason, UnitFailure } from "../run/result.ts";
 import { RUN_STATUSES, type RunStatus, UNIT_STATUSES, type UnitStatus } from "../run/status.ts";
+import { PERSPECTIVES } from "./json.ts";
 
 /**
  * Drizzle スキーマ（仕様書 8.1 節）。
@@ -37,8 +38,10 @@ import { RUN_STATUSES, type RunStatus, UNIT_STATUSES, type UnitStatus } from "..
  * （docs/plans/2026-09-09-pr8-db-persistence.md 決定 6・16）。
  */
 
-/** 検査の観点。`@shuten/shared` はランタイム定数を公開していないため、ここでローカルに `as const` タプルを持つ。 */
-export const PERSPECTIVES = ["typo", "naturalness"] as const;
+/**
+ * 検査の観点。`@shuten/shared` はランタイム定数を公開していないため、`db/json.ts` にローカルに
+ * `as const` タプルを持ち、ここではそれを再利用する（JSON 列の読み戻しと列挙列で同じ値を使う）。
+ */
 export type SchemaPerspective = (typeof PERSPECTIVES)[number];
 
 /** `candidates` / `findings` の位置特定状態。`LocateFailureReason`（shared）に `located` を加えたもの。 */
@@ -168,7 +171,7 @@ export const checkUnits = sqliteTable(
       .notNull()
       .references(() => runs.id),
     targetId: text("target_id").notNull(),
-    perspective: text("perspective").notNull().$type<SchemaPerspective>(),
+    perspective: text("perspective", { enum: PERSPECTIVES }).notNull().$type<SchemaPerspective>(),
     status: text("status", { enum: UNIT_STATUSES }).notNull().$type<UnitStatus>(),
     /** 送信した生成要求の回数。 */
     attempts: integer("attempts").notNull().default(0),
