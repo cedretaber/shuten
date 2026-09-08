@@ -193,14 +193,16 @@ API を作る PR10 の変更になる。
 | `run_id` | text not null → `runs.id` | |
 | `check_unit_id` | text not null | `(check_unit_id, run_id)` → `check_units(id, run_id)`（決定 16） |
 | `finding_id` | text nullable | `(finding_id, run_id)` → `findings(id, run_id)`。統合先。`outside-target` は null（決定 4） |
-| `perspective` | text not null | |
+| `candidate_index` | integer not null | 実行内で 0 始まりの生成順。`(run_id, candidate_index)` に一意制約（決定 19） |
 | `llm` | text(json) not null | `LlmFinding` をそのまま。引用を破壊しない |
 | `locate_status` | text not null | `located` / `not-found` / `ambiguous` / `outside-target` |
 | `start` / `end` | integer nullable | `located` のときだけ非 null |
 | `merge_key` | text nullable | `mergeKey()` の値。修正案なしは null |
 | `created_at` | integer(timestamp_ms) not null | |
 
-一意制約：`(id, run_id)`（決定 16）。
+観点の列は置かない。`check_unit_id` から辿れば一意に決まり、列を持つと `check_units.perspective` と
+二重管理になるため（決定 19）。
+一意制約：`(id, run_id)`、`(run_id, candidate_index)`（決定 19）。
 
 ### `findings`（指摘）
 
@@ -528,8 +530,20 @@ PR10 の API 入力でも検証してよいが、永続化層自身がこの不�
 
 `findings` に `reason` 列を置かず、読み出しレコードに
 `reasons: readonly { candidateId: string; perspective: Perspective; reason: string }[]` を持たせ、
-`candidates.llm.reason` から候補の順で組み立てる。位置特定失敗の指摘は候補 1 件なので 1 要素になる。
+`candidates.llm.reason` から `candidate_index` の昇順で組み立てる（決定 19）。
+`perspective` は `check_units` との結合で導く。位置特定失敗の指摘は候補 1 件なので 1 要素になる。
 仕様 5.4 の「指摘理由」は表示項目であり、正本は元候補の理由（8.1 の「元候補への参照」）だと読む。
+
+### 決定 19：元候補の順序は列で持ち、観点は持たない
+
+決定 18 が「候補の順」で理由を並べる以上、順序を復元できなければならない。
+`created_at` は同一ミリ秒になりうるし、ID は UUID（決定 7）なので並び順に使えない。
+`candidates.candidate_index`（実行内で 0 始まりの生成順）を持ち、`(run_id, candidate_index)` を一意にする。
+`mergeCandidates` は入力順に依存して統合先を決める（最初の元候補の順で並ぶ）ので、
+この列はパイプラインが候補を作った順そのものにする。
+
+逆に `candidates.perspective` は持たない。`check_unit_id` から一意に決まるうえ、
+列として持つと `check_units.perspective` と食い違いうる。読み出しでは結合して導く。
 
 ## レビューで決着した点（2026-09-09）
 
@@ -554,6 +568,14 @@ PR10 の API 入力でも検証してよいが、永続化層自身がこの不�
 | 孤立サロゲートの保存を PR10 に先送りしていた（本文が U+FFFD に変わり、`body_hash` とも食い違う） | 決定 17（永続化層で拒否）を追加。テスト R1b を「保存に失敗し行が残らない」に変更 |
 | `findings.reason` の導出規則がなかった（`MergedFinding` に `reason` がない） | 決定 18（列を置かず元候補から組み立てる）を追加 |
 | `runs.model_id` と `generation_settings.model` の二重管理 | 決定 11 で JSON 側から `model` を外した |
+
+さらに 2 巡目のレビューで 3 点を追加した。
+
+| 指摘 | 対応 |
+| --- | --- |
+| 元候補の順序を復元できない（`created_at` は同一ミリ秒がありうる、ID は UUID） | 決定 19。`candidate_index` を追加 |
+| 再起動後の再開テストが初回検査だけで、再確認を見ていない | テスト D2 に `recheck_units` を追加 |
+| `candidates.perspective` が `check_units.perspective` と二重管理 | 決定 19。候補側の列を削除し結合で導く |
 
 ## PR9・PR10・PR13 への持ち越し
 
@@ -597,6 +619,7 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | S9 | 実行 A の検査単位に実行 B の検査対象の ID を入れると外部キー違反 |
 | S10 | `findings.manuscript_version_id` に `runs` と違う原稿版 ID を入れると外部キー違反 |
 | S11 | `candidates.finding_id` が null なら（`outside-target`）複合外部キーを通る |
+| S12 | 同じ `run_id` で同じ `candidate_index` の候補を 2 行入れると一意制約違反。別実行なら入る |
 | S7 | `runs` の挿入型に API キーの列がない（型レベル。`@ts-expect-error` で確認） |
 
 ### R：リポジトリの往復
@@ -622,7 +645,8 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | R16 | `claimUnit` は状態が一致するときだけ true を返し、二度目は false（同時取得の防止） |
 | R16b | `claimRun` も同じ（`running` → `stopped` は 1 回だけ成功する） |
 | R17 | 指摘の読み出しに再確認結果と採否が付き、再確認の書き込みが採否を変えない |
-| R18 | 指摘の読み出しの `reasons` が、理由の異なる 2 候補を統合した指摘で 2 要素になり、候補の順に並ぶ（決定 18） |
+| R18 | 指摘の読み出しの `reasons` が、理由の異なる 2 候補を統合した指摘で 2 要素になり、`candidate_index` の昇順に並ぶ（挿入順を逆にしても並びが変わらないことを確認する。決定 18・19） |
+| R18b | `reasons` の `perspective` が `check_units` との結合で入る（候補側に列がない。決定 19） |
 | R19 | 検査実行の読み出しで `GenerationSettings` に `model_id` が入って戻る（決定 11） |
 
 ### D：再起動をまたぐ保持（`persistence.test.ts`）
@@ -630,7 +654,7 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | # | 内容 |
 | --- | --- |
 | D1 | 一時ディレクトリのファイル DB に書いて `close()` し、開き直して同じ値が読める |
-| D2 | 開き直した後に未完了（`pending` / `running`）の検査単位を実行 ID で列挙できる（PR9 の再開の材料） |
+| D2 | 開き直した後に未完了（`pending` / `running`）の**検査単位と再確認単位の両方**を実行 ID で列挙できる（仕様 8.2 は初回検査と再確認の両方を再開対象にしている。PR9 の再開の材料） |
 
 D1・D2 は WAL ファイルを含めて閉じてから開く。**Windows では未確認**（CI の
 `check (windows-latest)` で確認し、落ちたら PR 本文に書く）。
