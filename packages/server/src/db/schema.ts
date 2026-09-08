@@ -140,6 +140,12 @@ export const runs = sqliteTable(
     timeouts: text("timeouts", { mode: "json" })
       .notNull()
       .$type<{ readonly checkMs: number; readonly recheckMs: number }>(),
+    /**
+     * 復旧確認の待機上限（ミリ秒）。マイグレーション `0001`（決定 8）。実行環境の設定
+     * （`SHUTEN_RECOVERY_CONFIRM_MS`）であり `timeouts` の JSON には入れない。
+     * 0 は「`checkMs` がそのままハード上限」という従来の意味に対応する（既存行の既定値）。
+     */
+    recoveryConfirmMs: integer("recovery_confirm_ms").notNull().default(0),
     perspectives: text("perspectives", { mode: "json" })
       .notNull()
       .$type<readonly SchemaPerspective[]>(),
@@ -159,6 +165,12 @@ export const runs = sqliteTable(
       .default(false),
     /** 開始操作の識別子。一意制約（決定 14）。 */
     startOperationId: text("start_operation_id"),
+    /**
+     * 停止要求を受けた時刻。マイグレーション `0001`（決定 21）。実行中の要求の終了を待っている間、
+     * 実行の状態自体は `running` のままなので、待機中であることを別に持つための列。null は
+     * 停止要求を受けていない（または再開で戻した）ことを表す。
+     */
+    stopRequestedAt: integer("stop_requested_at", { mode: "timestamp_ms" }),
     startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
     finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
   },

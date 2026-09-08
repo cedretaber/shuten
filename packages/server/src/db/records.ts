@@ -82,6 +82,10 @@ export interface RunRecord {
   readonly generationUnconfirmed: boolean;
   /** 開始操作の識別子。一意制約。 */
   readonly startOperationId: string | null;
+  /** 停止要求を受けた時刻。未受理・再開後は null（決定 21）。 */
+  readonly stopRequestedAt: Date | null;
+  /** 復旧確認の待機上限（ミリ秒）。0 は「checkMs がそのままハード上限」（決定 8）。 */
+  readonly recoveryConfirmMs: number;
   readonly startedAt: Date;
   readonly finishedAt: Date | null;
 }

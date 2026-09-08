@@ -10,6 +10,7 @@ import { insertManuscriptVersion } from "./manuscripts.ts";
 import {
   claimRun,
   findRun,
+  findRunByStartOperationId,
   finishRun,
   type InsertRunInput,
   insertRun,
@@ -206,13 +207,15 @@ describe("db/repositories/runs", () => {
     // 停止理由が null の完了（completed）。
     const completedRun = insertRun(db, baseRunInput({ id: "r-completed", status: "running" }));
     const finishedAt1 = new Date("2026-09-09T01:00:00.000Z");
-    finishRun(db, completedRun.id, {
+    const completedFinished = finishRun(db, completedRun.id, {
+      expectedStatus: "running",
       status: "completed",
       stopReason: null,
       stopMessage: null,
       generationUnconfirmed: false,
       finishedAt: finishedAt1,
     });
+    expect(completedFinished).toBe(true);
     const completed = findRun(db, completedRun.id);
     expect(completed?.status).toBe("completed");
     expect(completed?.stopReason).toBeNull();
@@ -228,13 +231,15 @@ describe("db/repositories/runs", () => {
     // 停止理由のある停止（stopped + generationUnconfirmed = true）。
     const stoppedRun = insertRun(db, baseRunInput({ id: "r-stopped", status: "running" }));
     const finishedAt2 = new Date("2026-09-09T02:00:00.000Z");
-    finishRun(db, stoppedRun.id, {
+    const stoppedFinished = finishRun(db, stoppedRun.id, {
+      expectedStatus: "running",
       status: "stopped",
       stopReason: "aborted",
       stopMessage: "ユーザーが停止しました",
       generationUnconfirmed: true,
       finishedAt: finishedAt2,
     });
+    expect(stoppedFinished).toBe(true);
     const stopped = findRun(db, stoppedRun.id);
     expect(stopped?.status).toBe("stopped");
     expect(stopped?.stopReason).toBe("aborted");
@@ -256,6 +261,67 @@ describe("db/repositories/runs", () => {
     // biome-ignore lint/style/noNonNullAssertion: 直前で not.toBeNull() を確認済み
     const settings = toGenerationSettings(found!);
     expect(settings).toEqual({ ...GENERATION_SETTINGS, model: "qwen/qwen3-8b" });
+    close();
+  });
+
+  it("S4c: finishRun は expectedStatus に合わない行を更新せず false を返し、状態以外の列も一切変わらない", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", status: "running" }));
+
+    // 実際の status は "running" だが、expectedStatus に "stopped"（不一致）を渡す。
+    const finished = finishRun(db, run.id, {
+      expectedStatus: "stopped",
+      status: "completed",
+      stopReason: null,
+      stopMessage: null,
+      generationUnconfirmed: false,
+      finishedAt: new Date("2026-09-09T03:00:00.000Z"),
+    });
+    expect(finished).toBe(false);
+
+    const found = findRun(db, run.id);
+    expect(found?.status).toBe("running");
+    expect(found?.stopReason).toBeNull();
+    expect(found?.stopMessage).toBeNull();
+    expect(found?.generationUnconfirmed).toBe(false);
+    expect(found?.finishedAt).toBeNull();
+    close();
+  });
+
+  it("マイグレーション 0001：recoveryConfirmMs / stopRequestedAt が省略時の既定値（0・null）で往復し、指定時はその値で往復する", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+
+    const defaulted = insertRun(db, baseRunInput({ id: "r-default" }));
+    expect(defaulted.recoveryConfirmMs).toBe(0);
+    expect(defaulted.stopRequestedAt).toBeNull();
+    const foundDefaulted = findRun(db, defaulted.id);
+    expect(foundDefaulted?.recoveryConfirmMs).toBe(0);
+    expect(foundDefaulted?.stopRequestedAt).toBeNull();
+
+    const stopRequestedAt = new Date("2026-09-09T04:00:00.000Z");
+    const explicit = insertRun(
+      db,
+      baseRunInput({ id: "r-explicit", recoveryConfirmMs: 120_000, stopRequestedAt }),
+    );
+    expect(explicit.recoveryConfirmMs).toBe(120_000);
+    expect(explicit.stopRequestedAt).toEqual(stopRequestedAt);
+    const foundExplicit = findRun(db, explicit.id);
+    expect(foundExplicit?.recoveryConfirmMs).toBe(120_000);
+    expect(foundExplicit?.stopRequestedAt).toEqual(stopRequestedAt);
+    close();
+  });
+
+  it("findRunByStartOperationId は start_operation_id で1件探し、見つからなければ null", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    insertRun(db, baseRunInput({ id: "r1", startOperationId: "op-1" }));
+
+    const found = findRunByStartOperationId(db, "op-1");
+    expect(found?.id).toBe("r1");
+
+    expect(findRunByStartOperationId(db, "no-such-op")).toBeNull();
     close();
   });
 });
