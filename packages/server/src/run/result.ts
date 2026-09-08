@@ -106,7 +106,11 @@ export interface UnlocatedResult {
   readonly candidate: UnlocatedCandidate;
 }
 
-/** 検査対象と、その対象に実際に送った入力範囲。位置の正本として結果に残す。 */
+/**
+ * 検査対象と、その対象に対して実際に組み立てた入力範囲。位置の正本として結果に残す。
+ * 組み立てた時点で記録するので、この対象に生成要求を送り終えたことは意味しない
+ * （停止・失敗で 1 度も送っていない対象にも TargetPlan がありうる。送信の有無は checkUnits で見る）。
+ */
 export interface TargetPlan {
   readonly target: TargetRange;
   readonly input: CheckInput;

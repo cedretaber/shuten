@@ -560,6 +560,7 @@ describe("runPipeline", () => {
     expect(result.status).toBe("stopped");
     expect(result.stop?.reason).toBe("model-not-loaded");
     expect(result.stop?.generationUnconfirmed).toBe(false);
+    expect(result.stop?.failure?.origin).toBe("ensure-loaded");
     expect(countChecks(mock.calls)).toBe(1);
   });
 
@@ -611,7 +612,33 @@ describe("runPipeline", () => {
     expect(countChecks(mock.calls)).toBe(1);
     expect(result.status).toBe("stopped");
     expect(result.stop?.reason).toBe("aborted");
+    // signal だけが真で生成要求を送っていないので、生成は走っていない（決定 5）。
+    expect(result.stop?.generationUnconfirmed).toBe(false);
     expect(expectPending(unitAt(result, 1)).attempts).toBe(0);
+  });
+
+  it("P16b: 生成要求の送信中に停止操作が入った単位は failed ではなく pending（attempts 1）になる", async () => {
+    const controller = new AbortController();
+    const mock = createMockClient({
+      chat: () => {
+        // 送信中に停止操作が入り、クライアントが aborted を投げる。
+        controller.abort();
+        throw new LmStudioError("aborted", "呼び出し元によって要求が中断された");
+      },
+    });
+
+    const result = await runPipeline(baseArgs(mock.client, { signal: controller.signal }));
+
+    // 停止操作は失敗ではない（仕様書 8.2 節）。送った回数は残す。
+    const pending = expectPending(unitAt(result, 0));
+    expect(pending.attempts).toBe(1);
+    expect(result.totals.checkUnits.failed).toBe(0);
+    expect(result.status).toBe("stopped");
+    expect(result.stop?.reason).toBe("aborted");
+    // 送信中の中断なので、LM Studio 側で生成が走り続けている可能性がある。
+    expect(result.stop?.generationUnconfirmed).toBe(true);
+    expect(result.stop?.failure?.origin).toBe("chat");
+    expect(countChecks(mock.calls)).toBe(1);
   });
 
   it("P17: 初回検査の InputTooLongError で stopped（settings）になり、本文は縮まない", async () => {

@@ -438,6 +438,9 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
           const locate = locateQuote(args.text, input, paragraphs, llm);
           const id = createCandidateId();
           candidateCount += 1;
+          // 分岐は冗長に見えるが必要。TypeScript は Candidate のネストした locate.status を
+          // 自動で絞り込めないので、分岐ごとに locate を絞ってから組み立てる
+          // （shared/src/merge/candidate.ts の isLocated と同じ理由）。
           candidates.push(
             locate.status === "located"
               ? { id, perspective, llm, locate }
