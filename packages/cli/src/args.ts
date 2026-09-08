@@ -16,7 +16,7 @@ export interface CliArgs {
   readonly maxTokens: number;
   readonly temperature: number;
   readonly seed: number | undefined;
-  readonly reasoningEffort: ReasoningEffort | undefined;
+  readonly reasoningEffort: ReasoningEffort;
   readonly chunkSettings: ChunkSettings;
   readonly checkTimeoutMs: number;
   readonly recheckTimeoutMs: number;
@@ -41,6 +41,7 @@ const DEFAULTS = {
   perspectives: ["typo", "naturalness"] as readonly Perspective[],
   maxTokens: 16000,
   temperature: 0,
+  reasoningEffort: "none" as ReasoningEffort,
   targetGraphemes: 1500,
   contextGraphemes: 1000,
   recheckContextGraphemes: 3000,
@@ -223,10 +224,12 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
   const mode = modeRaw === undefined ? ok(DEFAULTS.mode) : parseMode(modeRaw);
   if (!mode.ok) return mode;
 
+  // 既定は "none"（思考なし）。決定記録 0003 の 2026-09-09 の追記による暫定の方針で、
+  // 思考ありで動かすときは --reasoning-effort low|medium|high を明示的に渡す。
   const reasoningEffortRaw = raw.get("--reasoning-effort");
   const reasoningEffort =
     reasoningEffortRaw === undefined
-      ? ok<ReasoningEffort | undefined>(undefined)
+      ? ok(DEFAULTS.reasoningEffort)
       : parseReasoningEffort(reasoningEffortRaw);
   if (!reasoningEffort.ok) return reasoningEffort;
 

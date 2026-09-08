@@ -240,7 +240,7 @@ export async function main(
     maxTokens: args.maxTokens,
     temperature: args.temperature,
     ...(args.seed !== undefined ? { seed: args.seed } : {}),
-    ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+    reasoningEffort: args.reasoningEffort,
   };
 
   let result: PipelineResult;

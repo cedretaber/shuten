@@ -16,7 +16,7 @@ describe("parseArgs: 既定値", () => {
     expect(result.value.maxTokens).toBe(16000);
     expect(result.value.temperature).toBe(0);
     expect(result.value.seed).toBeUndefined();
-    expect(result.value.reasoningEffort).toBeUndefined();
+    expect(result.value.reasoningEffort).toBe("none");
     expect(result.value.chunkSettings).toEqual({
       targetGraphemes: 1500,
       contextGraphemes: 1000,
@@ -175,5 +175,30 @@ describe("parseArgs C4: full-text でも recheck-context-graphemes を検証す�
   it("未知の --mode を拒否する", () => {
     const result = parseArgs([...REQUIRED, "--mode", "unknown-mode"]);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("parseArgs C5: --reasoning-effort の既定と明示指定", () => {
+  it("未指定なら none になる（通常運用は思考なし。決定記録 0003 の 2026-09-09 の追記）", () => {
+    const result = parseArgs(REQUIRED);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.reasoningEffort).toBe("none");
+  });
+
+  it("明示指定が既定より優先される", () => {
+    for (const value of ["none", "low", "medium", "high"] as const) {
+      const result = parseArgs([...REQUIRED, "--reasoning-effort", value]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.reasoningEffort).toBe(value);
+    }
+  });
+
+  it("未知の値を拒否する（既定に落とさない）", () => {
+    const result = parseArgs([...REQUIRED, "--reasoning-effort", "off"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/--reasoning-effort/);
   });
 });

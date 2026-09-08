@@ -90,6 +90,10 @@ node packages/cli/bin/shuten-eval.ts --manuscript <path> --model <id>
 
 `--mode full-text` では本文全体が 1 要求になるため、`--max-input-graphemes` を本文の書記素数より
 大きい値に上げる必要がある（既定の 12,000 では長い原稿で停止する）。
+
+`--reasoning-effort` の既定は `none`（思考なし）で、未指定でも `reasoning_effort: "none"` を明示的に送る。
+思考ありで動かすときは `--reasoning-effort low|medium|high` を渡す（決定記録 [0003](docs/decisions/0003-lm-studio-connection.md) の 2026-09-09 の追記）。
+
 分割長などの既定値は実測前の暫定値で、試運転の結果を見て調整する。
 
 Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/windows-verification.md)。

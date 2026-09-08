@@ -1,7 +1,7 @@
 # PR7 詳細計画：検査パイプライン（DB なし）と評価ハーネス（server + cli）
 
 作成日：2026-09-08
-状態：計画（自己レビュー反映済み。ユーザーレビュー待ち）
+状態：実装済み（PR #12）
 仕様：`docs/spec/mvp-spec.md`（v0.8）6 全体、7、8.2、10、11 節（3・4・19・21 項）、13
 前提：`docs/plans/2026-09-07-mvp-roadmap.md` の PR7 節、`docs/reference/invariants.md`、
 `docs/decisions/0003-lm-studio-connection.md`、PR1〜PR4（`shared`）、PR5（`lmstudio/`）、PR6（`prompts/`）
@@ -547,7 +547,8 @@ shuten-eval --manuscript <path> --model <id>
             [--allowed-words <path>] [--out <path>]
             [--mode split|split-recheck|full-text]      既定 split
             [--perspectives typo,naturalness]           既定 typo,naturalness
-            [--max-tokens N] [--temperature T] [--seed N] [--reasoning-effort none|low|medium|high]
+            [--max-tokens N] [--temperature T] [--seed N]
+            [--reasoning-effort none|low|medium|high]  既定 none
             [--target-graphemes N] [--context-graphemes N] [--recheck-context-graphemes N]
             [--rounding-tolerance F] [--max-input-graphemes N]
             [--check-timeout-ms N] [--recheck-timeout-ms N]
@@ -608,7 +609,7 @@ PR9 の永続化では、ロードマップの実行状態（`running`、`recove
 | `maxInputGraphemes` | 12000 | 再確認の最大入力（1500 + 3000 × 2 = 7500）に余裕を見た値。コンテキスト長からの換算係数は下記の実測で決める |
 | `maxTokens` | 16000 | 決定記録 0003（1,500 字の検査対象に対する思考込みの初期値） |
 | `temperature` | 0 | 決定記録 0003 の比較実験の設定。仕様 10 節は全モデル必須にはしていない。範囲は課さない（妥当な範囲はモデルごとに異なり、仕様 13 節が未決のため、CLI では有限数であることの検証だけを行う） |
-| `reasoningEffort` | 未指定 | 未指定はモデル既定（qwen では思考あり）。思考を止めるときだけ `--reasoning-effort none` を渡す。既定のタイムアウトが長いのはこのため |
+| `reasoningEffort` | none | 通常運用は思考なし（決定記録 0003 の 2026-09-09 の追記）。未指定でも `reasoning_effort: "none"` を明示的に送る。思考ありで動かすときだけ `--reasoning-effort low\|medium\|high` を渡す |
 | `checkTimeoutMs` | 300000 | 決定記録 0003「思考ありの qwen で 1 要求 2〜3 分、思考なしなら 10 秒前後」。決定 5 では 1 件のタイムアウトが実行全体を止めるので、既定は思考ありに合わせて長めに取り、思考なしでは CLI で下げる。なお試運転当初は Node の `fetch`（undici）の `headersTimeout` 既定 300 秒が実装側の上限になっており、300 秒より長い値を渡しても効かなかった（修正済み。決定記録 0003 の 2026-09-08 の節） |
 | `recheckTimeoutMs` | 300000 | 同上 |
 
