@@ -15,8 +15,10 @@ import {
   insertFinding,
   listCandidates,
   listFindings,
+  nextCandidateIndex,
   saveUnlocatedCandidate,
   type UnlocatedLocateResult,
+  updateFindingAggregate,
 } from "./findings.ts";
 import { insertManuscriptVersion } from "./manuscripts.ts";
 import { insertRun, insertRunTarget } from "./runs.ts";
@@ -736,6 +738,257 @@ describe("db/repositories/findings", () => {
       suppression: null,
     });
     expect(findFinding(db, "f-after-rollback")).not.toBeNull();
+    close();
+  });
+
+  it("updateFindingAggregate は category / initialVerdict を更新し、他の列は変えない（決定 9）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+
+    const finding = insertFinding(db, {
+      id: "f1",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字",
+      suggestion: "修正案",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key1",
+      suppression: null,
+    });
+
+    updateFindingAggregate(db, finding.id, {
+      category: "unclear",
+      initialVerdict: "confirm-with-author",
+    });
+
+    const found = findFinding(db, finding.id);
+    expect(found?.category).toBe("unclear");
+    expect(found?.initialVerdict).toBe("confirm-with-author");
+    // category・initialVerdict 以外の列は変わらない。
+    expect(found?.quote).toBe("誤字");
+    expect(found?.suggestion).toBe("修正案");
+    expect(found?.mergeKey).toBe("key1");
+    expect(found?.range).toEqual({ start: 0, end: 2 });
+    close();
+  });
+
+  it("T4b: nextCandidateIndex は 0 から始まり、候補を保存するたびに増える", () => {
+    const { db, close } = setupDb();
+    const { run, typoUnit } = setupTargets(db);
+
+    expect(nextCandidateIndex(db, run.id)).toBe(0);
+
+    insertCandidate(db, {
+      id: "c0",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: nextCandidateIndex(db, run.id),
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    expect(nextCandidateIndex(db, run.id)).toBe(1);
+
+    insertCandidate(db, {
+      id: "c1",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: nextCandidateIndex(db, run.id),
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    expect(nextCandidateIndex(db, run.id)).toBe(2);
+    close();
+  });
+
+  it("T4c: nextCandidateIndex は歯抜けの candidate_index があっても MAX+1 を返す（count(*) ではないことの固定。決定 22）", () => {
+    const { db, close } = setupDb();
+    const { run, typoUnit } = setupTargets(db);
+
+    // candidate_index を 0 と 5 の2件だけにし、間（1〜4）を歯抜けにする。個別再試行などで
+    // 途中の番号が別経路（別トランザクション）で使われず、まだ埋まっていないケースを模す。
+    // count(*) を使う実装ならここで 2（歯抜けの件数）を返してしまうが、MAX+1 の実装なら
+    // 歯抜けと無関係に 6 を返す。
+    insertCandidate(db, {
+      id: "c0",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 0,
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    insertCandidate(db, {
+      id: "c5",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 5,
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+
+    // 件数（2）ではなく最大値+1（6）を返す。
+    expect(nextCandidateIndex(db, run.id)).toBe(6);
+    close();
+  });
+
+  it("T6: ロールバックすると nextCandidateIndex が元の値に戻る（決定 22。外部カウンターを持たない理由）", () => {
+    const { db, close } = setupDb();
+    const { run, typoUnit } = setupTargets(db);
+
+    insertCandidate(db, {
+      id: "c0",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: nextCandidateIndex(db, run.id),
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    expect(nextCandidateIndex(db, run.id)).toBe(1);
+
+    expect(() =>
+      db.transaction((tx) => {
+        insertCandidate(tx, {
+          id: "c-rollback",
+          runId: run.id,
+          checkUnitId: typoUnit.id,
+          findingId: null,
+          candidateIndex: nextCandidateIndex(tx, run.id),
+          llm: makeLlm(),
+          locateStatus: "outside-target",
+          range: null,
+          mergeKey: null,
+        });
+        throw new Error("外側のトランザクションで失敗");
+      }),
+    ).toThrow("外側のトランザクションで失敗");
+
+    // c-rollback はロールバックされているので候補は増えておらず、次の番号は元のまま。
+    expect(findCandidate(db, "c-rollback")).toBeNull();
+    expect(nextCandidateIndex(db, run.id)).toBe(1);
+    close();
+  });
+
+  it("T7: 実行が2つあるとき、それぞれの nextCandidateIndex が互いに影響しない（決定 22）", () => {
+    const { db, close } = setupDb();
+    const { run: run1, typoUnit: unit1 } = setupTargets(db);
+
+    // 2つ目の実行を別 ID で組み立てる（setupTargets は id "r1" 固定のため）。
+    const run2 = insertRun(db, {
+      id: "r2",
+      manuscriptVersionId: "mv1",
+      modelId: "model-a",
+      modelInfo: null,
+      endpointUrl: "http://127.0.0.1:1234",
+      generationSettings: { maxTokens: 512, temperature: 0.2 },
+      chunkSettings: {
+        targetGraphemes: 1500,
+        contextGraphemes: 1000,
+        recheckContextGraphemes: 3000,
+        roundingTolerance: 0.2,
+        maxInputGraphemes: 8000,
+      },
+      timeouts: { checkMs: 60_000, recheckMs: 60_000 },
+      perspectives: ["typo"],
+      recheckEnabled: false,
+      allowedWords: [],
+      allowedWordRuleVersion: "1",
+      promptVersion: "1",
+      diagnosticTransformVersion: "1",
+      status: "running",
+      stopReason: null,
+      stopMessage: null,
+      generationUnconfirmed: false,
+      startOperationId: null,
+      finishedAt: null,
+    });
+    const target2 = insertRunTarget(db, {
+      id: "t2",
+      runId: run2.id,
+      targetIndex: 0,
+      target: { start: 0, end: 10 },
+      contextBefore: null,
+      contextAfter: null,
+      input: { start: 0, end: 10 },
+      paragraphIds: [0],
+    });
+    const unit2 = insertCheckUnit(db, {
+      id: "cu-r2-typo",
+      runId: run2.id,
+      targetId: target2.id,
+      perspective: "typo",
+      status: "done",
+      attempts: 1,
+      failure: null,
+      pendingNote: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: null,
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    expect(nextCandidateIndex(db, run1.id)).toBe(0);
+    expect(nextCandidateIndex(db, run2.id)).toBe(0);
+
+    insertCandidate(db, {
+      id: "c-r1-0",
+      runId: run1.id,
+      checkUnitId: unit1.id,
+      findingId: null,
+      candidateIndex: nextCandidateIndex(db, run1.id),
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    // run1 に候補を1件足しても run2 の採番には影響しない。
+    expect(nextCandidateIndex(db, run1.id)).toBe(1);
+    expect(nextCandidateIndex(db, run2.id)).toBe(0);
+
+    insertCandidate(db, {
+      id: "c-r2-0",
+      runId: run2.id,
+      checkUnitId: unit2.id,
+      findingId: null,
+      candidateIndex: nextCandidateIndex(db, run2.id),
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    insertCandidate(db, {
+      id: "c-r2-1",
+      runId: run2.id,
+      checkUnitId: unit2.id,
+      findingId: null,
+      candidateIndex: nextCandidateIndex(db, run2.id),
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    expect(nextCandidateIndex(db, run2.id)).toBe(2);
+    // run2 側の書き込みは run1 の採番に影響しない。
+    expect(nextCandidateIndex(db, run1.id)).toBe(1);
     close();
   });
 });

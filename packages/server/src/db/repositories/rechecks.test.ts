@@ -157,7 +157,8 @@ describe("db/repositories/rechecks", () => {
     expect(findRecheckUnitByFinding(db, finding.id)?.status).toBe("running");
 
     const finishedAt = new Date("2026-09-09T00:00:00.000Z");
-    finishRecheckUnit(db, "rc1", {
+    const finished = finishRecheckUnit(db, "rc1", {
+      expectedStatus: "running",
       status: "done",
       attempts: 1,
       failure: null,
@@ -172,6 +173,7 @@ describe("db/repositories/rechecks", () => {
       elapsedMs: 2345,
       finishedAt,
     });
+    expect(finished).toBe(true);
 
     const found = findRecheckUnitByFinding(db, finding.id);
     expect(found?.status).toBe("done");
@@ -204,7 +206,8 @@ describe("db/repositories/rechecks", () => {
         basePendingInput({ id: unitId, runId: run.id, findingId: finding.id, inputRange: null }),
       );
 
-      finishRecheckUnit(db, unitId, {
+      const finished = finishRecheckUnit(db, unitId, {
+        expectedStatus: "pending",
         status: "not-applicable",
         attempts: 0,
         failure: null,
@@ -219,6 +222,7 @@ describe("db/repositories/rechecks", () => {
         elapsedMs: null,
         finishedAt: new Date("2026-09-09T00:00:00.000Z"),
       });
+      expect(finished).toBe(true);
 
       const found = findRecheckUnitByFinding(db, finding.id);
       expect(found?.status).toBe("not-applicable");
@@ -246,7 +250,8 @@ describe("db/repositories/rechecks", () => {
         finishReason: origin === "chat" ? "length" : null,
         origin,
       };
-      finishRecheckUnit(db, unitId, {
+      const finished = finishRecheckUnit(db, unitId, {
+        expectedStatus: "pending",
         status: "failed",
         attempts: 1,
         failure,
@@ -261,6 +266,7 @@ describe("db/repositories/rechecks", () => {
         elapsedMs: null,
         finishedAt: new Date("2026-09-09T00:00:00.000Z"),
       });
+      expect(finished).toBe(true);
 
       const found = findRecheckUnitByFinding(db, finding.id);
       expect(found?.status).toBe("failed");
@@ -284,6 +290,96 @@ describe("db/repositories/rechecks", () => {
     expect(() => findRecheckUnitByFinding(db, finding.id)).toThrow(
       /failure_message \/ failure_origin/,
     );
+    close();
+  });
+
+  it("S3b: claimRecheckUnit は started_at を状態の変更と同じ更新で設定し、from に合わない行は started_at を含め1列も変わらない", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f1");
+    insertRecheckUnit(db, basePendingInput({ id: "rc1", runId: run.id, findingId: finding.id }));
+
+    const startedAt1 = new Date("2026-09-09T00:00:00.000Z");
+    const claimed = claimRecheckUnit(db, "rc1", "pending", "running", { startedAt: startedAt1 });
+    expect(claimed).toBe(true);
+    const running = findRecheckUnitByFinding(db, finding.id);
+    expect(running?.status).toBe("running");
+    expect(running?.startedAt).toEqual(startedAt1);
+
+    // from（"pending"）に合わない行は started_at を含め1列も変わらない。
+    const startedAt2 = new Date("2026-09-09T01:00:00.000Z");
+    const secondClaim = claimRecheckUnit(db, "rc1", "pending", "running", {
+      startedAt: startedAt2,
+    });
+    expect(secondClaim).toBe(false);
+    const stillRunning = findRecheckUnitByFinding(db, finding.id);
+    expect(stillRunning?.status).toBe("running");
+    expect(stillRunning?.startedAt).toEqual(startedAt1);
+    close();
+  });
+
+  it("S3c: claimRecheckUnit（started_at 付き）は recheck_units への UPDATE を1回しか発行しない（必須事項1の本体：同じ1文であること）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f1");
+    insertRecheckUnit(db, basePendingInput({ id: "rc1", runId: run.id, findingId: finding.id }));
+
+    // recheck_units への UPDATE の発行回数を、行レベルの AFTER UPDATE トリガーで数える
+    // （`check-units.test.ts` の S3c と同じ仕組み）。
+    db.run(sql`CREATE TEMP TABLE update_log (n integer)`);
+    db.run(sql`
+      CREATE TEMP TRIGGER t_recheck_units_update AFTER UPDATE ON recheck_units
+      BEGIN
+        INSERT INTO update_log VALUES (1);
+      END
+    `);
+
+    const claimed = claimRecheckUnit(db, "rc1", "pending", "running", {
+      startedAt: new Date("2026-09-09T00:00:00.000Z"),
+    });
+    expect(claimed).toBe(true);
+
+    const count = db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM update_log`);
+    expect(count.n).toBe(1);
+    close();
+  });
+
+  it("S4b: finishRecheckUnit は expectedStatus に合わない行を更新せず false を返し、状態以外の列も一切変わらない", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f1");
+    insertRecheckUnit(db, basePendingInput({ id: "rc1", runId: run.id, findingId: finding.id }));
+    const claimed = claimRecheckUnit(db, "rc1", "pending", "running");
+    expect(claimed).toBe(true);
+
+    // 実際の status は "running" だが、expectedStatus に "pending"（不一致）を渡す。
+    const finished = finishRecheckUnit(db, "rc1", {
+      expectedStatus: "pending",
+      status: "done",
+      attempts: 99,
+      failure: null,
+      pendingNote: null,
+      notApplicableReason: null,
+      verdict: "keep",
+      reasonKind: "error-confirmed",
+      reason: "更新されないはず",
+      suggestionValid: true,
+      usage: USAGE,
+      inputGraphemes: 500,
+      elapsedMs: 2345,
+      finishedAt: new Date("2026-09-09T02:00:00.000Z"),
+    });
+    expect(finished).toBe(false);
+
+    const found = findRecheckUnitByFinding(db, finding.id);
+    expect(found?.status).toBe("running");
+    expect(found?.attempts).toBe(0);
+    expect(found?.verdict).toBeNull();
+    expect(found?.reasonKind).toBeNull();
+    expect(found?.reason).toBeNull();
+    expect(found?.suggestionValid).toBeNull();
+    expect(found?.usage).toBeNull();
+    expect(found?.finishedAt).toBeNull();
     close();
   });
 });

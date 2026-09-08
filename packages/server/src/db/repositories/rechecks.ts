@@ -3,7 +3,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 
 import type { Usage } from "../../lmstudio/types.ts";
 import type { UnitStatus } from "../../run/status.ts";
-import type { AppDatabase } from "../client.ts";
+import type { AppDatabaseLike } from "../client.ts";
 import { toFailureColumns, toFailureOrNull } from "../failure-columns.ts";
 import { createId } from "../ids.ts";
 import { parseJsonColumn, unitUsageSchema } from "../json.ts";
@@ -63,7 +63,7 @@ function toInputRangeOrNull(
  * 状態遷移や再確認結果は `claimRecheckUnit` / `finishRecheckUnit` が別途更新する。
  */
 export function insertRecheckUnit(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   input: InsertRecheckUnitInput,
 ): RecheckUnitRecord {
   const id = input.id ?? createId();
@@ -142,7 +142,7 @@ function rowToRecheckUnitRecord(row: typeof recheckUnits.$inferSelect): RecheckU
 
 /** 再確認単位を指摘 ID で 1 件探す。`finding_id` に一意制約があるため高々 1 件。見つからなければ null。 */
 export function findRecheckUnitByFinding(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   findingId: string,
 ): RecheckUnitRecord | null {
   const row = db.select().from(recheckUnits).where(eq(recheckUnits.findingId, findingId)).get();
@@ -153,7 +153,7 @@ export function findRecheckUnitByFinding(
 }
 
 /** 検査実行に属する再確認単位を `finding_id` の昇順で列挙する。 */
-export function listRecheckUnits(db: AppDatabase, runId: string): RecheckUnitRecord[] {
+export function listRecheckUnits(db: AppDatabaseLike, runId: string): RecheckUnitRecord[] {
   const rows = db
     .select()
     .from(recheckUnits)
@@ -168,7 +168,10 @@ export function listRecheckUnits(db: AppDatabase, runId: string): RecheckUnitRec
  * `not-applicable` は対象外（対象外なので再開しない）。`done` / `failed` も含めない
  * （失敗単位の個別再試行は PR9 が別の経路で扱う。仕様書 8.2 節）。
  */
-export function listUnfinishedRecheckUnits(db: AppDatabase, runId: string): RecheckUnitRecord[] {
+export function listUnfinishedRecheckUnits(
+  db: AppDatabaseLike,
+  runId: string,
+): RecheckUnitRecord[] {
   const rows = db
     .select()
     .from(recheckUnits)
@@ -179,18 +182,22 @@ export function listUnfinishedRecheckUnits(db: AppDatabase, runId: string): Rech
 }
 
 /**
- * 状態の条件付き更新（決定 14）。`status` が `from` のときだけ `to` に更新し、成功したら true を返す。
- * 状態以外の列は変えない。同時取得の防止に使う（`check-units.ts` の `claimUnit` と同じ形）。
+ * 状態の条件付き更新（PR8 必須事項 1・決定 4）。`status` が `from` のときだけ `to` に更新し、
+ * 成功したら true を返す。`options.startedAt` を渡すと `started_at` も**同じ 1 文の UPDATE**で
+ * 設定する（`check-units.ts` の `claimUnit` と同じ形・同じ理由）。`from` に一致しない行は
+ * `started_at` を含め 1 列も変わらない。
  */
 export function claimRecheckUnit(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   id: string,
   from: UnitStatus,
   to: UnitStatus,
+  options?: { readonly startedAt?: Date | undefined },
 ): boolean {
+  const startedAt = options?.startedAt;
   const result = db
     .update(recheckUnits)
-    .set({ status: to })
+    .set(startedAt === undefined ? { status: to } : { status: to, startedAt })
     .where(and(eq(recheckUnits.id, id), eq(recheckUnits.status, from)))
     .run();
   return result.changes === 1;
@@ -198,6 +205,8 @@ export function claimRecheckUnit(
 
 /** `finishRecheckUnit` の入力。 */
 export interface FinishRecheckUnitInput {
+  /** この値のときだけ更新する（決定 5・PR8 必須事項 2）。 */
+  readonly expectedStatus: UnitStatus;
   readonly status: UnitStatus;
   readonly attempts: number;
   readonly failure: UnitFailureRecord | null;
@@ -222,14 +231,20 @@ export interface FinishRecheckUnitInput {
  *
  * `reasonKind` と `verdict` の整合はここでは検証しない（保存するだけ。ファイル先頭のコメント参照）。
  * `judgments` の行には一切触れない（仕様 5.4「再確認は作者の採否を上書きしない」）。
+ *
+ * `WHERE id = ? AND status = expectedStatus` の条件付き更新にし、更新できたら true、
+ * `status` が `expectedStatus` と一致せず 0 行しか更新できなければ false を返す（決定 5・
+ * PR8 必須事項 2）。false は「停止などで先に決着していた」ことを意味し、呼び出し側は
+ * 上書きしてはならない。false のとき状態以外の列も一切変わらない。
  */
 export function finishRecheckUnit(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   id: string,
   input: FinishRecheckUnitInput,
-): void {
+): boolean {
   const failureColumns = toFailureColumns(input.failure);
-  db.update(recheckUnits)
+  const result = db
+    .update(recheckUnits)
     .set({
       status: input.status,
       attempts: input.attempts,
@@ -248,6 +263,7 @@ export function finishRecheckUnit(
       elapsedMs: input.elapsedMs,
       finishedAt: input.finishedAt,
     })
-    .where(eq(recheckUnits.id, id))
+    .where(and(eq(recheckUnits.id, id), eq(recheckUnits.status, input.expectedStatus)))
     .run();
+  return result.changes === 1;
 }

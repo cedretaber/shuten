@@ -175,6 +175,7 @@ describe("db/repositories/judgments", () => {
       finishedAt: null,
     });
     finishRecheckUnit(db, "rc1", {
+      expectedStatus: "pending",
       status: "done",
       attempts: 1,
       failure: null,

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import * as schema from "./schema.ts";
 
 /**
@@ -14,6 +15,18 @@ export interface AppDatabaseHandle {
 }
 
 export type AppDatabase = AppDatabaseHandle["db"];
+
+/**
+ * `AppDatabase`（`BetterSQLite3Database<typeof schema>`）と、`db.transaction((tx) => ...)` が
+ * コールバックへ渡す `tx`（`SQLiteTransaction<...>`）の共通の親（PR9 決定 15）。
+ *
+ * `BetterSQLite3Database` は `BaseSQLiteDatabase<'sync', RunResult, TSchema>` を継承し、
+ * `SQLiteTransaction` も同じ `BaseSQLiteDatabase` を継承する（drizzle-orm@0.45.2 の
+ * `sqlite-core/db.d.ts` / `sqlite-core/session.d.ts` で確認済み）。リポジトリ関数の第 1 引数を
+ * この型にしておくと、`db` を直接渡しても、外側の `db.transaction` から得た `tx` を渡しても
+ * 同じ関数を使い回せる（決定 15 の「1 単位ぶんを 1 トランザクションで書く」に必要）。
+ */
+export type AppDatabaseLike = BaseSQLiteDatabase<"sync", Database.RunResult, typeof schema>;
 
 /**
  * SQLite を開いて Drizzle のインスタンスを返す。

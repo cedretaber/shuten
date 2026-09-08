@@ -7,6 +7,7 @@ import type {
   ModelInfo,
   Usage,
 } from "../lmstudio/types.ts";
+import type { RequestQueue } from "./queue.ts";
 import type { RunStop, StopReason, UnitFailure } from "./result.ts";
 
 export type ExecOutcome<T> =
@@ -44,6 +45,13 @@ export interface Executor {
 export interface ExecutorOptions {
   readonly signal?: AbortSignal | undefined;
   readonly now?: (() => number) | undefined;
+  /**
+   * 渡すとバックエンド全体で共有する 1 本のキューに `runOne`（ensureLoaded → chat → parse →
+   * 再試行 1 回まで）全体を 1 ジョブとして投入する。複数の executor（＝複数の実行）をまたいで
+   * 同時実行数を 1 にするための仕組み（仕様書 2 節）。省略時は従来どおり `tail` による
+   * この executor 内だけの直列化になる（`runPipeline` は渡さない）。
+   */
+  readonly queue?: RequestQueue | undefined;
 }
 
 /**
@@ -163,6 +171,7 @@ function haltForEnsureLoadedError(error: LmStudioError, failure: UnitFailure): R
 export function createExecutor(client: LmStudioClient, options: ExecutorOptions): Executor {
   const signal = options.signal;
   const now = options.now ?? Date.now;
+  const queue = options.queue;
 
   let halt: RunStop | null = null;
   let requestCount = 0;
@@ -326,6 +335,19 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     parse: (result: ChatResult) => T,
     timeoutMs: number,
   ): Promise<ExecOutcome<T>> {
+    if (queue !== undefined) {
+      // queue が渡されているときは、この executor 固有の tail を経由せず、execute の
+      // 呼び出し順そのままで共有キューに投入する。tail を経由すると、この executor が
+      // 前のジョブの完了を待ってから投入するのに対し、他の executor（＝他の実行）は
+      // 即座に投入できてしまい、共有キューへの投入順（＝実行順）が execute の呼び出し順と
+      // ずれる（例：A1 → A2 → B1 の順で呼んでも A1 → B1 → A2 の順で実行されてしまう）。
+      //
+      // runOne は executor 内の可変状態（halt / requestCount / firstModelInfo）を書き換えるが、
+      // 共有キューが同時実行数を 1 に保つ（FIFO で前のジョブが解決してから次を始める）ため、
+      // 複数 executor 間でこの状態が競合することはない。
+      return queue.enqueue(() => runOne(request, parse, timeoutMs));
+    }
+    // キューなしの経路（runPipeline / CLI）は従来どおり、この executor 内の tail で直列化する。
     const started = tail.then(() => runOne(request, parse, timeoutMs));
     tail = started.then(
       () => undefined,

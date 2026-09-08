@@ -10,13 +10,11 @@ import type {
 import {
   ALLOWED_WORD_RULE_VERSION,
   buildCheckInput,
-  buildRecheckInput,
   countGraphemes,
   DIAGNOSTIC_TRANSFORM_VERSION,
   findSuppression,
   InputTooLongError,
   InvalidChunkSettingsError,
-  locateQuote,
   mergeCandidates,
   PROMPT_VERSION,
   partitionCandidates,
@@ -27,8 +25,6 @@ import {
 } from "@shuten/shared";
 
 import type { LmStudioClient } from "../lmstudio/types.ts";
-import { buildCheckRequest, buildRecheckRequest } from "../prompts/build.ts";
-import { parseCheckResponse, parseRecheckResponse } from "../prompts/parse.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
 import { splitAllowedWords } from "./allowed-words.ts";
 import type { PipelineEvent } from "./events.ts";
@@ -42,10 +38,10 @@ import type {
   RecheckResult,
   RunStop,
   TargetPlan,
-  UnitFailure,
   UnlocatedResult,
 } from "./result.ts";
 import { RESULT_VERSION } from "./result.ts";
+import { executeCheckUnit, executeRecheckUnit, localFailure } from "./units.ts";
 
 export interface PipelineArgs {
   /** 保存本文（BOM 除外済み）。段落はここから splitParagraphs で導く。 */
@@ -75,27 +71,6 @@ function createSequentialId(prefix: string): () => string {
     count += 1;
     return `${prefix}${String(count)}`;
   };
-}
-
-/** 送信前の例外（`origin: "local"`）を `UnitFailure` にする。 */
-function localFailure(reason: UnitFailure["reason"], message: string): UnitFailure {
-  return { reason, message, finishReason: null, origin: "local" };
-}
-
-/**
- * executor が返した失敗が「未完了（`pending`）」か「失敗（`failed`）」かを決める。
- * `failure.reason` だけでは決められない（門で止めた単位の理由は停止理由によらず `aborted` になる）。
- *
- * - `origin` が `chat` 以外：生成要求を送っていない（門で止めた）か、`ensureLoaded` 由来。
- *   決定 5(b) のとおり当該単位は未完了のまま残す。
- * - `chat` 由来でも `model-not-loaded`（実行中のアンロード）と `aborted`（停止操作）は
- *   失敗ではない（仕様書 7 節・8.2 節）。
- */
-function isPendingFailure(failure: UnitFailure): boolean {
-  if (failure.origin !== "chat") {
-    return true;
-  }
-  return failure.reason === "model-not-loaded" || failure.reason === "aborted";
 }
 
 /** `full-text` 方式の検査対象（決定 8）。本文が空なら planTargets と同じく 0 件。 */
@@ -272,7 +247,10 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
     note: string,
   ): CheckUnitResult => ({ status: "pending", targetIndex, perspective, attempts: 0, note });
 
-  /** 1 件の指摘の再確認（決定 2 の手順 7）。 */
+  /**
+   * 1 件の指摘の再確認（決定 2 の手順 7）。disabled / suppressed / 停止済みの判定はここで行い、
+   * 実際に要求を送る場合だけ `executeRecheckUnit`（`run/units.ts`）を呼ぶ。
+   */
   const runRecheck = async (
     finding: MergedFinding,
     initialInput: CheckInput,
@@ -293,65 +271,27 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
       };
     }
 
-    let input: CheckInput;
-    try {
-      input = buildRecheckInput(args.text, paragraphs, initialInput, args.chunkSettings);
-    } catch (error) {
-      if (!(error instanceof InputTooLongError)) {
-        throw error;
-      }
-      // 再確認は指摘 1 件ごとに独立しているので、この再確認だけ失敗にして実行は続ける（決定 5(c)）。
-      return {
-        status: "failed",
-        attempts: 0,
-        failure: localFailure("input-too-long", error.message),
-        usage: null,
-        inputRange: null,
-        elapsedMs: null,
-      };
-    }
-
-    emit({ type: "recheck-started", findingId: finding.id });
-    const request = buildRecheckRequest({
+    const outcome = await executeRecheckUnit({
       text: args.text,
       paragraphs,
-      input,
       finding,
+      initialInput,
+      suppressed: false,
+      chunkSettings: args.chunkSettings,
       allowedWords,
       generation: args.generation,
+      recheckMs: args.timeouts.recheckMs,
+      executor,
+      // buildRecheckInput が成功し、実際に要求を送る直前にだけ recheck-started を出す
+      // （InputTooLongError で送らずに終わるときは出さない。抽出前と同じ挙動）。
+      onStarted: () => {
+        emit({ type: "recheck-started", findingId: finding.id });
+      },
     });
-    const outcome = await executor.execute(request, parseRecheckResponse, args.timeouts.recheckMs);
-    if (outcome.ok) {
-      return {
-        status: "done",
-        attempts: outcome.attempts,
-        output: outcome.value,
-        usage: outcome.usage,
-        inputRange: input.inputRange,
-        inputGraphemes: countGraphemes(sliceRange(args.text, input.inputRange)),
-        elapsedMs: outcome.elapsedMs,
-      };
-    }
     if (outcome.halt !== null) {
       stop ??= outcome.halt;
     }
-    // LM Studio 由来の input-too-long（HTTP 400）も再確認では実行を止めない（決定 5(c)）。
-    if (isPendingFailure(outcome.failure)) {
-      return {
-        status: "pending",
-        attempts: outcome.attempts,
-        inputRange: input.inputRange,
-        note: outcome.failure.message,
-      };
-    }
-    return {
-      status: "failed",
-      attempts: outcome.attempts,
-      failure: outcome.failure,
-      usage: outcome.usage,
-      inputRange: input.inputRange,
-      elapsedMs: outcome.elapsedMs,
-    };
+    return outcome.result;
   };
 
   // 検査対象は index 昇順、対象内は perspectives の指定順（決定 2）。
@@ -405,7 +345,6 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
     }
 
     targetPlans.push({ target, input });
-    const inputGraphemes = countGraphemes(sliceRange(args.text, input.inputRange));
     const candidates: Candidate[] = [];
 
     for (const perspective of args.perspectives) {
@@ -421,75 +360,25 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
       }
 
       emit({ type: "check-started", targetIndex: target.index, perspective });
-      const request = buildCheckRequest({
+      const outcome = await executeCheckUnit({
         text: args.text,
         paragraphs,
         input,
+        targetIndex: target.index,
         perspective,
         allowedWords,
         generation: args.generation,
+        checkMs: args.timeouts.checkMs,
+        executor,
+        createCandidateId,
       });
-      const outcome = await executor.execute(request, parseCheckResponse, args.timeouts.checkMs);
-
-      let unit: CheckUnitResult;
-      if (outcome.ok) {
-        for (const llm of outcome.value.findings) {
-          // 位置確定は、その指摘を生んだ要求と同じ CheckInput で行う（決定 3）。
-          const locate = locateQuote(args.text, input, paragraphs, llm);
-          const id = createCandidateId();
-          candidateCount += 1;
-          // 分岐は冗長に見えるが必要。TypeScript は Candidate のネストした locate.status を
-          // 自動で絞り込めないので、分岐ごとに locate を絞ってから組み立てる
-          // （shared/src/merge/candidate.ts の isLocated と同じ理由）。
-          candidates.push(
-            locate.status === "located"
-              ? { id, perspective, llm, locate }
-              : { id, perspective, llm, locate },
-          );
-        }
-        unit = {
-          status: "done",
-          targetIndex: target.index,
-          perspective,
-          attempts: outcome.attempts,
-          usage: outcome.usage,
-          inputGraphemes,
-          elapsedMs: outcome.elapsedMs,
-          findingCount: outcome.value.findings.length,
-        };
-      } else {
-        if (outcome.halt !== null) {
-          stop ??= outcome.halt;
-        } else if (outcome.failure.reason === "input-too-long") {
-          // executor は初回検査か再確認かを知らないので、停止の判断はここで行う（決定 5(a)）。
-          stop ??= {
-            reason: "settings",
-            message: "初回検査の入力が LM Studio の上限を超えたため実行を停止した",
-            failure: outcome.failure,
-            generationUnconfirmed: false,
-          };
-        }
-        unit = isPendingFailure(outcome.failure)
-          ? {
-              status: "pending",
-              targetIndex: target.index,
-              perspective,
-              attempts: outcome.attempts,
-              note: outcome.failure.message,
-            }
-          : {
-              status: "failed",
-              targetIndex: target.index,
-              perspective,
-              attempts: outcome.attempts,
-              failure: outcome.failure,
-              usage: outcome.usage,
-              inputGraphemes,
-              elapsedMs: outcome.elapsedMs,
-            };
+      if (outcome.halt !== null) {
+        stop ??= outcome.halt;
       }
-      checkUnits.push(unit);
-      emit({ type: "check-finished", result: unit });
+      candidateCount += outcome.candidates.length;
+      candidates.push(...outcome.candidates);
+      checkUnits.push(outcome.unit);
+      emit({ type: "check-finished", result: outcome.unit });
     }
 
     // 停止していても、その対象ですでに成功した観点の応答は捨てない（決定 5「停止した対象の後処理」）。

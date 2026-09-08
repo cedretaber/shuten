@@ -1,7 +1,14 @@
-import type { LlmFinding, LocateResult, Perspective, Range } from "@shuten/shared";
-import { asc, eq, sql } from "drizzle-orm";
+import type {
+  FindingCategory,
+  InitialVerdict,
+  LlmFinding,
+  LocateResult,
+  Perspective,
+  Range,
+} from "@shuten/shared";
+import { and, asc, eq, sql } from "drizzle-orm";
 
-import type { AppDatabase } from "../client.ts";
+import type { AppDatabaseLike } from "../client.ts";
 import { createId } from "../ids.ts";
 import { candidateLlmSchema, parseJsonColumn } from "../json.ts";
 import type { CandidateRecord, DiagnosticRecord, FindingRecord } from "../records.ts";
@@ -38,7 +45,7 @@ export type InsertFindingInput = Omit<FindingRecord, "id" | "createdAt"> & {
  * `judgments` 用のリポジトリはまだ無いので（次のタスクが判断の更新・取得を作る）、
  * ここでは `schema.ts` の `judgments` テーブルへ直接 insert する。
  */
-export function insertFinding(db: AppDatabase, input: InsertFindingInput): FindingRecord {
+export function insertFinding(db: AppDatabaseLike, input: InsertFindingInput): FindingRecord {
   const id = input.id ?? createId();
   const createdAt = input.createdAt ?? new Date();
   db.transaction((tx) => {
@@ -159,7 +166,7 @@ export type FindingWithReasons = FindingRecord & {
  * `candidates` を `check_units` と結合して観点を導き（候補側に観点の列はない。決定 19）、
  * `candidate_index` の昇順に並べる。
  */
-function listReasons(db: AppDatabase, findingId: string): readonly FindingReason[] {
+function listReasons(db: AppDatabaseLike, findingId: string): readonly FindingReason[] {
   const rows = db
     .select({
       candidateId: candidates.id,
@@ -179,7 +186,7 @@ function listReasons(db: AppDatabase, findingId: string): readonly FindingReason
 }
 
 function toFindingWithReasons(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   row: typeof findings.$inferSelect,
 ): FindingWithReasons {
   return { ...rowToFindingRecord(row), reasons: listReasons(db, row.id) };
@@ -192,7 +199,7 @@ function toFindingWithReasons(
  * 同順位（`start` が等しい、または両方 null）は `created_at` → `id` の順で安定させる
  * （安定していればよく、表示上の意味は持たせない）。
  */
-export function listFindings(db: AppDatabase, runId: string): FindingWithReasons[] {
+export function listFindings(db: AppDatabaseLike, runId: string): FindingWithReasons[] {
   const rows = db
     .select()
     .from(findings)
@@ -208,12 +215,34 @@ export function listFindings(db: AppDatabase, runId: string): FindingWithReasons
 }
 
 /** 指摘を ID で 1 件探す。見つからなければ null。 */
-export function findFinding(db: AppDatabase, id: string): FindingWithReasons | null {
+export function findFinding(db: AppDatabaseLike, id: string): FindingWithReasons | null {
   const row = db.select().from(findings).where(eq(findings.id, id)).get();
   if (!row) {
     return null;
   }
   return toFindingWithReasons(db, row);
+}
+
+/**
+ * 同じ検査実行内で `merge_key` が一致する指摘を探す（仕様 6.4「重複統合は同一の検査実行内に
+ * 限定する」）。`run/merge-store.ts` が候補 1 件ずつの統合の照合に使う唯一の経路（決定 9）。
+ * `(run_id, merge_key)` の部分一意索引（`merge_key` が非 null の行だけ。PR8 決定 6）がそのまま
+ * 索引になるので、`run_id` と `merge_key` の両方で絞る。見つからなければ null。
+ */
+export function findFindingByMergeKey(
+  db: AppDatabaseLike,
+  runId: string,
+  mergeKey: string,
+): FindingRecord | null {
+  const row = db
+    .select()
+    .from(findings)
+    .where(and(eq(findings.runId, runId), eq(findings.mergeKey, mergeKey)))
+    .get();
+  if (!row) {
+    return null;
+  }
+  return rowToFindingRecord(row);
 }
 
 /** ---------------------------------------------------------------------- */
@@ -231,7 +260,7 @@ export type InsertCandidateInput = Omit<CandidateRecord, "id" | "createdAt"> & {
  * `mergeCandidates` が候補を作った順そのものを入れる）。
  * `llm`（`LlmFinding`）は一切加工せず、引用（`quote`）を破壊しない。
  */
-export function insertCandidate(db: AppDatabase, input: InsertCandidateInput): CandidateRecord {
+export function insertCandidate(db: AppDatabaseLike, input: InsertCandidateInput): CandidateRecord {
   const id = input.id ?? createId();
   const createdAt = input.createdAt ?? new Date();
   db.insert(candidates)
@@ -299,7 +328,7 @@ function rowToCandidateRecord(row: typeof candidates.$inferSelect): CandidateRec
 }
 
 /** 元候補を ID で 1 件探す。見つからなければ null。 */
-export function findCandidate(db: AppDatabase, id: string): CandidateRecord | null {
+export function findCandidate(db: AppDatabaseLike, id: string): CandidateRecord | null {
   const row = db.select().from(candidates).where(eq(candidates.id, id)).get();
   if (!row) {
     return null;
@@ -308,7 +337,7 @@ export function findCandidate(db: AppDatabase, id: string): CandidateRecord | nu
 }
 
 /** 検査実行に属する元候補を `candidate_index` の昇順で列挙する。 */
-export function listCandidates(db: AppDatabase, runId: string): CandidateRecord[] {
+export function listCandidates(db: AppDatabaseLike, runId: string): CandidateRecord[] {
   const rows = db
     .select()
     .from(candidates)
@@ -319,15 +348,97 @@ export function listCandidates(db: AppDatabase, runId: string): CandidateRecord[
 }
 
 /**
+ * 1 件の指摘に統合された元候補を `candidate_index` の昇順で列挙する。
+ * `run/merge-store.ts` が統合のたびに `category` / `initialVerdict` の集約を再計算するのに使う
+ * （`mergeCandidates` と同じ規則を候補 1 件ずつ適用しても同じ結果になるよう、統合先の全候補を
+ * 読み直してから畳み込む。決定 9）。
+ */
+export function listCandidatesForFinding(
+  db: AppDatabaseLike,
+  findingId: string,
+): CandidateRecord[] {
+  const rows = db
+    .select()
+    .from(candidates)
+    .where(eq(candidates.findingId, findingId))
+    .orderBy(asc(candidates.candidateIndex))
+    .all();
+  return rows.map(rowToCandidateRecord);
+}
+
+/**
+ * 実行内で次に使う `candidate_index` を返す（決定 22）。
+ *
+ * `SELECT COALESCE(MAX(candidate_index), -1) + 1 FROM candidates WHERE run_id = ?` そのもの。
+ * まだ候補が 1 件もない実行では 0 を返す。呼び出し側（PR9 オーケストレーター）は
+ * 決定 15 の保存トランザクションの中でこれを読み、その応答の候補に LLM が返した順で連番を振る。
+ * 同じトランザクション内で読んで書くため、番号の決定と使用の間に別の書き込みが挟まらない
+ * （better-sqlite3 は同期 API、書き込みは単一プロセス内で直列）。ロールバックすれば採番ごと
+ * 消える。万一の二重採番は `(run_id, candidate_index)` の一意制約（PR8 決定 19）が検出する。
+ */
+export function nextCandidateIndex(db: AppDatabaseLike, runId: string): number {
+  const row = db
+    .select({ next: sql<number>`coalesce(max(${candidates.candidateIndex}), -1) + 1` })
+    .from(candidates)
+    .where(eq(candidates.runId, runId))
+    .get();
+  return row?.next ?? 0;
+}
+
+/**
  * 候補を指摘に紐づける（候補を先に書いて後から `finding_id` を更新する経路のため。決定 16）。
  * `locate_status` など他の列は変えない。
  */
 export function attachCandidateToFinding(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   candidateId: string,
   findingId: string,
 ): void {
   db.update(candidates).set({ findingId }).where(eq(candidates.id, candidateId)).run();
+}
+
+/**
+ * 指摘の集約（`category` / `initialVerdict`）を更新する（決定 9）。
+ *
+ * 統合を「保存済み指摘への `mergeKey` 照合」に一本化したことに伴い、`mergeCandidates` と同じ
+ * 集約規則（`category` は元候補が一致すればその値、不一致なら `unclear`。`initialVerdict` は
+ * 全候補が `likely-error` のときだけ `likely-error`）を、候補を 1 件統合するたびに呼び出し側
+ * （PR9 オーケストレーター）が再計算してここに渡す。集約の計算そのものはここでは行わない
+ * （`attachCandidateToFinding` と同じく素直に列を書き換えるだけの部品）。
+ *
+ * `initialVerdict` は「再確認で上書きしない」（決定 5）対象だが、これは元候補の統合による
+ * 更新であり再確認とは別の経路なので、この関数が上書きしてよい。
+ */
+export function updateFindingAggregate(
+  db: AppDatabaseLike,
+  findingId: string,
+  input: { readonly category: FindingCategory; readonly initialVerdict: InitialVerdict },
+): void {
+  db.update(findings)
+    .set({ category: input.category, initialVerdict: input.initialVerdict })
+    .where(eq(findings.id, findingId))
+    .run();
+}
+
+/**
+ * 指摘の抑制（許容語による自動抑制。仕様書 6.4）を更新する。
+ *
+ * 統合で候補が増えて `category` が `notation` から外れる（`unclear` になる）と、抑制の前提
+ * （`category === "notation"`）が崩れるため、`run/merge-store.ts` は集約を再計算するたびに
+ * 抑制も再計算してここに渡す。判定ロジック（`findSuppression`）はここでは再実装しない。
+ */
+export function updateFindingSuppression(
+  db: AppDatabaseLike,
+  findingId: string,
+  suppression: { readonly word: string; readonly ruleVersion: string } | null,
+): void {
+  db.update(findings)
+    .set({
+      suppressionWord: suppression?.word ?? null,
+      suppressionRuleVersion: suppression?.ruleVersion ?? null,
+    })
+    .where(eq(findings.id, findingId))
+    .run();
 }
 
 /** ---------------------------------------------------------------------- */
@@ -407,7 +518,7 @@ function toDiagnosticColumns(diagnostic: UnlocatedLocateResult["diagnostic"]): {
  * - すべて 1 トランザクションで書く。
  */
 export function saveUnlocatedCandidate(
-  db: AppDatabase,
+  db: AppDatabaseLike,
   input: SaveUnlocatedCandidateInput,
 ): SaveUnlocatedCandidateResult {
   if (input.locate.reason !== "not-found" && input.locate.diagnostic !== null) {
