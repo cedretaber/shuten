@@ -75,6 +75,19 @@ PR9 のオーケストレーションは、PR7 のパイプラインが出す結
 | `server/src/run/judgment.ts` | `JudgmentStatus`（決定 5） |
 | `server/drizzle/*.sql` + `meta/` | `drizzle-kit generate` の出力。コミットする |
 
+既存ファイルの変更：
+
+| ファイル | 変更 |
+| --- | --- |
+| `server/src/index.ts` | `createApp` の前に `applyMigrations` を呼ぶ（決定 2） |
+| `server/src/db/client.test.ts` | 手書きの `CREATE TABLE` を消し、`migrate()` を通す（決定 1・12） |
+| `server/src/run/result.ts` | `RunStatus` を `PipelineRunStatus` に改名し `run/status.ts` から導く（決定 3） |
+| `server/src/run/events.ts`、`run/pipeline.ts` | 同じ改名への追随 |
+| `cli/src/main.ts`、`cli/src/main.test.ts` | 同じ改名への追随（`exitCodeForStatus` の引数型） |
+
+`createApp` の引数は変えない。現状 `app.ts` は DB に触れておらず、DB ハンドルを渡すのは
+API を作る PR10 の変更になる。
+
 ### 表と仕様書 8.1 の対応
 
 | 仕様書 8.1 の単位 | 表 |
@@ -119,6 +132,7 @@ PR9 のオーケストレーションは、PR7 のパイプラインが出す結
 | `endpoint_url` | text not null | 接続先のルート URL。**API キーは持たない**（決定 10） |
 | `generation_settings` | text(json) not null | `GenerationSettings`。既定値を DB 側に置かない（決定 11） |
 | `chunk_settings` | text(json) not null | `ChunkSettings` |
+| `timeouts` | text(json) not null | `{ checkMs, recheckMs }`。再開で設定を変えないため実行に紐づけて保存する |
 | `perspectives` | text(json) not null | 観点の配列 |
 | `recheck_enabled` | integer(boolean) not null | 再確認の有無（決定 3 の補足） |
 | `allowed_words` | text(json) not null | 分割・trim 済みの配列 |
@@ -129,6 +143,7 @@ PR9 のオーケストレーションは、PR7 のパイプラインが出す結
 | `stop_reason` | text nullable | `StopReason` |
 | `stop_message` | text nullable | |
 | `generation_unconfirmed` | integer(boolean) not null default 0 | PR9 の「復旧待ち」の入口 |
+| `start_operation_id` | text nullable | 開始操作の識別子。一意制約（決定 14） |
 | `started_at` | integer(timestamp_ms) not null | |
 | `finished_at` | integer(timestamp_ms) nullable | |
 
@@ -299,6 +314,8 @@ PR7 の `run/result.ts` は `RunStatus` を独自に 3 値で定義している�
 
 位置特定失敗の候補は統合・抑制・再確認に進まないため、`merge_key` は null、
 `suppression_*` は null、`recheck_units` は `not-applicable`（`not_applicable_reason = "unlocated"`）で作る。
+これは指摘の行がある `not-found` / `ambiguous` に限る。`outside-target` は指摘を作らないので
+`recheck_units`（`finding_id` は not null）の行も作らない。
 
 ### 決定 5：初回判定・再確認・採否を別の場所に置く
 
@@ -309,9 +326,12 @@ PR7 の `run/result.ts` は `RunStatus` を独自に 3 値で定義している�
 `JudgmentStatus` は `server/src/run/judgment.ts` に置く。
 
 ```ts
-export const JUDGMENT_STATUSES = ["undecided", "adopt", "reject", "hold"] as const;
+export const JUDGMENT_STATUSES = ["undecided", "adopt-planned", "rejected", "held"] as const;
 export type JudgmentStatus = (typeof JUDGMENT_STATUSES)[number];
 ```
+
+`adopt-planned` としたのは、仕様が「採用予定」は本文への修正適用ではないと繰り返し
+強調しているため（5.3、不変条件）。`adopt` だと適用したように読める。
 
 行がなければ「未判断」。明示的に未判断へ戻す操作は行を消さず `undecided` にして
 `updated_at` を残す（「判断は変更できる」の履歴を消さないため）。
@@ -321,7 +341,15 @@ export type JudgmentStatus = (typeof JUDGMENT_STATUSES)[number];
 `findings.merge_key` に `(run_id, merge_key)` の部分一意索引を張る（`WHERE merge_key IS NOT NULL`）。
 `mergeKey()` の鍵は実行 ID を含まないので、索引で実行をまたいだ統合を構造的に禁じる。
 修正案なしの候補は統合しない（鍵が null）ので、部分索引にして複数行を許す。
-PR9 の失敗観点の再試行はこの索引で既存の指摘に合流する。
+
+索引は**安全網であって合流の手段ではない**。PR9 の失敗観点の再試行では、
+先に `(run_id, merge_key)` で既存の指摘を引いて候補を紐づけ、無ければ新しい指摘を作る。
+索引は、その手順を飛ばして二重に作ろうとしたときに失敗させるためにある。
+
+部分索引は `uniqueIndex()` の `.on(...)` に `.where(...)` を続けて書く（条件は `merge_key is not null`）。
+`drizzle-orm@0.45.2` の `sqlite-core/indexes.d.ts` に `where(condition: SQL)` があることは確認した。
+`drizzle-kit@0.31.10` が生成 SQL に `WHERE` を出すかは実装時に生成結果を見て確かめ、
+出ないようなら `drizzle-kit generate --custom` で索引だけ手書きの SQL にする。
 
 ### 決定 7：ID は `crypto.randomUUID()` の文字列
 
@@ -400,7 +428,29 @@ function claimUnit(db, id: string, from: UnitStatus, to: UnitStatus): boolean
 // UPDATE ... SET status = to WHERE id = id AND status = from。更新行数が 1 なら true
 ```
 
-これは永続化の原始操作なので本 PR に置く。いつ呼ぶか（キューの取り出し、二重送信の判定）は PR9。
+検査実行の状態（`running` → `stopped`、再開時の `stopped` → `running`）にも同じ守りが要るので、
+`runs.ts` に `claimRun(db, id, from: RunStatus, to: RunStatus): boolean` を置く。
+
+二重送信の防止（仕様 8.2「同じ開始操作の重複送信を重複登録しない」）は、
+`runs.start_operation_id` の一意制約で表す。同じ識別子で 2 回目の実行を作ろうとすると
+一意制約違反になり、呼び出し側は既存の実行を引き直す。
+仕様が明示するとおり、原稿版と設定の一致は二重送信の判定に使わないので、
+これらの列に一意制約は付けない。
+
+これらは永続化の原始操作なので本 PR に置く。いつ呼ぶか（キューの取り出し、
+再開と新規開始の区別、識別子の発行）は PR9。
+
+### 決定 15：`findings.paragraph_id` は位置確定の有無で出所が変わる
+
+`MergedFinding`（PR4）は `paragraphId` を持たない（`{ id, range, quote, category, suggestion, verdict, sources }`）。
+`mergeKey` も段落 ID を含まないので、統合された複数の候補が別々の段落 ID を申告していることがありうる。
+そこで `findings.paragraph_id` の決め方を分ける。
+
+- `located`：**保存本文から導く**。`start` を含む段落の ID。LLM の申告ではなく事実。
+- `not-found` / `ambiguous`：候補は 1 件なので、その候補が申告した段落 ID をそのまま入れる
+  （位置が確定していない以上、本文から導けない）。
+
+いずれの場合も、LLM が申告した生の値は `candidates.llm` に残っているので情報は失われない。
 
 ## 解釈で迷った点（レビューで確認したい）
 
@@ -421,6 +471,11 @@ function claimUnit(db, id: string, from: UnitStatus, to: UnitStatus): boolean
    行なし＝未判断とし、一度判断した後に戻す操作だけ `undecided` の行を残す。
    「未判断」の表し方が 2 通りになるが、更新日時を消さないことを優先した。
 
+7. **`findings.paragraph_id` を位置確定時は本文から導いてよいか**（決定 15）。
+   8.1 は指摘の項目に「段落ID」を挙げるだけで出所を書いていない。
+8. **`start_operation_id` を本 PR で持つか**（決定 14）。制御は PR9 だが、
+   後から一意制約を足すマイグレーションを増やしたくないので列だけ先に作る案にした。
+
 ## PR9・PR10・PR13 への持ち越し
 
 - 保存済み `TargetPlan[]` を `runPipeline` に渡す口の設計と、`target-planned` イベント（PR9）。
@@ -430,6 +485,11 @@ function claimUnit(db, id: string, from: UnitStatus, to: UnitStatus): boolean
 - UI からの接続先上書きを保存する `settings` 表（PR10）。
 - `LmStudioClient` の `close()` / `dispose()`（PR10。PR7 からの持ち越し）。
 - 一括エクスポート形式と、そこでの接続先 URL の扱い（PR13）。
+- **貼り付け経路の孤立サロゲート**（PR10）。ファイル取り込み（`ingestUtf8Bytes`）は
+  厳密デコードなので孤立サロゲートを作らないが、PR10 の貼り付け API は JS 文字列を受け取る。
+  better-sqlite3 は JS 文字列を UTF-8 にして書くため、孤立サロゲートは U+FFFD に置き換わり、
+  「本文を加工しない」に反した保存になる。本 PR ではテスト R1b で現状の往復挙動を記録するにとどめ、
+  取り込み時に拒否する判断は PR10 で行う。
 - `truncateRaw` のサロゲートペア境界（PR7 からの持ち越し）は、決定 9 により
   **本 PR で永続化の経路を開かないことで閉じる**。`raw` を保存する必要が出たら再検討する。
 
@@ -442,9 +502,9 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 
 | # | 内容 |
 | --- | --- |
-| M1 | メモリ DB に `applyMigrations` を適用でき、`sqlite_master` に 9 表がすべてある |
+| M1 | メモリ DB に `applyMigrations` を適用でき、`sqlite_master` に 9 表がすべてある（`__drizzle_migrations` も作られるので、表の総数ではなく 9 表の存在を検査する） |
 | M2 | 二度適用しても失敗しない（冪等） |
-| M3 | `migrationsFolder` が cwd に依存しない（別ディレクトリを cwd にして適用できる） |
+| M3 | 解決した `migrationsFolder` が絶対パスで、`packages/server/drizzle` を指す（vitest は既定でワーカースレッドで走り `process.chdir` が使えないため、cwd を変える形では検査しない） |
 
 ### S：スキーマの制約（`schema.test.ts`）
 
@@ -456,6 +516,7 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | S4 | `merge_key` が null の `findings` は同じ実行に何行でも入る（部分索引） |
 | S5 | 同じ `target_id` と同じ `perspective` の `check_units` を 2 行入れると一意制約違反 |
 | S6 | 同じ `finding_id` の `recheck_units` を 2 行入れると一意制約違反 |
+| S6b | 同じ `start_operation_id` の `runs` を 2 行入れると一意制約違反。null は何行でも入る |
 | S7 | `runs` の挿入型に API キーの列がない（型レベル。`@ts-expect-error` で確認） |
 
 ### R：リポジトリの往復
@@ -463,6 +524,7 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | # | 内容 |
 | --- | --- |
 | R1 | 原稿版：CRLF・単独 CR・本文中の U+FEFF・サロゲートペア・異体字セレクタ・ZWJ 絵文字を含む本文がそのまま戻る |
+| R1b | 原稿版：孤立サロゲートを含む文字列を保存したときの往復結果を記録する（現状の挙動の文書化。取り込みでの拒否は PR10） |
 | R2 | 原稿版：`body_hash` が CRLF 版と LF 版で異なる（改行が本文の一部であることの確認） |
 | R3 | 検査実行：`chunk_settings`・`generation_settings`・`allowed_words`・`model_info` が値として往復する |
 | R4 | 検査実行：`model_info` が null でも往復する |
@@ -478,6 +540,7 @@ DB を使うテストは通常の `pnpm test` で走る（LM Studio に依存し
 | R14 | 採否：同じ指摘に 2 回書いても行は 1 つで、`updated_at` が更新される |
 | R15 | 採否：`undecided` に戻しても行が残る |
 | R16 | `claimUnit` は状態が一致するときだけ true を返し、二度目は false（同時取得の防止） |
+| R16b | `claimRun` も同じ（`running` → `stopped` は 1 回だけ成功する） |
 | R17 | 指摘の読み出しに再確認結果と採否が付き、再確認の書き込みが採否を変えない |
 
 ### D：再起動をまたぐ保持（`persistence.test.ts`）
@@ -501,13 +564,16 @@ D1・D2 は WAL ファイルを含めて閉じてから開く。**Windows では
 ## 進め方
 
 1. 本計画をレビューに出し、「解釈で迷った点」の 6 項目に決着を付ける。
-2. `db/schema.ts` を書き、`pnpm --filter @shuten/server db:generate` で SQL を生成してコミット。
-3. `db/client.ts`（決定 12）、`db/migrate.ts`、`db/ids.ts`、`db/hash.ts`、`db/json.ts`、`db/records.ts`。
-4. `run/status.ts`・`run/judgment.ts` と、それに伴う `run/result.ts` の改名（決定 3）。
-5. リポジトリを 7 ファイル。テストは M → S → R → D → J の順に足す。
-6. `src/index.ts` に `applyMigrations` を挿す（決定 2）。
-7. `pnpm check` を通す。Windows は CI で確認する。
-8. PR を作り、「解釈で迷った点」の決着をそのまま本文に載せる。
+2. 着手前に 2 点だけ確かめる：`.gitignore` が `drizzle/` を除外していないこと（現状していない）、
+   `import.meta.dirname` が現在の TS 設定と `@types/node` で型付くこと。
+3. `db/schema.ts` を書き、`pnpm --filter @shuten/server db:generate` で SQL を生成してコミット。
+   生成された索引の SQL に `WHERE merge_key is not null` が入っているかを確認する（決定 6）。
+4. `db/client.ts`（決定 12）、`db/migrate.ts`、`db/ids.ts`、`db/hash.ts`、`db/json.ts`、`db/records.ts`。
+5. `run/status.ts`・`run/judgment.ts` と、それに伴う `run/result.ts` の改名（決定 3）。
+6. リポジトリを 7 ファイル。テストは M → S → R → D → J の順に足す。
+7. `src/index.ts` に `applyMigrations` を挿す（決定 2）。
+8. `pnpm check` を通す。Windows は CI で確認する。
+9. PR を作り、「解釈で迷った点」の決着をそのまま本文に載せる。
 
 担当：Claude がスキーマ設計と決定、実装とテストは qwen（`qwen-delegate`。スペックは英語で書き、
 不変条件を MUST / MUST NOT として明記する）、Claude が実ファイルを読んで検証する。
