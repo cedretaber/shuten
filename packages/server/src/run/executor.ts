@@ -7,6 +7,7 @@ import type {
   ModelInfo,
   Usage,
 } from "../lmstudio/types.ts";
+import type { RequestQueue } from "./queue.ts";
 import type { RunStop, StopReason, UnitFailure } from "./result.ts";
 
 export type ExecOutcome<T> =
@@ -44,6 +45,13 @@ export interface Executor {
 export interface ExecutorOptions {
   readonly signal?: AbortSignal | undefined;
   readonly now?: (() => number) | undefined;
+  /**
+   * 渡すとバックエンド全体で共有する 1 本のキューに `runOne`（ensureLoaded → chat → parse →
+   * 再試行 1 回まで）全体を 1 ジョブとして投入する。複数の executor（＝複数の実行）をまたいで
+   * 同時実行数を 1 にするための仕組み（仕様書 2 節）。省略時は従来どおり `tail` による
+   * この executor 内だけの直列化になる（`runPipeline` は渡さない）。
+   */
+  readonly queue?: RequestQueue | undefined;
 }
 
 /**
@@ -163,6 +171,7 @@ function haltForEnsureLoadedError(error: LmStudioError, failure: UnitFailure): R
 export function createExecutor(client: LmStudioClient, options: ExecutorOptions): Executor {
   const signal = options.signal;
   const now = options.now ?? Date.now;
+  const queue = options.queue;
 
   let halt: RunStop | null = null;
   let requestCount = 0;
@@ -326,7 +335,15 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     parse: (result: ChatResult) => T,
     timeoutMs: number,
   ): Promise<ExecOutcome<T>> {
-    const started = tail.then(() => runOne(request, parse, timeoutMs));
+    // queue が渡されていれば runOne 全体（ensureLoaded → chat → parse → 再試行）を
+    // 1 ジョブとして共有キューに投入し、他の executor（＝他の実行）とも直列化する。
+    // 下の tail による直列化はキューを渡さない経路（runPipeline）の挙動を変えないために
+    // そのまま残す。二重に直列化されても正しさは損なわれない。
+    const runJob = (): Promise<ExecOutcome<T>> =>
+      queue !== undefined
+        ? queue.enqueue(() => runOne(request, parse, timeoutMs))
+        : runOne(request, parse, timeoutMs);
+    const started = tail.then(runJob);
     tail = started.then(
       () => undefined,
       () => undefined,
