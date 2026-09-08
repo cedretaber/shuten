@@ -383,7 +383,7 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 | `connection`（HTTP 応答なし＝`status` が null） | **しない** | 実行を `stopped`（`connection-lost`、`generationUnconfirmed: true`）。当該単位は `failed` |
 | `timeout` | しない | 実行を `stopped`（`recovery-needed`、`generationUnconfirmed: true`）。当該単位は `failed` |
 | `aborted` | しない | 実行を `stopped`（`aborted`、`generationUnconfirmed: true`）。当該単位は **`pending`**（停止操作は失敗ではない。仕様 8.2） |
-| `input-too-long` | しない | 初回検査なら実行を `stopped`（`settings`）で当該単位は `failed`。再確認ならその再確認だけ `failed`（決定 5(c) と揃える） |
+| `input-too-long` | しない | executor は `halt` を返さず失敗だけ返す（初回検査か再確認かを知らないため）。判断は `pipeline.ts` が行い、初回検査なら実行を `stopped`（`settings`）で当該単位は `failed`、再確認ならその再確認だけ `failed`（決定 5(c) と揃える） |
 | `model-not-loaded` | しない | 実行を `stopped`（`model-not-loaded`、`generationUnconfirmed: false`）。当該単位は **`pending`**（仕様 7 節「実行中にアンロードされた場合も…未完了のまま残す」。`attempts` は送った回数） |
 
 **(b) `ensureLoaded` 由来**
@@ -730,6 +730,8 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | P15c | 初回が `malformed`、再試行前の `ensureLoaded` が `model-not-loaded` のとき `pending` で `attempts: 1`（0 に戻らない） |
 | P16 | `signal` を途中で中断すると `stopped`（`aborted`）で以後の要求が送られず、中断された単位が `pending` |
 | P17 | 初回検査の `InputTooLongError`（`maxInputGraphemes` を小さくする）で `stopped`（`settings`）、`stop.failure.reason` が `input-too-long`、本文は縮まない |
+| P17b | 初回検査の `chat` が LM Studio 由来の `input-too-long`（HTTP 400）を返したとき、`stopped`（`settings`）になり以後の要求が送られない |
+| P18b | 再確認の `chat` が LM Studio 由来の `input-too-long` を返したときは、その再確認だけ `failed` で実行は続く |
 | P18 | 再確認の `InputTooLongError` はその再確認だけ `failed` にし、実行は続いて `partially-failed` |
 | P19 | `InvalidChunkSettingsError` で `stopped`（`settings`）、`targets` と `checkUnits` が空、`findings` が空 |
 | P20 | 再確認が `malformed` を 2 回返すと `recheck.status: "failed"`、実行は `partially-failed` |
