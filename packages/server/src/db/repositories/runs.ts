@@ -216,10 +216,23 @@ export function insertRunTarget(db: AppDatabase, input: InsertRunTargetInput): R
   };
 }
 
-/** `context_before_start` / `context_before_end` の対から `Range | null` を組み立てる。 */
-function toRangeOrNull(start: number | null, end: number | null): Range | null {
-  if (start === null || end === null) {
+/**
+ * `context_before_start` / `context_before_end`（または after 側）の対から `Range | null` を
+ * 組み立てる。両方 null なら「参考文脈なし」として null を返すが、片方だけ null の行は
+ * 保存時の不変条件が壊れているということなので、既定値に丸めず例外にする
+ * （`docs/reference/invariants.md`「失敗・形式不正を正常な値に置き換えない」）。
+ */
+function toRangeOrNull(
+  start: number | null,
+  end: number | null,
+  label: string,
+  targetId: string,
+): Range | null {
+  if (start === null && end === null) {
     return null;
+  }
+  if (start === null || end === null) {
+    throw new Error(`run_targets の ${label} が片方だけ null です（検査対象 ID: ${targetId}）`);
   }
   return { start, end };
 }
@@ -231,8 +244,18 @@ function rowToRunTargetRecord(row: typeof runTargets.$inferSelect): RunTargetRec
     runId: row.runId,
     targetIndex: row.targetIndex,
     target: { start: row.targetStart, end: row.targetEnd },
-    contextBefore: toRangeOrNull(row.contextBeforeStart, row.contextBeforeEnd),
-    contextAfter: toRangeOrNull(row.contextAfterStart, row.contextAfterEnd),
+    contextBefore: toRangeOrNull(
+      row.contextBeforeStart,
+      row.contextBeforeEnd,
+      "context_before_start / context_before_end",
+      row.id,
+    ),
+    contextAfter: toRangeOrNull(
+      row.contextAfterStart,
+      row.contextAfterEnd,
+      "context_after_start / context_after_end",
+      row.id,
+    ),
     input: { start: row.inputStart, end: row.inputEnd },
     paragraphIds: parseJsonColumn(runTargetParagraphIdsSchema, row.paragraphIds, "paragraph_ids"),
   };

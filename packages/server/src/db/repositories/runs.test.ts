@@ -1,4 +1,5 @@
 import type { ChunkSettings } from "@shuten/shared";
+import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import type { ModelInfo } from "../../lmstudio/types.ts";
@@ -152,6 +153,32 @@ describe("db/repositories/runs", () => {
     expect(listed[1]?.contextBefore).toEqual({ start: 20, end: 30 });
     expect(listed[1]?.contextAfter).toEqual({ start: 40, end: 50 });
     expect(listed[1]?.paragraphIds).toEqual([3, 4]);
+    close();
+  });
+
+  it("run_targets の参考文脈が片方だけ null の行は listRunTargets で例外になる（不変条件の防御）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1" }));
+
+    // insertRunTarget は同一の Range から context_before_start/end を導出するため、
+    // 片方だけ null の行はリポジトリ経由では作れない。不変条件が壊れた行を模すため
+    // SQL で直接書き込む。
+    db.run(sql`
+      INSERT INTO run_targets (
+        id, run_id, target_index, target_start, target_end,
+        context_before_start, context_before_end,
+        context_after_start, context_after_end,
+        input_start, input_end, paragraph_ids
+      ) VALUES (
+        't-broken', ${run.id}, 0, 10, 20,
+        20, NULL,
+        NULL, NULL,
+        10, 20, '[0]'
+      )
+    `);
+
+    expect(() => listRunTargets(db, run.id)).toThrow(/context_before_start \/ context_before_end/);
     close();
   });
 
