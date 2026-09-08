@@ -46,10 +46,28 @@ function textResponse(status: number, text: string): Response {
   return new Response(text, { status });
 }
 
-/** `response.text()` が reject する疑似 Response（C16d 用）。 */
+/** `response.text()` が reject する疑似 Response（C16d・L4 用）。 */
 function rejectingTextResponse(status: number): Response {
   const response = new Response("", { status });
   vi.spyOn(response, "text").mockRejectedValue(new Error("body stream broken"));
+  return response;
+}
+
+/**
+ * 応答ヘッダーはすぐ返るが、`text()` は呼び出し元に渡された `AbortSignal`（`sendRequest` 内の
+ * 内部コントローラ）が中断されるまで解決しない疑似 Response（L2 用）。
+ * タイムアウトで `fetch` 自体が中断される C19 とは異なり、本文読み取り中の中断を再現する。
+ */
+function hangingBodyResponse(status: number, signal: AbortSignal | undefined): Response {
+  const response = new Response("", { status });
+  vi.spyOn(response, "text").mockImplementation(
+    () =>
+      new Promise<string>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason);
+        });
+      }),
+  );
   return response;
 }
 
@@ -313,6 +331,17 @@ describe("chat: malformed", () => {
     expect(error.kind).toBe("malformed");
   });
 
+  it("L3 truncateRaw は JSON として解析できない長い本文を raw の先頭 2,000 文字に切り詰める", async () => {
+    const longText = "あ".repeat(2500);
+    const { fetchImpl } = makeFetch(() => textResponse(200, longText));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+    expect(error.kind).toBe("malformed");
+    expect(error.raw).toBe(longText.slice(0, 2000));
+    expect(typeof error.raw).toBe("string");
+    expect((error.raw as string).length).toBe(2000);
+  });
+
   it("C11 choices が空配列なら malformed", async () => {
     const { fetchImpl } = makeFetch(() => jsonResponse(200, { choices: [] }));
     const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
@@ -440,6 +469,14 @@ describe("chat: HTTP 状態と error マーカーによる分類", () => {
     expect(error.kind).toBe("connection");
   });
 
+  it("L4 応答ヘッダー受信後に本文読み取り中で切断されると connection・status は null（HTTP 応答の有無を status で区別する前提）", async () => {
+    const { fetchImpl } = makeFetch(() => rejectingTextResponse(200));
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
+    const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+    expect(error.kind).toBe("connection");
+    expect(error.status).toBeNull();
+  });
+
   it("C17 fetch が TypeError(fetch failed) で reject したら connection", async () => {
     const fetchImpl = (() =>
       Promise.reject(new TypeError("fetch failed"))) as unknown as typeof globalThis.fetch;
@@ -471,6 +508,18 @@ describe("chat: 中断とタイムアウト", () => {
   it("C19 timeoutMs を過ぎると timeout になる", async () => {
     vi.useFakeTimers();
     const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: hangingFetch });
+    const promise = client.chat(baseChatRequest, { timeoutMs: 1000 });
+    const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+  });
+
+  it("L2 応答ヘッダー受信後、本文読み取り中に timeoutMs を過ぎても timeout になる（C19 は fetch 自体の中断）", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl } = makeFetch((_url, init) =>
+      hangingBodyResponse(200, init.signal ?? undefined),
+    );
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: fetchImpl });
     const promise = client.chat(baseChatRequest, { timeoutMs: 1000 });
     const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
     await vi.advanceTimersByTimeAsync(1000);
@@ -655,6 +704,18 @@ describe("listModels", () => {
     const promise = client.listModels({ timeoutMs: 500 });
     const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
     await vi.advanceTimersByTimeAsync(500);
+    await assertion;
+  });
+
+  it("L1 timeoutMs を渡さないと既定の 10 秒（DEFAULT_MODEL_LIST_TIMEOUT_MS）ちょうどで timeout になる", async () => {
+    vi.useFakeTimers();
+    const client = createLmStudioClient({ baseUrl: BASE_URL, fetch: hangingFetch });
+    const promise = client.listModels();
+    const assertion = expect(promise).rejects.toMatchObject({ kind: "timeout" });
+    // 既定値の 1ms 手前ではまだタイムアウトしていないことを確認してから、既定値ちょうどまで進める。
+    await vi.advanceTimersByTimeAsync(DEFAULT_MODEL_LIST_TIMEOUT_MS - 1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.advanceTimersByTimeAsync(1);
     await assertion;
   });
 });
