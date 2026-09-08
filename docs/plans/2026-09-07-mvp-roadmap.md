@@ -358,6 +358,7 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 ### PR8 server：DB スキーマと永続化
 
+- 詳細計画：`docs/plans/2026-09-09-pr8-db-persistence.md`
 - 仕様：8.1 全体、8.2（永続化する対象）
 - 作る：`server/src/db/schema.ts`（置き換え）、`db/migrate.ts`、`db/repositories/*.ts`（原稿版、実行、検査単位、再確認単位、診断、指摘、採否）、`drizzle/` の SQL
 - 規則：8.1 の表の項目をすべて持つ。原稿版は本文と本文ハッシュ。指摘は元候補への参照、位置特定状態、未確定位置を許す。位置特定失敗（`not-found` / `ambiguous`）は一覧表示用に指摘として保存し、`outside-target` は診断記録にだけ保存する。再確認結果は `verdict`、`reasonKind`、`suggestionValid` を持つ。採否は指摘 ID ごとに 1 件で更新日時を持つ。API キーは保存しない。マイグレーションは API 受付前に適用し、失敗したら起動を止める
@@ -367,6 +368,20 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 大きさ：中
 
 ### PR9 server：実行キューとオーケストレーション
+
+- PR8 からの持ち越し（**先頭 3 件は PR9 の必須事項**。レビューで確認済み）：
+  - **必須**：`claim` 時に `started_at` を設定する。永続化層の `claimUnit` は状態だけを更新し、
+    `finishCheckUnit` は `finishedAt` だけを更新するので、このままでは `started_at` が永久に null になる
+  - **必須**：`finishCheckUnit` / `finishRecheckUnit` / `finishRun` の無条件 UPDATE を、
+    安全な状態遷移か条件付き更新に置き換える。停止後に遅れて到着した完了報告が `stopped` を上書きしうる
+  - **必須**：パイプライン結果から DB レコードへ変換する境界で、`mergeKey`・許容語抑制・段落 ID を検証する。
+    永続化層にランタイム検査はなく（`not-found` / `ambiguous` の指摘に `mergeKey` を渡せてしまう、
+    `located` の `paragraph_id` を保存本文から導くのは呼び出し側の責務）、この境界が最後の砦になる
+  - 保存済み `TargetPlan[]` を `runPipeline` に渡す口の設計と、`target-planned` イベント。PR8 は `run_targets` を作るところまでで、パイプライン側の入口は触っていない
+  - 生成終了の確認と上限付き待機（`recovery-waiting` への遷移）の制御。PR8 は列（`status`、`generation_unconfirmed`）だけ用意した
+  - 決定 4 の散文が言う「位置特定失敗の指摘に `recheck_units`（`not-applicable` / `unlocated`）を作る」は `saveUnlocatedCandidate` では行っていない。`disabled`（再確認そのものが無効）と `unlocated` のどちらを書くかは実行の `recheck_enabled` に依存するため PR9 の判断
+  - `listFindings` が N+1（指摘 1 件につき `reasons` を 1 クエリ）。PR12 の表示要件が固まってから直す
+  - 入れ子トランザクション（`insertFinding` / `saveUnlocatedCandidate` が内部で自分の `db.transaction` を開く）は、drizzle + better-sqlite3 の組み合わせで SAVEPOINT として正しく動くことを確認済み（正常完了・ロールバックとも）。PR9 が外側のトランザクションから呼ぶ設計にしてよい
 
 - 仕様：2（単一キュー）、6（処理順序）、6.4（観点の一部失敗）、7（未ロード、再試行 1 回）、8.2 全体
 - 作る：`server/src/run/queue.ts`（PR7 の実行器を包み、複数の実行・タブからの要求を単一キューに直列化）、`run/orchestrator.ts`（PR7 のパイプラインに永続化・再開・停止を加える）、`run/state.ts`（状態遷移）、`run/recovery.ts`（生成終了の確認と上限付き待機）
@@ -384,6 +399,12 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 大きさ：大
 
 ### PR10 server：HTTP API と SSE
+
+- PR8 からの持ち越し：
+  - UI からの接続先上書きを保存する `settings` 表
+  - `LmStudioClient` の `close()` / `dispose()`（PR7 からの持ち越し）
+  - 貼り付け経路の孤立サロゲートを API 側でも弾くか。PR8 は決定 17 で永続化層が拒否するようにしたので保存は守られるが、ユーザーに何を返すかは PR10 で決める
+  - `index.ts` が DB ハンドルを閉じない（graceful shutdown なし）
 
 - 仕様：4、5.1（ファイル読み込み）、8.2（ブラウザを閉じても継続）、9（ループバック、テキストとして扱う）
 - 作る：`server/src/api/*.ts`（接続設定と確認、原稿、実行、指摘、採否、エクスポート）、`api/events.ts`（SSE）、zod による入出力検証
@@ -420,6 +441,8 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 大きさ：大
 
 ### PR13 all：評価ツール、エクスポート、実原稿での評価
+
+- PR8 からの持ち越し：一括エクスポート形式と、そこでの接続先 URL の扱い
 
 - 仕様：10 全体、11（最後の 2 項）、8.2（エクスポート）
 - 作る：`packages/cli/` に正解ファイルとの突き合わせと集計（検出率、誤検出、位置特定失敗率、診断候補の正誤、抑制の適否、所要時間）、複数回実行の集計、`docs/experiments/` への評価記録
