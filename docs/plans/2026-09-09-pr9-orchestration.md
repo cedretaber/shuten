@@ -5,6 +5,9 @@
 仕様：`docs/spec/mvp-spec.md` v0.8 の 2 節（単一キュー）、6 節（処理順序）、6.4、7 節、8.2 節全体
 前提：PR7（`server/src/run/pipeline.ts`、`run/executor.ts`）、PR8（`server/src/db/`）が main にある
 
+**本書は 2 本の PR（PR9a：基盤／PR9b：完成したオーケストレーター）をまとめて設計する。**
+分割の境界と各 PR の中身は末尾の「進め方（タスク分割と PR の分割）」にある。
+
 ## 目標
 
 PR7 の検査パイプラインと PR8 の永続化をつなぎ、**DB を正本とした検査実行**を作る。
@@ -87,6 +90,7 @@ export function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOutcome>
 export interface CheckUnitOutcome {
   readonly unit: CheckUnitResult;          // PR7 の型をそのまま返す
   readonly candidates: readonly Candidate[]; // done のときだけ非空になりうる
+  readonly failure: UnitFailure | null;     // unit.status が pending でも非 null になりうる（決定 20）
   readonly halt: RunStop | null;            // 非 null なら実行全体を止める
 }
 
@@ -198,10 +202,20 @@ PR8 のリポジトリテストは戻り値と引数が変わるので、同じ�
 - 上限前に応答が届いたら、**通常どおり結果として採用する**（成功なら `done`、`length` や形式不正なら
   従来どおりの失敗分類）。単一キューではこの間ほかに進められる仕事がなく、届いた完全な応答を捨てる理由がない。
   `checkMs` を超えたことは `elapsed_ms` と `runs.timeouts.checkMs` の比較で後から分かる。
-- 上限を超えたら abort し、当該単位を `failed`（`timeout`）、実行を `recovery-waiting`
-  （`generation_unconfirmed = true`）にする。自動で後続を送らない。
+- 上限を超えたら abort し、実行を `recovery-waiting`（`generation_unconfirmed = true`）にする。
+  自動で後続を送らない。**当該単位の処理状態は `pending`**（決定 20）だが、
+  `failure_reason: "timeout"`・`attempts`・`elapsed_ms`・`failure_message` もあわせて保存する。
+  処理状態（次に何をするか）と直前の失敗理由（何が起きたか）は別の情報で、`check_units` では
+  別々の列なので同時に持てる。
 
 **待つのは「応答が届いたこと」であって時間ではない**ので、「時間経過を終了の証拠とみなさない」に反しない。
+
+**`checkMs` の意味を改める。** オーケストレーター経路では `timeouts.checkMs` は打ち切りの上限ではなく
+「これを超えたら遅延として通知する閾値」になり、実際のハード上限は `checkMs + recoveryConfirmMs` になる。
+JSON のキー名（`runs.timeouts.checkMs`）は変えない（既存行の検証を壊さないため）が、
+`run/result.ts` と `db/records.ts` のコメント、README、仕様の該当箇所での説明を「遅延通知の閾値」に改める。
+`runPipeline`（CLI）では `recoveryConfirmMs = 0` なので従来どおりの打ち切り上限のままで、意味が二重になる。
+その区別が保存結果から分かるように、実行ごとの `recoveryConfirmMs` を DB に残す（決定 8）。
 
 **`runPipeline`（CLI）の挙動は変えない。** `recoveryConfirmMs` は `run/units.ts` の引数（任意、既定 0）にする。
 0 のときハード上限は `checkMs` そのもので、`timeout` は従来どおり当該単位を `failed` にし
@@ -217,8 +231,14 @@ PR8 のリポジトリテストは戻り値と引数が変わるので、同じ�
 
 ### 決定 8：復旧確認の待機上限はサーバー設定に置く
 
-`SHUTEN_RECOVERY_CONFIRM_MS`（既定 120000）を `config.ts` に足す。`runs.timeouts` の JSON には入れない。
+`SHUTEN_RECOVERY_CONFIRM_MS` を `config.ts` に足す。`runs.timeouts` の JSON には入れない。
 検査の設定ではなく実行環境の性質であり、既存行の JSON 検証（`runTimeoutsSchema`）を広げずに済むため。
+
+ただし**実行時の値は `runs.recovery_confirm_ms` 列に保存する**（マイグレーション `0001`。決定 21 と同じ）。
+実際のハード上限（`checkMs + recoveryConfirmMs`）を保存結果だけから復元できるようにするため。
+既定値 **120000（2 分）は暫定値**とする。仕様書 13 節の未決値（タイムアウト）と同じ性質で、
+PR13 の実原稿評価で実測して見直す。ロードマップの「ユーザーに依存する入力」に準じる扱いで、
+数値の確定は本 PR では行わない。
 
 ### 決定 9：統合は「保存済み指摘への `mergeKey` 照合」に一本化する
 
@@ -247,8 +267,11 @@ PR8 の `attachCandidateToFinding` は `finding_id` しか更新しないので�
 
 ### 決定 11：位置特定失敗の指摘にも `recheck_units` を作る（PR8 持ち越し）
 
-`saveUnlocatedCandidate` が `not-found` / `ambiguous` で指摘を作ったら、続けて同じトランザクションの外側で
-`insertRecheckUnit({ status: "not-applicable", notApplicableReason, ... })` を書く。理由の優先順位は次のとおり。
+`saveUnlocatedCandidate` が `not-found` / `ambiguous` で指摘を作ったら、続けて
+`insertRecheckUnit({ status: "not-applicable", notApplicableReason, ... })` を書く。
+両者は**同じ外側のトランザクション**（決定 15 の検査単位トランザクション）の中で行う。
+`saveUnlocatedCandidate` は内部で自分の `db.transaction` を開くが、これは SAVEPOINT として正しく動くことを
+PR8 で確認済みなので、外側から包んでよい。理由の優先順位は次のとおり。
 
 1. 実行の `recheck_enabled` が false → `disabled`
 2. 位置特定失敗 → `unlocated`
@@ -300,12 +323,35 @@ PR8 の `attachCandidateToFinding` は `finding_id` しか更新しないので�
 
 **代案（採らない）**：既存の `aborted` に寄せる。列挙を増やさずに済むが、「失敗を別の値に置き換えない」に反する。
 
-### 決定 15：永続化は `onEvent` に載せず、オーケストレーターが直接書く
+### 決定 15：永続化は `onEvent` に載せず、1 単位ぶんを 1 トランザクションで書く
 
 PR7 の `onEvent` は例外を握りつぶす（進捗通知の失敗で実行を止めないため）。永続化の失敗は握りつぶしては
 ならないので、DB 書き込みをイベント経路に載せない。オーケストレーターは `await`（生成要求）から戻った**後**に
 同期的に（better-sqlite3 は同期 API）書く。これで「DB トランザクションに LLM 応答待ちを含めない」が
 構造的に守られる。
+
+**1 検査単位の応答から生じる書き込みは、すべて 1 つのトランザクションにまとめる。**
+
+1. `candidates`（この応答が生んだ候補すべて。`candidate_index` の採番を含む。決定 22）
+2. `diagnostics`（位置特定失敗の候補ぶん）
+3. `findings` と `judgments`（新規指摘）、既存指摘への `attachCandidateToFinding` と集約更新
+4. 位置特定失敗の指摘に対する `recheck_units`（`not-applicable`。決定 11）
+5. 当該 `check_units` の `running` → `done` / `failed` / `pending`（条件付き更新。決定 5）
+
+分けてはならない理由：先に単位を `done` にしてプロセスが落ちると、再開時にその単位が飛ばされ、
+LLM 応答から得た候補が永久に失われる。逆順（候補を先に書いて単位の更新前に落ちる）だと、
+再開時に同じ単位を実行して候補が重複する。**両方を同時に避けられるのは 1 トランザクションだけ。**
+
+再確認も同じ。`recheck_units` の結果保存（`verdict`・`reasonKind`・`reason`・`suggestionValid`・`usage`）と
+状態の `running` → `done` / `failed` / `pending` を 1 トランザクションで行う。
+
+条件付き更新（決定 5）が 0 行を返した場合（停止などで先に決着していた）、**トランザクション全体を
+ロールバックする**。単位が別の状態に決着しているのに候補だけが残る状態を作らない。
+ロールバックしたことはイベントとログに残す。
+
+テスト：トランザクションの途中（たとえば `findings` の挿入直後）で例外を起こし、
+`candidates`・`diagnostics`・`findings`・`judgments`・`recheck_units` のいずれにも行が残らず、
+`check_units` の状態も `running` のままであることを確認する。
 
 ### 決定 16：進捗イベント
 
@@ -388,6 +434,12 @@ PR7 の `onEvent` は例外を握りつぶす（進捗通知の失敗で実行�
 （「停止操作により打ち切った。生成終了は未確認」「応答が上限内に届かなかった。生成終了は未確認」）。
 仕様 8.2 が言う手動「再開」は、この単位から続けられることを意味する。
 
+処理状態を `pending` にしても、**失敗の事実は捨てない**。`failure_reason`（`timeout` / `aborted`）・
+`failure_message`・`failure_origin`・`attempts`・`elapsed_ms` を同じ更新で保存する。
+`check_units` では処理状態と失敗理由が別の列なので同時に持てる（PR8 のスキーマに制約はない）。
+「次に何をするか」（`status`）と「直前に何が起きたか」（`failure_*`）は別の情報で、
+後者を落とすと「失敗を指摘ゼロと誤表示しない」（受け入れ条件 14）が保てない。
+
 ### 決定 21：停止要求中であることを DB に持つ
 
 決定 6 の待機（最大 `recoveryConfirmMs`）の間、実行の状態は `running` のままになる。状態の正本は DB なので、
@@ -398,9 +450,52 @@ PR7 の `onEvent` は例外を握りつぶす（進捗通知の失敗で実行�
 `runs` に `stop_requested_at`（`integer timestamp`、null 可）を足し、停止要求を受けた時点で書く。
 再開時に null に戻す。**本 PR で最初のマイグレーション追加（`0001`）**になり、`applyMigrations` が
 複数のマイグレーションを順に適用する経路の実証も兼ねる。
+決定 8 の `recovery_confirm_ms` も同じマイグレーションで足す（`0001` の追加列は 2 つ）。
 
 **代案（採らない）**：メモリだけに持ち、PR10 で表示の必要が出たときに列を足す。マイグレーションは
 増えないが、その間は「停止操作が効いているのか分からない」状態が残る。
+
+### 決定 22：`candidate_index` の採番規則
+
+PR8 で `candidates.candidate_index` を「実行内の生成順の正本」にし、`(run_id, candidate_index)` に
+一意制約を置いた。初回・再開・個別再試行をまたいで番号を配る規則を次のように決める。
+
+> 決定 15 の保存トランザクションの中で、`SELECT COALESCE(MAX(candidate_index), -1) + 1 FROM candidates
+> WHERE run_id = ?` を取り、その応答の候補を LLM が返した順に連番で振る。
+
+- 同じトランザクション内で読んで書くので、番号の決定と使用の間に別の書き込みが挟まらない
+  （better-sqlite3 は同期 API、書き込みは単一プロセス内で直列）。
+- 実行 ID ごとに独立しているので、2 つの実行が並行しても互いの番号に影響しない。
+- ロールバックすれば採番ごと消える（外部カウンターを持たない理由）。
+- 万一二重に採番されたら `(run_id, candidate_index)` の一意制約が検出する（PR8 決定 19 の安全網）。
+
+リポジトリに `nextCandidateIndex(db, runId): number` を足す。テストは次の 4 つ。
+
+- 再開後に保存された候補が、既存候補より後の番号になること
+- 1 応答に複数候補があるとき、LLM の応答順に連番になること
+- 保存がロールバックされたとき、中途半端な番号の候補が残らないこと
+- 2 つの実行を交互に保存しても、それぞれの番号が 0 から連続すること
+
+### 決定 23：`RunStop` から実行の終了状態への写像
+
+規則は 1 行で書ける。**`stop.generationUnconfirmed` が true なら `recovery-waiting`、false なら `stopped`。**
+既存の `RunStop` をすべて当てはめると次のとおり（`executor.ts` の `haltForChatError` /
+`haltForEnsureLoadedError` が作る値の全件）。
+
+| `stop.reason` | 発生源 | `generationUnconfirmed` | 実行の終了状態 |
+| --- | --- | --- | --- |
+| `settings` | 分割設定・入力上限・モデル種別 | false | `stopped` |
+| `model-not-loaded` | `ensureLoaded` / 生成中のアンロード | false | `stopped` |
+| `connection-lost` | HTTP 応答あり（4xx・5xx） | false | `stopped` |
+| `connection-lost` | 応答を受け取れずに切断（`status` が null） | **true** | **`recovery-waiting`** |
+| `connection-lost` | `ensureLoaded` の失敗（生成は送っていない） | false | `stopped` |
+| `recovery-needed` | 生成のハード上限超過（決定 7） | **true** | **`recovery-waiting`** |
+| `aborted` | 停止操作で上限内に応答が届いた（決定 6 の 3） | false | `stopped` |
+| `aborted` | 停止操作で上限を超えた（決定 6 の 4） | **true** | **`recovery-waiting`** |
+| `internal-error` | 想定外の例外（決定 14） | false | `stopped` |
+
+テストは表の 9 行すべてを網羅する（S6）。「生成中に応答を受け取れず接続が切れた」を `stopped` にしないこと
+（生成が LM Studio 側で走り続けている可能性がある）を、変異させて落ちることまで確認する。
 
 ## PR8 からの持ち越しの対応表
 
@@ -435,6 +530,8 @@ PR7 の `onEvent` は例外を握りつぶす（進捗通知の失敗で実行�
 - S3 `claimUnit` が `started_at` を同じ更新で設定し、条件に合わない行を変えないこと
 - S4 `finishCheckUnit` / `finishRecheckUnit` / `finishRun` が `expectedStatus` に合わない行を更新せず false を返すこと
 - S5 停止後に遅れて届いた完了報告が `stopped` を上書きしないこと（S4 の結合）
+- S6 `RunStop` から終了状態への写像（決定 23 の表の 9 行すべて）。特に「生成中に応答を受け取れず切断」が
+  `recovery-waiting` になること
 
 ### オーケストレーター（O）
 
@@ -459,6 +556,18 @@ PR7 の `onEvent` は例外を握りつぶす（進捗通知の失敗で実行�
   `failed`（`input-too-long`）で保存されること（決定 18）
 - O17 再確認単位が「対象の全検査単位が決着したあと」に作られること。1 観点が `pending` の間は作られないこと（決定 19）
 - O18 停止要求で `stop_requested_at` が書かれ、再開で null に戻ること（決定 21）
+
+### トランザクションと採番（T）
+
+- T1 1 検査単位の保存（候補・診断・指摘・判断・再確認単位・単位の状態）が 1 トランザクションであること。
+  途中で例外を起こすと**どの表にも行が残らず**、`check_units` の状態も `running` のままであること（決定 15）
+- T2 再確認の結果保存と `recheck_units` の状態更新が 1 トランザクションであること
+- T3 条件付き更新が 0 行（停止で先に決着していた）ならトランザクション全体がロールバックされ、
+  候補だけが残らないこと（決定 15）
+- T4 `candidate_index`：再開後の候補が既存候補より後の番号になること（決定 22）
+- T5 `candidate_index`：1 応答の複数候補が LLM の応答順に連番になること
+- T6 `candidate_index`：ロールバック後に中途半端な番号の候補が残らないこと
+- T7 `candidate_index`：2 つの実行を交互に保存しても、それぞれ 0 から連続すること
 
 ### 復旧（R）
 
@@ -494,36 +603,49 @@ PR7 の `onEvent` は例外を握りつぶす（進捗通知の失敗で実行�
 
 - E1 `run/units.ts` の抽出後、`pipeline.test.ts` と `packages/cli` のテストを変更せずに緑であること
 
-## 進め方（タスク分割）
+## 進め方（タスク分割と PR の分割）
 
-Subagent Driven で実行する。各タスクの終わりに `pnpm check` を通す。
+レビューの推奨に従い、**2 本の PR に分ける**。境界は「基盤」と「完成したオーケストレーター」に置く。
+当初案（初回実行までを 9a に入れる）は、再開手段のない中間状態が main に入るので採らない。
+
+いずれも Subagent Driven で実行し、各タスクの終わりに `pnpm check` を通す。
+
+### PR9a：挙動を支える基盤（`feat/pr9a-run-foundation`）
+
+DB とモックだけで完結する部品を作る。オーケストレーターはまだ無いので、実行を開始する経路は増えない。
+**この PR だけでは受け入れ条件を 1 つも満たさない**（満たすのは 9b）。それが分割の意図でもある。
 
 1. **プリミティブの抽出**：`run/units.ts` を作り、`pipeline.ts` をそれを使う形に書き換える。
-   テストは 1 行も変えない（E1）。
+   `recoveryConfirmMs` は任意引数（既定 0）。テストは 1 行も変えない（E1）。
 2. **キュー**：`run/queue.ts` と `createExecutor` のオプション（Q1〜Q4）。
-3. **スキーマとリポジトリの改修**：`runs.stop_requested_at` の追加とマイグレーション `0001` の生成（決定 21）、
-   `claim*` の `started_at`、`finish*` の条件付き更新、`updateFindingAggregate`、
-   `findRunByStartOperationId`（S3・S4 と PR8 テストの更新）。
-4. **状態遷移と境界検証**：`run/state.ts`、`run/persist.ts`（S1・S2、P1〜P5）。
+3. **スキーマとリポジトリの改修**：マイグレーション `0001`（`runs.stop_requested_at`、
+   `runs.recovery_confirm_ms`）、`claim*` の `started_at`、`finish*` の条件付き更新、
+   `updateFindingAggregate`、`nextCandidateIndex`、`findRunByStartOperationId`
+   （S3・S4、T4〜T7 と PR8 テストの更新）。
+4. **状態遷移と境界検証**：`run/state.ts`、`run/persist.ts`（S1・S2・S6、P1〜P5）。
 5. **増分マージ**：`run/merge-store.ts`（M1〜M3）。
-6. **オーケストレーター（初回実行）**：開始・完了・部分失敗・未ロード、位置特定失敗の再確認単位、
-   想定外例外（O1〜O3、O10、O12〜O14）。
-7. **停止・再開・再試行**：`recovery.ts` と合わせて（O4〜O9、O11、R1〜R4）。
-8. **起動時照合と再起動テスト**：`index.ts` への組み込み（R5・R6、D1）。
-9. **ドキュメント**：README の現在の状態、`docs/reference/conventions.md`（必要なら）、
-   ロードマップの PR9 節と PR10 への持ち越し。
+6. **ドキュメント**：`checkMs` の意味の改訂（決定 7）、README の現在の状態、ロードマップの PR9 節の分割。
 
-タスク 1〜6 とタスク 7〜8 の間が自然な切れ目になっている（下の「PR の分割案」）。
+3〜5 の関数はすべて**トランザクションハンドルを引数で受け取る**形にする（`AppDatabase` と
+`db.transaction` のコールバック引数のどちらでも呼べる形）。決定 15 のトランザクションを組み立てるのは
+9b のオーケストレーターなので、9a の部品が自分でトランザクションを開いて閉じてしまうと合成できない。
 
-## PR の分割案（ユーザーの判断を仰ぐ）
+### PR9b：完成したオーケストレーター（`feat/pr9b-orchestrator`）
 
-ロードマップの大きさは「大」。1 本の PR で出すこともできるが、次の 2 本に割ることもできる。
+7. **オーケストレーター（開始と実行）**：`startRun`（決定 18）、単位駆動ループ、決定 15 の保存
+   トランザクション、位置特定失敗の再確認単位、再確認の発火条件（決定 19）、想定外例外
+   （O1〜O3、O10、O12〜O17、T1〜T3）。
+8. **停止・再開・再試行**：`recovery.ts` と合わせて（O4〜O9、O11、O18、R1〜R4b）。
+9. **起動時照合と再起動テスト**：`index.ts` への組み込み（R5・R6、D1）。
+10. **ドキュメント**：README、ロードマップの PR9 節と PR10 への持ち越し。
 
-- **PR9a**：キュー、プリミティブ抽出、状態遷移、境界検証、増分マージ、オーケストレーター（初回実行）、
-  起動時照合、PR8 の必須事項 3 件（タスク 1〜6、8 の一部）
-- **PR9b**：停止・再開・失敗単位の再試行・復旧待ち（タスク 7、8 の残り）
+受け入れ条件 3・4・5・11・14・15・16・18 は 9b の完了時に満たす。
 
-分割すると PR9a だけでは受け入れ条件 14・18 を満たせない（再開と復旧待ちが 9b にあるため）。
+### 1 本にまとめる場合
+
+技術的には可能だが、変更量・状態遷移・クラッシュ整合性・時間依存テストが 1 つの diff に重なる。
+その場合は実装モデルと独立レビューをそれぞれ 1 段引き上げる。ただし分割のほうがレビュー可能性への
+効果は大きい、というのがレビューの評価であり、本計画もそれに従う。
 
 ## PR10 以降への持ち越し（本 PR では作らない）
 
