@@ -66,6 +66,9 @@ export interface SetJudgmentInput {
  * `judgments` の行は指摘の作成時に必ず存在する（決定 5）ので、通常はこの関数は更新のみを行う。
  * 万一行がなければ作る（`onConflictDoUpdate`。防御的な扱いで、正常経路では起こらない）。
  * `undecided` に戻す操作でも行は消さない（決定 5）。`updatedAt` は必ず更新する（省略時は現在時刻）。
+ *
+ * `note` は置き換え（PUT）のセマンティクスで扱う。**省略は「メモの消去」を意味し、部分更新ではない**。
+ * 既存のメモを保ちたい呼び出し側は、直前の `findJudgment` の結果から `note` を明示的に渡すこと。
  */
 export function setJudgment(
   db: AppDatabase,

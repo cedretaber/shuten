@@ -3,6 +3,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Usage } from "../../lmstudio/types.ts";
 import type { UnitStatus } from "../../run/status.ts";
 import type { AppDatabase } from "../client.ts";
+import { toFailureColumns, toFailureOrNull } from "../failure-columns.ts";
 import { createId } from "../ids.ts";
 import { parseJsonColumn, unitUsageSchema } from "../json.ts";
 import type { CheckUnitRecord, UnitFailureRecord } from "../records.ts";
@@ -18,82 +19,12 @@ export type InsertCheckUnitInput = Omit<CheckUnitRecord, "id"> & {
 };
 
 /**
- * `UnitFailureRecord` を `check_units` の `failure_*` 4 列に分解する。
- * `failure` が null なら 4 列とも null にする。
- */
-function toRowFailureColumns(failure: UnitFailureRecord | null): {
-  readonly failureReason: UnitFailureRecord["reason"] | null;
-  readonly failureMessage: string | null;
-  readonly failureFinishReason: string | null;
-  readonly failureOrigin: UnitFailureRecord["origin"] | null;
-} {
-  if (failure === null) {
-    return {
-      failureReason: null,
-      failureMessage: null,
-      failureFinishReason: null,
-      failureOrigin: null,
-    };
-  }
-  return {
-    failureReason: failure.reason,
-    failureMessage: failure.message,
-    failureFinishReason: failure.finishReason,
-    failureOrigin: failure.origin,
-  };
-}
-
-/**
- * `failure_*` 4 列から `UnitFailureRecord | null` を組み立てる。
- *
- * `failure_reason` が null なら他の 3 列も null のはずで、それ以外は保存時の不変条件が
- * 壊れているということなので、既定値に丸めず例外にする
- * （`docs/reference/invariants.md`「失敗・形式不正を正常な値に置き換えない」、
- * `repositories/runs.ts` の `toRangeOrNull` と同じ姿勢）。
- * `failure_reason` が非 null なら `failure_message` / `failure_origin` は必ず埋まっている
- * （`failure_finish_reason` だけは LM Studio から取れないことがあるので null を許す）。
- */
-function toFailureOrNull(
-  row: {
-    readonly failureReason: UnitFailureRecord["reason"] | null;
-    readonly failureMessage: string | null;
-    readonly failureFinishReason: string | null;
-    readonly failureOrigin: UnitFailureRecord["origin"] | null;
-  },
-  unitId: string,
-): UnitFailureRecord | null {
-  if (row.failureReason === null) {
-    if (
-      row.failureMessage !== null ||
-      row.failureFinishReason !== null ||
-      row.failureOrigin !== null
-    ) {
-      throw new Error(
-        `check_units の failure_* が failure_reason なしで部分的に埋まっています（検査単位 ID: ${unitId}）`,
-      );
-    }
-    return null;
-  }
-  if (row.failureMessage === null || row.failureOrigin === null) {
-    throw new Error(
-      `check_units の failure_message / failure_origin が failure_reason ありで null です（検査単位 ID: ${unitId}）`,
-    );
-  }
-  return {
-    reason: row.failureReason,
-    message: row.failureMessage,
-    finishReason: row.failureFinishReason,
-    origin: row.failureOrigin,
-  };
-}
-
-/**
  * 検査単位を 1 件保存する。`id` 省略時は `createId()`。
  * 状態遷移や失敗理由は `claimUnit` / `finishCheckUnit` が別途更新する。
  */
 export function insertCheckUnit(db: AppDatabase, input: InsertCheckUnitInput): CheckUnitRecord {
   const id = input.id ?? createId();
-  const failureColumns = toRowFailureColumns(input.failure);
+  const failureColumns = toFailureColumns(input.failure);
   db.insert(checkUnits)
     .values({
       id,
@@ -140,7 +71,7 @@ function rowToCheckUnitRecord(row: typeof checkUnits.$inferSelect): CheckUnitRec
     perspective: row.perspective,
     status: row.status,
     attempts: row.attempts,
-    failure: toFailureOrNull(row, row.id),
+    failure: toFailureOrNull(row, row.id, "check_units", "検査単位 ID"),
     pendingNote: row.pendingNote,
     usage: parseJsonColumn(unitUsageSchema, row.usage, "usage"),
     inputGraphemes: row.inputGraphemes,
@@ -215,7 +146,7 @@ export interface FinishCheckUnitInput {
  * （`status`・`attempts`・`failure`・`pendingNote`・`usage`・`inputGraphemes`・`elapsedMs`・`finishedAt`）。
  */
 export function finishCheckUnit(db: AppDatabase, id: string, input: FinishCheckUnitInput): void {
-  const failureColumns = toRowFailureColumns(input.failure);
+  const failureColumns = toFailureColumns(input.failure);
   db.update(checkUnits)
     .set({
       status: input.status,

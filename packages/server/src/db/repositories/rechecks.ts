@@ -4,6 +4,7 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Usage } from "../../lmstudio/types.ts";
 import type { UnitStatus } from "../../run/status.ts";
 import type { AppDatabase } from "../client.ts";
+import { toFailureColumns, toFailureOrNull } from "../failure-columns.ts";
 import { createId } from "../ids.ts";
 import { parseJsonColumn, unitUsageSchema } from "../json.ts";
 import type {
@@ -16,7 +17,8 @@ import { recheckUnits } from "../schema.ts";
 /**
  * 再確認単位の永続化（仕様書 6.5 / 8.1 節）。
  *
- * `check-units.ts` の書き方（`claimUnit` / `finishCheckUnit` / `toFailureOrNull` の姿勢）にそのまま揃える。
+ * `check-units.ts` の書き方（`claimUnit` / `finishCheckUnit` の姿勢）にそのまま揃える。
+ * `failure_*` 4 列の分解・組み立ては `check_units` と共有する `../failure-columns.ts` を使う。
  * `reasonKind` が `suggestion-inappropriate` のとき `suggestionValid` が false であること、
  * `suggestion-inappropriate` / `insufficient-context` のとき `verdict` が `confirm-with-author` であること
  * （仕様 6.5 の MUST）は、ここでは検証しない。LLM 応答の検証（PR4 の zod スキーマ、
@@ -31,74 +33,6 @@ import { recheckUnits } from "../schema.ts";
 export type InsertRecheckUnitInput = Omit<RecheckUnitRecord, "id"> & {
   readonly id?: string;
 };
-
-/**
- * `UnitFailureRecord` を `recheck_units` の `failure_*` 4 列に分解する。
- * `failure` が null なら 4 列とも null にする（`check-units.ts` の `toRowFailureColumns` と同じ形）。
- */
-function toRowFailureColumns(failure: UnitFailureRecord | null): {
-  readonly failureReason: UnitFailureRecord["reason"] | null;
-  readonly failureMessage: string | null;
-  readonly failureFinishReason: string | null;
-  readonly failureOrigin: UnitFailureRecord["origin"] | null;
-} {
-  if (failure === null) {
-    return {
-      failureReason: null,
-      failureMessage: null,
-      failureFinishReason: null,
-      failureOrigin: null,
-    };
-  }
-  return {
-    failureReason: failure.reason,
-    failureMessage: failure.message,
-    failureFinishReason: failure.finishReason,
-    failureOrigin: failure.origin,
-  };
-}
-
-/**
- * `failure_*` 4 列から `UnitFailureRecord | null` を組み立てる。
- *
- * `check-units.ts` の `toFailureOrNull` と同じ姿勢：`failure_reason` が null なのに他の列が
- * 埋まっている、あるいは `failure_reason` が非 null なのに `failure_message` / `failure_origin` が
- * 埋まっていない行は、保存時の不変条件が壊れているということなので、既定値に丸めず例外にする
- * （`docs/reference/invariants.md`「失敗・形式不正を正常な値に置き換えない」）。
- */
-function toFailureOrNull(
-  row: {
-    readonly failureReason: UnitFailureRecord["reason"] | null;
-    readonly failureMessage: string | null;
-    readonly failureFinishReason: string | null;
-    readonly failureOrigin: UnitFailureRecord["origin"] | null;
-  },
-  unitId: string,
-): UnitFailureRecord | null {
-  if (row.failureReason === null) {
-    if (
-      row.failureMessage !== null ||
-      row.failureFinishReason !== null ||
-      row.failureOrigin !== null
-    ) {
-      throw new Error(
-        `recheck_units の failure_* が failure_reason なしで部分的に埋まっています（再確認単位 ID: ${unitId}）`,
-      );
-    }
-    return null;
-  }
-  if (row.failureMessage === null || row.failureOrigin === null) {
-    throw new Error(
-      `recheck_units の failure_message / failure_origin が failure_reason ありで null です（再確認単位 ID: ${unitId}）`,
-    );
-  }
-  return {
-    reason: row.failureReason,
-    message: row.failureMessage,
-    finishReason: row.failureFinishReason,
-    origin: row.failureOrigin,
-  };
-}
 
 /**
  * `input_start` / `input_end` の対から `Range | null` を組み立てる。両方 null なら
@@ -133,7 +67,7 @@ export function insertRecheckUnit(
   input: InsertRecheckUnitInput,
 ): RecheckUnitRecord {
   const id = input.id ?? createId();
-  const failureColumns = toRowFailureColumns(input.failure);
+  const failureColumns = toFailureColumns(input.failure);
   db.insert(recheckUnits)
     .values({
       id,
@@ -192,7 +126,7 @@ function rowToRecheckUnitRecord(row: typeof recheckUnits.$inferSelect): RecheckU
     status: row.status,
     notApplicableReason: row.notApplicableReason,
     attempts: row.attempts,
-    failure: toFailureOrNull(row, row.id),
+    failure: toFailureOrNull(row, row.id, "recheck_units", "再確認単位 ID"),
     pendingNote: row.pendingNote,
     verdict: row.verdict,
     reasonKind: row.reasonKind,
@@ -294,7 +228,7 @@ export function finishRecheckUnit(
   id: string,
   input: FinishRecheckUnitInput,
 ): void {
-  const failureColumns = toRowFailureColumns(input.failure);
+  const failureColumns = toFailureColumns(input.failure);
   db.update(recheckUnits)
     .set({
       status: input.status,

@@ -1,9 +1,10 @@
+import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import type { Usage } from "../../lmstudio/types.ts";
 import { createDatabase } from "../client.ts";
 import { applyMigrations } from "../migrate.ts";
-import type { RecheckNotApplicableReason } from "../records.ts";
+import type { RecheckNotApplicableReason, UnitFailureRecord } from "../records.ts";
 import { insertCheckUnit } from "./check-units.ts";
 import { insertFinding } from "./findings.ts";
 import { insertManuscriptVersion } from "./manuscripts.ts";
@@ -225,6 +226,64 @@ describe("db/repositories/rechecks", () => {
       // 対象外は入力範囲を組み立てる前に終わったことも表せる。
       expect(found?.inputRange).toBeNull();
     }
+    close();
+  });
+
+  it("R12b: 再確認：failed で failure_reason / failure_message / failure_finish_reason / failure_origin が往復する（origin は chat・ensure-loaded の両方）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+
+    const origins: readonly UnitFailureRecord["origin"][] = ["chat", "ensure-loaded"];
+    for (const [index, origin] of origins.entries()) {
+      const findingId = `f-failed-${index}`;
+      const finding = makeFinding(db, run, target, findingId);
+      const unitId = `rc-failed-${index}`;
+      insertRecheckUnit(db, basePendingInput({ id: unitId, runId: run.id, findingId: finding.id }));
+
+      const failure: UnitFailureRecord = {
+        reason: "timeout",
+        message: `失敗理由: timeout（origin: ${origin}）`,
+        finishReason: origin === "chat" ? "length" : null,
+        origin,
+      };
+      finishRecheckUnit(db, unitId, {
+        status: "failed",
+        attempts: 1,
+        failure,
+        pendingNote: null,
+        notApplicableReason: null,
+        verdict: null,
+        reasonKind: null,
+        reason: null,
+        suggestionValid: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: null,
+        finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+      });
+
+      const found = findRecheckUnitByFinding(db, finding.id);
+      expect(found?.status).toBe("failed");
+      expect(found?.failure).toEqual(failure);
+    }
+    close();
+  });
+
+  it("R12c: recheck_units の failure_* が中途半端な行（failure_reason だけ非 null）は読み出しで例外になる（不変条件の防御）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f-broken");
+
+    // finishRecheckUnit 経由ではこの壊れた行は作れない（toFailureColumns が 4 列を対で書くため）。
+    // 不変条件が壊れた行を模すため SQL で直接書き込む（failure_message / finish_reason / origin は NULL のまま）。
+    db.run(sql`
+      INSERT INTO recheck_units (id, run_id, finding_id, status, attempts, failure_reason)
+      VALUES ('rc-broken', ${run.id}, ${finding.id}, 'failed', 1, 'timeout')
+    `);
+
+    expect(() => findRecheckUnitByFinding(db, finding.id)).toThrow(
+      /failure_message \/ failure_origin/,
+    );
     close();
   });
 });
