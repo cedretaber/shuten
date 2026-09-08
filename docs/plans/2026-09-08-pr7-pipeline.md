@@ -417,7 +417,7 @@ executor は `ensureLoaded` の直後に `isGenerationCapable(modelInfo)`（`llm
 | 例外 | 扱い |
 | --- | --- |
 | `InvalidChunkSettingsError` | `runPipeline` の冒頭で `stopped`（`settings`）。`targets` は空、`checkUnits` も空 |
-| 初回検査の `InputTooLongError` | 実行を `stopped`（`settings`）。当該対象以降の単位は `pending` |
+| 初回検査の `InputTooLongError` | 実行を `stopped`（`settings`）。当該対象の単位は `failed`（`attempts: 0`、`origin: "local"`）、それ以降の対象の単位は `pending` |
 | 再確認の `InputTooLongError` | その再確認だけ `failed`（`input-too-long`）。実行は続け、`partially-failed`。LM Studio が HTTP 400 で返す `input-too-long` も再確認の段階では同じ扱いにする |
 
 再確認だけ扱いを変えるのは、再確認が指摘 1 件ごとに独立していて、他の指摘の再確認は成功しうるため。
