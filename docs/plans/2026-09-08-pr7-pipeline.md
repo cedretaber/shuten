@@ -388,8 +388,10 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 
 **(b) `ensureLoaded` 由来**
 
-再試行しない。当該単位は `pending`（生成要求を送っていない、`attempts: 0`）のまま、
-実行を `stopped` にする。`model-not-loaded` なら `model-not-loaded`、
+再試行しない。当該単位は `pending` のまま、実行を `stopped` にする。
+`attempts` はその単位で実際に送った生成要求の累計を残す（0 に戻さない）。
+「初回の生成が `malformed` → 再試行の前の `ensureLoaded` で未ロード」なら生成は 1 回送っているので
+`attempts: 1` の `pending` になる。初回検査と再確認の両方に同じ規則を適用する。`model-not-loaded` なら `model-not-loaded`、
 `aborted`（一覧取得中の停止）なら `aborted`、それ以外（`connection` / `timeout` / `malformed`）は
 `connection-lost`。いずれも `generationUnconfirmed: false`（生成を送っていない）。
 
@@ -427,10 +429,17 @@ executor は `ensureLoaded` の直後に `isGenerationCapable(modelInfo)`（`llm
 `findings` に残す。再確認は送らず `pending` にする。成功した観点の指摘を捨てることは
 「失敗を指摘ゼロにしない」の違反になる。
 
-**中断がすでに要求されている場合**：`execute` は、直列化の順番が回ってきて実際に処理を始める
-時点で `signal.aborted` を確認する（呼ばれた時点ではなく）。真なら `ensureLoaded` も `chat` も
-送らずに `halt`（`aborted`、`generationUnconfirmed: false`）を返し、当該単位は `attempts: 0` の
-`pending` にする。待ち行列に積まれた要求が、停止後に送信されないようにするため。
+**停止後は executor が門を閉じる**：executor は最初に決まった `halt`（`RunStop`）を保持し、
+以後の `execute` は、待ち行列に積まれていたものも後から呼ばれたものも、`ensureLoaded` も `chat` も
+送らずに保持している `halt` をそのまま返す。**保持した `halt` は上書きしない**
+（`generationUnconfirmed: true` が後続の停止理由で false に塗り替えられないようにする）。
+呼び出し元の `signal` による中断だけでなく、タイムアウトや通信切断でも同じ門が閉じる。
+これらでは `signal.aborted` が真にならないので、`signal` の確認だけでは後続の送信を止められない。
+
+`execute` は、直列化の順番が回ってきて実際に処理を始める時点で、保持している `halt` と
+`signal.aborted` の両方を確認する（`execute` が呼ばれた時点ではなく）。`signal.aborted` だけが
+真なら `halt` を `aborted`・`generationUnconfirmed: false` として確定する。
+送信しなかった単位は `attempts: 0` の `pending` になる。
 
 `RunStop` には停止の原因になった `UnitFailure` を残す。`settings` に潰れても
 `input-too-long` か設定値の誤りかが結果 JSON から辿れるようにする。
@@ -691,7 +700,10 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | E16 | 応答本文の読み取り中に切れた `connection`（`status` が null）は再試行せず、`connection-lost` かつ `generationUnconfirmed: true` |
 | E17 | `ensureLoaded` 中の `aborted` は `chat` を呼ばず、`stop.reason` が `aborted`、`attempts: 0`、`generationUnconfirmed: false` |
 | E18 | 種別が `embeddings`・未知・欠落のロード済みモデルでは `chat` を呼ばず、`stopped`（`settings`）。`llm` と `vlm` は通る |
-| E19 | 直列待ちの間に中断されると、順番が回ってきた要求は `ensureLoaded` も `chat` も呼ばない |
+| E19 | 直列待ちの間に `signal` で中断されると、順番が回ってきた要求は `ensureLoaded` も `chat` も呼ばない |
+| E20 | 2 つの `execute` を同時に登録し、1 つ目がタイムアウトすると 2 つ目は `ensureLoaded` も `chat` も呼ばず、1 つ目と同じ `halt` を返す（`signal` は中断していない） |
+| E21 | 停止が決まった後の `execute` は、保持している `halt` をそのまま返し、`generationUnconfirmed: true` を上書きしない |
+| E22 | 再試行の前の `ensureLoaded` が `model-not-loaded` のとき、`attempts` が 0 に戻らず 1 のまま（`pending`） |
 | E14 | `requestCount` が再試行を含む送信回数と一致する |
 
 ### P：`pipeline.ts`（モック `LmStudioClient` での結合）
@@ -715,6 +727,7 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | P14b | 同じ対象ですでに成功している観点があるとき、その指摘が統合・抑制まで進んで `findings` に残り、再確認は `pending` になる |
 | P15 | k 番目の `ensureLoaded` が `model-not-loaded` のとき、それ以前は `done`、k 番目以降は `pending`（`attempts: 0`）、`stopped` |
 | P15b | `chat` の途中でアンロードされた（`chat` が `model-not-loaded`）とき、当該単位が `failed` ではなく `pending`（`attempts: 1`）になる |
+| P15c | 初回が `malformed`、再試行前の `ensureLoaded` が `model-not-loaded` のとき `pending` で `attempts: 1`（0 に戻らない） |
 | P16 | `signal` を途中で中断すると `stopped`（`aborted`）で以後の要求が送られず、中断された単位が `pending` |
 | P17 | 初回検査の `InputTooLongError`（`maxInputGraphemes` を小さくする）で `stopped`（`settings`）、`stop.failure.reason` が `input-too-long`、本文は縮まない |
 | P18 | 再確認の `InputTooLongError` はその再確認だけ `failed` にし、実行は続いて `partially-failed` |
@@ -722,6 +735,7 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | P20 | 再確認が `malformed` を 2 回返すと `recheck.status: "failed"`、実行は `partially-failed` |
 | P20b | 再確認の生成中にアンロード・停止が起きると `recheck.status: "pending"` で `attempts: 1`、`inputRange` が非 null |
 | P20c | 再確認を送る前に実行が終わると `recheck.status: "pending"` で `attempts: 0` |
+| P20d | 再確認の初回が `malformed`、再試行前の `ensureLoaded` が `model-not-loaded` のとき `pending` で `attempts: 1` |
 | P21 | `mode: "full-text"` で観点ごとに要求が 1 件だけ、`targets` が 1 件、再確認なし |
 | P22 | `mode: "full-text"` で本文が `maxInputGraphemes` を超えると `stopped`（`settings`） |
 | P23 | 同じ入力・同じモック応答で 2 回実行すると ID と結果 JSON が一致する |
