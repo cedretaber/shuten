@@ -7,7 +7,7 @@
  * （PR9b のオーケストレーター、`run/merge-store.ts`）は DB へ書く直前に必ずこれを通す。
  */
 
-import type { CheckInput, ContextWindow, Paragraph, TargetRange } from "@shuten/shared";
+import type { CheckInput, ContextWindow, LlmFinding, Paragraph, TargetRange } from "@shuten/shared";
 
 import { assertWellFormedBody } from "../db/errors.ts";
 import type { FindingRecord, RunTargetRecord } from "../db/records.ts";
@@ -116,6 +116,39 @@ export function assertFindingBoundary(
           `一致しません（引用: "${previewQuote(finding.quote)}"）`,
       );
     }
+  }
+}
+
+/** `assertUnlocatedFindingBoundary` の検査対象。`LlmFinding` のうち検査に要る項目だけを取り出す。 */
+export type UnlocatedFindingBoundaryInput = Pick<LlmFinding, "quote" | "suggestion">;
+
+/**
+ * 位置特定に失敗した候補（`not-found` / `ambiguous` / `outside-target`。決定 4 の表の下 3 行）を
+ * 保存する直前の境界検証。`db/repositories/findings.ts` の `saveUnlocatedCandidate` は、モデルの
+ * 応答（引用・修正案）を未検証のまま `candidates` / `findings` / `diagnostics` に書けてしまう
+ * （JSON 中の孤立サロゲートは zod の通常の文字列検証を素通りする）ため、`assertFindingBoundary`
+ * と対になるこの関数を、位置未確定の経路専用に用意する。
+ *
+ * 位置確定済みの経路（`assertFindingBoundary`）と異なり、この経路には `range` も `paragraphId` の
+ * 整合も存在しない（位置が確定していないため）。検査できるのは well-formed 性だけになる。
+ *
+ * 1. 保存本文（原稿全文）に孤立サロゲートを含まないこと
+ * 2. 引用（`quote`）に孤立サロゲートを含まないこと
+ * 3. 修正案（`suggestion`）が非 null なら孤立サロゲートを含まないこと
+ *
+ * 違反は `db/errors.ts` の `MalformedBodyError`。
+ *
+ * **呼び出しは PR9b のオーケストレーターが行う**（`saveUnlocatedCandidate` を呼ぶ直前）。
+ * このタスク（PR9a）では関数とテストだけを用意する。
+ */
+export function assertUnlocatedFindingBoundary(
+  finding: UnlocatedFindingBoundaryInput,
+  body: string,
+): void {
+  assertWellFormedBody(body);
+  assertWellFormedBody(finding.quote);
+  if (finding.suggestion !== null) {
+    assertWellFormedBody(finding.suggestion);
   }
 }
 

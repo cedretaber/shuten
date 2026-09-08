@@ -5,10 +5,12 @@ import { MalformedBodyError } from "../db/errors.ts";
 import type { RunTargetRecord } from "../db/records.ts";
 import {
   assertFindingBoundary,
+  assertUnlocatedFindingBoundary,
   checkInputFromTargetRecord,
   deriveParagraphId,
   type FindingBoundaryInput,
   PersistBoundaryError,
+  type UnlocatedFindingBoundaryInput,
 } from "./persist.ts";
 
 // 段落 0: [0, 6)「第一段落。\n」、段落 1: [6, 14)「第二段落です。\n」。
@@ -125,6 +127,41 @@ describe("assertFindingBoundary", () => {
   it("P5c: 孤立サロゲートを含む本文で MalformedBodyError", () => {
     const malformedBody = "a\uD800b";
     expect(() => assertFindingBoundary(VALID_FINDING, malformedBody, PARAGRAPHS)).toThrow(
+      MalformedBodyError,
+    );
+  });
+});
+
+describe("assertUnlocatedFindingBoundary", () => {
+  /** すべての境界検査を通る最小の入力。各テストはここから 1 項目だけ崩す。 */
+  const VALID_UNLOCATED: UnlocatedFindingBoundaryInput = {
+    quote: "第一段落",
+    suggestion: null,
+  };
+
+  it("well-formed な本文・引用・修正案では投げない", () => {
+    expect(() => assertUnlocatedFindingBoundary(VALID_UNLOCATED, BODY)).not.toThrow();
+    expect(() =>
+      assertUnlocatedFindingBoundary({ ...VALID_UNLOCATED, suggestion: "修正案" }, BODY),
+    ).not.toThrow();
+  });
+
+  it("U1: 引用に孤立サロゲートを含むと MalformedBodyError", () => {
+    const finding: UnlocatedFindingBoundaryInput = { ...VALID_UNLOCATED, quote: "a\uD800b" };
+    expect(() => assertUnlocatedFindingBoundary(finding, BODY)).toThrow(MalformedBodyError);
+  });
+
+  it("U2: 修正案に孤立サロゲートを含むと MalformedBodyError", () => {
+    const finding: UnlocatedFindingBoundaryInput = {
+      ...VALID_UNLOCATED,
+      suggestion: "a\uDC00b",
+    };
+    expect(() => assertUnlocatedFindingBoundary(finding, BODY)).toThrow(MalformedBodyError);
+  });
+
+  it("U3: 保存本文に孤立サロゲートを含むと MalformedBodyError", () => {
+    const malformedBody = "a\uD800b";
+    expect(() => assertUnlocatedFindingBoundary(VALID_UNLOCATED, malformedBody)).toThrow(
       MalformedBodyError,
     );
   });

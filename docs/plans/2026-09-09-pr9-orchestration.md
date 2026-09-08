@@ -969,14 +969,16 @@ PR9a の実装で、設計段階では見えていなかった点がいくつか
   PR9b はこの順序を必ず守ること。** 対象の統合結果を読むのは、その対象の全検査単位が `pending` /
   `running` を持たなくなった時点に限る。
 
-- **位置特定失敗の指摘に境界検証が掛からない。** `assertFindingBoundary`（`run/persist.ts`）を呼ぶのは
-  `run/merge-store.ts` の 2 箇所（`createFinding` / `attachToFinding`）だけで、どちらも位置確定済み
-  （`locateStatus: "located"`）の経路である。`db/repositories/findings.ts` の `saveUnlocatedCandidate`
-  は境界検証を通らずに書き込む。決定 17 が定める 4 項目のうち「`mergeKey` は位置確定済みの指摘にだけ
-  付く」「孤立サロゲートを含まない」は、位置特定に失敗した指摘（`not-found` / `ambiguous` /
-  `outside-target`）にも意味がある不変条件のはずである。PR9b が `saveUnlocatedCandidate` を呼ぶ実装を
-  追加するときに、呼び出し側で該当する検査を通すか、`run/persist.ts` に位置特定失敗用の検証入口を
-  新設するかを決めること。PR9a には `saveUnlocatedCandidate` を呼ぶ経路が無いため、現時点での実害はない。
+- **位置特定失敗の指摘の境界検証は、検証関数はできたが呼び出しがまだない。** `assertFindingBoundary`
+  （`run/persist.ts`）を呼ぶのは `run/merge-store.ts` の 2 箇所（`createFinding` / `attachToFinding`）
+  だけで、どちらも位置確定済み（`locateStatus: "located"`）の経路である。`db/repositories/findings.ts`
+  の `saveUnlocatedCandidate` はこれまで境界検証を通らずに書き込めていた（PR9a 最終レビューで指摘）。
+  これを受けて PR9a のうちに `run/persist.ts` へ `assertUnlocatedFindingBoundary` を新設した。
+  位置未確定の経路には `range` も `paragraphId` の整合も無いため、検査するのは決定 17 のうち
+  「保存本文・引用（`quote`）・修正案（`suggestion`）が孤立サロゲートを含まない」の部分だけである
+  （`mergeKey` は `saveUnlocatedCandidate` 自身が常に `null` で書くため、位置未確定の経路では
+  検査の余地がない）。**PR9b に残るのは、`saveUnlocatedCandidate` を呼ぶ実装を追加するときに、
+  その直前でこの関数を通す配線だけ**である。
 
 - **`run/state.ts` は本番コードから 1 箇所も呼ばれていない。** `canTransitionRun` / `canTransitionUnit`
   は `db/repositories` の `claimUnit` / `finishCheckUnit` / `finishRun` のどこからも参照されておらず、
