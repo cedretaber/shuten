@@ -214,6 +214,10 @@ PR8 のリポジトリテストは戻り値と引数が変わるので、同じ�
 「これを超えたら遅延として通知する閾値」になり、実際のハード上限は `checkMs + recoveryConfirmMs` になる。
 JSON のキー名（`runs.timeouts.checkMs`）は変えない（既存行の検証を壊さないため）が、
 `run/result.ts` と `db/records.ts` のコメント、README、仕様の該当箇所での説明を「遅延通知の閾値」に改める。
+
+**仕様書の改訂は挙動が変わる PR9b で行う**（版を上げ、15 節の改訂記録に追記し、同じコミットに含める。
+`AGENTS.md` の規約）。PR9a は列を足すだけで、`recovery_confirm_ms = 0`（＝従来どおり `checkMs` が
+ハード上限）のままなので、仕様上の意味は変わらない。
 `runPipeline`（CLI）では `recoveryConfirmMs = 0` なので従来どおりの打ち切り上限のままで、意味が二重になる。
 その区別が保存結果から分かるように、実行ごとの `recoveryConfirmMs` を DB に残す（決定 8）。
 
@@ -452,6 +456,18 @@ LLM 応答から得た候補が永久に失われる。逆順（候補を先に�
 複数のマイグレーションを順に適用する経路の実証も兼ねる。
 決定 8 の `recovery_confirm_ms` も同じマイグレーションで足す（`0001` の追加列は 2 つ）。
 
+**既存データが入った DB に適用できることを要件にする。** PR8（`0000`）だけを適用して検査実行の行を作った
+DB に `0001` を当てられなければならない。
+
+- `stop_requested_at`：nullable。既定値なし。
+- `recovery_confirm_ms`：`NOT NULL DEFAULT 0` として足す。既存行は 0 になる。
+  **0 は「`checkMs` がそのままハード上限」という従来の意味**に対応するので、既存行の解釈が変わらない。
+  nullable で足してから制約を確定させる手も取れるが、SQLite の `ALTER TABLE ADD COLUMN` は
+  `NOT NULL DEFAULT` を直接受け付けるので 1 文で足りる。
+- テスト：`0000` だけを適用した DB に `runs` の行を作り、そこへ `0001` を適用できること。
+  適用後にその行を読み出すと `recoveryConfirmMs: 0` になること。空の DB だけで検証すると、
+  既存行がある環境での `NOT NULL` 列追加の失敗を見逃す。
+
 **代案（採らない）**：メモリだけに持ち、PR10 で表示の必要が出たときに列を足す。マイグレーションは
 増えないが、その間は「停止操作が効いているのか分からない」状態が残る。
 
@@ -614,30 +630,22 @@ PR8 で `candidates.candidate_index` を「実行内の生成順の正本」に�
 
 DB とモックだけで完結する部品を作る。オーケストレーターはまだ無いので、実行を開始する経路は増えない。
 **この PR だけでは受け入れ条件を 1 つも満たさない**（満たすのは 9b）。それが分割の意図でもある。
+タスクの詳細は「PR9a の実装タスク」（下）にある。**最重要の非退行条件は、既存の CLI の挙動が
+変わらないこと**（`pipeline.test.ts` と `packages/cli` のテストを 1 行も変えずに緑）。
 
-1. **プリミティブの抽出**：`run/units.ts` を作り、`pipeline.ts` をそれを使う形に書き換える。
-   `recoveryConfirmMs` は任意引数（既定 0）。テストは 1 行も変えない（E1）。
-2. **キュー**：`run/queue.ts` と `createExecutor` のオプション（Q1〜Q4）。
-3. **スキーマとリポジトリの改修**：マイグレーション `0001`（`runs.stop_requested_at`、
-   `runs.recovery_confirm_ms`）、`claim*` の `started_at`、`finish*` の条件付き更新、
-   `updateFindingAggregate`、`nextCandidateIndex`、`findRunByStartOperationId`
-   （S3・S4、T4〜T7 と PR8 テストの更新）。
-4. **状態遷移と境界検証**：`run/state.ts`、`run/persist.ts`（S1・S2・S6、P1〜P5）。
-5. **増分マージ**：`run/merge-store.ts`（M1〜M3）。
-6. **ドキュメント**：`checkMs` の意味の改訂（決定 7）、README の現在の状態、ロードマップの PR9 節の分割。
-
-3〜5 の関数はすべて**トランザクションハンドルを引数で受け取る**形にする（`AppDatabase` と
-`db.transaction` のコールバック引数のどちらでも呼べる形）。決定 15 のトランザクションを組み立てるのは
-9b のオーケストレーターなので、9a の部品が自分でトランザクションを開いて閉じてしまうと合成できない。
+9a の関数はすべて**トランザクションハンドルを引数で受け取る**形にする。決定 15 のトランザクションを
+組み立てるのは 9b のオーケストレーターなので、9a の部品が自分でトランザクションを開いて閉じてしまうと
+合成できない。
 
 ### PR9b：完成したオーケストレーター（`feat/pr9b-orchestrator`）
 
-7. **オーケストレーター（開始と実行）**：`startRun`（決定 18）、単位駆動ループ、決定 15 の保存
+1. **オーケストレーター（開始と実行）**：`startRun`（決定 18）、単位駆動ループ、決定 15 の保存
    トランザクション、位置特定失敗の再確認単位、再確認の発火条件（決定 19）、想定外例外
    （O1〜O3、O10、O12〜O17、T1〜T3）。
-8. **停止・再開・再試行**：`recovery.ts` と合わせて（O4〜O9、O11、O18、R1〜R4b）。
-9. **起動時照合と再起動テスト**：`index.ts` への組み込み（R5・R6、D1）。
-10. **ドキュメント**：README、ロードマップの PR9 節と PR10 への持ち越し。
+2. **停止・再開・再試行**：`recovery.ts` と合わせて（O4〜O9、O11、O18、R1〜R4b）。
+3. **起動時照合と再起動テスト**：`index.ts` への組み込み（R5・R6、D1）。
+4. **仕様書の改訂**：`checkMs` の意味（決定 7）。版を上げ、15 節の改訂記録に追記し、同じコミットに含める。
+5. **ドキュメント**：README、ロードマップの PR9 節と PR10 への持ち越し。
 
 受け入れ条件 3・4・5・11・14・15・16・18 は 9b の完了時に満たす。
 
@@ -646,6 +654,273 @@ DB とモックだけで完結する部品を作る。オーケストレータ�
 技術的には可能だが、変更量・状態遷移・クラッシュ整合性・時間依存テストが 1 つの diff に重なる。
 その場合は実装モデルと独立レビューをそれぞれ 1 段引き上げる。ただし分割のほうがレビュー可能性への
 効果は大きい、というのがレビューの評価であり、本計画もそれに従う。
+
+
+## PR9a の実装タスク
+
+各タスクは 1 つの実装単位。完了前に `pnpm check` を通す。**すべてのタスクに共通する禁止事項**：
+`docs/spec/mvp-spec.md` を変えない（PR9b で行う）、`packages/web` を触らない、
+オーケストレーター（実行の開始・停止・再開）を作らない、接続先 URL と API キーを出力・例外・DB に残さない。
+
+### Task 1：検査単位・再確認単位のプリミティブを `run/units.ts` に抽出する
+
+**目的**：「1 検査単位を実行する」「1 再確認単位を実行する」を `pipeline.ts` から取り出し、
+PR9b のオーケストレーターが同じコードを使えるようにする（決定 1）。
+
+**作る**：`packages/server/src/run/units.ts`、`run/units.test.ts`
+**変える**：`packages/server/src/run/pipeline.ts`（抽出した関数を呼ぶ形に）
+
+**インターフェース**（`CheckUnitResult` / `RecheckResult` / `RunStop` / `UnitFailure` は `run/result.ts` の既存型）：
+
+```ts
+export interface CheckUnitArgs {
+  readonly text: string;
+  readonly paragraphs: readonly Paragraph[];
+  readonly input: CheckInput;
+  readonly targetIndex: number;
+  readonly perspective: Perspective;
+  readonly allowedWords: readonly string[];
+  readonly generation: GenerationSettings;
+  /** 遅延通知の閾値。ハード上限は checkMs + recoveryConfirmMs。 */
+  readonly checkMs: number;
+  /** 既定 0。0 ならハード上限は checkMs そのもの（従来の挙動）。 */
+  readonly recoveryConfirmMs?: number | undefined;
+  readonly executor: Executor;
+  readonly createCandidateId: () => string;
+  /** checkMs を超えたときに 1 回だけ呼ぶ。省略可。 */
+  readonly onSlow?: ((elapsedMs: number) => void) | undefined;
+}
+
+export interface CheckUnitOutcome {
+  readonly unit: CheckUnitResult;
+  readonly candidates: readonly Candidate[];
+  /** unit.status が pending でも非 null になりうる（PR9b の決定 20 が使う）。 */
+  readonly failure: UnitFailure | null;
+  readonly halt: RunStop | null;
+}
+
+export function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOutcome>;
+export function executeRecheckUnit(args: RecheckUnitArgs): Promise<RecheckUnitOutcome>;
+```
+
+**規則**：
+
+- 抽出であって挙動の変更ではない。`pipeline.ts` の分岐（`isPendingFailure` による pending / failed の
+  振り分け、`input-too-long` の停止判断、`locateQuote` を要求と同じ `CheckInput` で呼ぶこと）を
+  そのまま持ち込む。
+- `recoveryConfirmMs` が 0（既定）のとき、`executor.execute` に渡すタイムアウトは `checkMs` そのもの。
+  従来と 1 ビットも変わらない。
+- `recoveryConfirmMs > 0` のとき、`executor.execute` に渡すタイムアウトは `checkMs + recoveryConfirmMs`
+  とし、`checkMs` 経過時に `onSlow` を 1 回だけ呼ぶ。タイマーは応答が返ったら必ず解除する
+  （テストが未解決のタイマーを残さないこと）。
+- 位置確定（`locateQuote`）とその結果の候補化までを `executeCheckUnit` が行う。DB も結果 JSON も知らない。
+- `executeRecheckUnit` は `buildRecheckInput` の `InputTooLongError` を当該単位の失敗にとどめる
+  （実行は止めない）。
+
+**テスト**：
+
+- E1（**このタスクの完了条件**）：`packages/server/src/run/pipeline.test.ts` と `packages/cli` のテストを
+  **1 行も変更せずに**緑であること。テストを直したくなったら、それは抽出が挙動を変えた印なので実装を直す
+- U1 `recoveryConfirmMs` 省略時、`executor.execute` に渡るタイムアウトが `checkMs` と等しいこと
+- U2 `recoveryConfirmMs > 0` のとき、渡るタイムアウトが `checkMs + recoveryConfirmMs` であること
+- U3 `checkMs` 経過で `onSlow` がちょうど 1 回呼ばれること（フェイクタイマー）
+- U4 `checkMs` 超過後、ハード上限前に応答が届いたら `unit.status` が `done` になること
+- U5 応答が上限前に返ったとき `onSlow` が呼ばれず、タイマーが残らないこと
+
+### Task 2：単一キュー `run/queue.ts`
+
+**目的**：バックエンド全体で LLM 生成要求の同時実行数を 1 にする（仕様 2 節、決定 2）。
+
+**作る**：`packages/server/src/run/queue.ts`、`run/queue.test.ts`
+**変える**：`packages/server/src/run/executor.ts`（`ExecutorOptions` に `queue` を足す）
+
+```ts
+export interface RequestQueue {
+  enqueue<T>(job: () => Promise<T>): Promise<T>;
+  readonly size: number;
+}
+export function createRequestQueue(): RequestQueue;
+```
+
+**規則**：
+
+- FIFO。前のジョブが解決するまで次のジョブを始めない。ジョブが例外で終わっても後続を止めない
+  （例外は `enqueue` の呼び出し元に返す）。
+- `createExecutor` の `options.queue` が渡されたら、`runOne`（`ensureLoaded` → `chat` → `parse` →
+  再試行 1 回）の**全体を 1 ジョブ**として投入する。`ensureLoaded` と `chat` の間に別の実行の要求が
+  割り込むと「未ロードのモデルに生成要求を送らない」が破れるため、粒度を細かくしない。
+- `queue` を渡さないときは現在の `tail` による直列化のまま（`runPipeline` は渡さない）。
+
+**テスト**：
+
+- Q1 2 つの executor に同じキューを渡し、要求が交互に並ばず投入順に直列化されること
+- Q2 1 ジョブの中で `ensureLoaded` と `chat` の間に別ジョブが割り込まないこと
+  （モックが呼び出し順を記録して確認する）
+- Q3 ジョブが例外を投げても後続のジョブが実行され、例外は投入元に返ること
+- Q4 `queue` を渡さない `createExecutor` の挙動が従来どおりであること（`executor.test.ts` を変更しない）
+
+### Task 3：スキーマとリポジトリの改修
+
+**目的**：PR9b が安全に状態を書けるようにする（PR8 必須事項 1・2、決定 4・5・8・21・22）。
+
+**作る／変える**：
+`packages/server/src/db/schema.ts`、`drizzle/0001_*.sql`（生成）、`db/client.ts`、`db/records.ts`、
+`db/repositories/runs.ts`、`repositories/check-units.ts`、`repositories/rechecks.ts`、
+`repositories/findings.ts` と、対応する既存テスト。
+
+**1. マイグレーション `0001`（決定 8・21）**
+
+- `runs.stop_requested_at`：`integer` timestamp、nullable。
+- `runs.recovery_confirm_ms`：`integer NOT NULL DEFAULT 0`。
+- `pnpm --filter @shuten/server db:generate` で生成し、`drizzle/` を同じコミットに含める
+  （`docs/reference/conventions.md`）。
+- `RunRecord` に `stopRequestedAt: Date | null` と `recoveryConfirmMs: number` を足し、
+  `insertRun` / `rowToRunRecord` を対応させる。JSON 列にはしない（普通の列）。
+- **既存データがある DB で適用できること**：`0000` だけを適用した DB に `runs` の行を作り、
+  そこへ `0001` を適用できる。適用後にその行を読むと `recoveryConfirmMs` が 0 になる。
+  0 は「`checkMs` がそのままハード上限」という従来の意味に対応する。
+
+**2. トランザクションハンドルを受け取れるようにする**
+
+PR8 のリポジトリは第 1 引数が `AppDatabase`（`BetterSQLite3Database<typeof schema>`）だが、
+`db.transaction((tx) => ...)` の `tx` はこの型に代入できない。決定 15 のトランザクションを
+9b が組み立てられるよう、共通の上位型を `db/client.ts` に足し、リポジトリの引数をそれに広げる。
+
+```ts
+// drizzle の BetterSQLite3Database と SQLiteTransaction の共通の親
+export type AppDatabaseLike = BaseSQLiteDatabase<"sync", Database.RunResult, typeof schema>;
+```
+
+型の正確な形は実装時にコンパイルで確かめる（drizzle 0.45.2 の定義に合わせる）。
+`AppDatabase` は残し、`AppDatabaseLike` を受ける形に各リポジトリを広げる。
+
+**3. `claim*` が `started_at` を同じ UPDATE で設定する（必須事項 1）**
+
+```ts
+export function claimUnit(
+  db: AppDatabaseLike, id: string, from: UnitStatus, to: UnitStatus,
+  options?: { readonly startedAt?: Date | undefined },
+): boolean;
+```
+
+`claimRecheckUnit` も同じ。`started_at` は状態の変更と**同じ 1 文**に含める。
+`claimRun` は変えない（`runs.started_at` は `insertRun` で確定し、再開で上書きしない）。
+
+**4. `finish*` を条件付き更新にする（必須事項 2）**
+
+`finishCheckUnit` / `finishRecheckUnit` / `finishRun` の入力に `expectedStatus` を足し、
+`WHERE id = ? AND status = ?` にして**更新できたかを `boolean` で返す**。既存テストを更新する。
+
+**5. 追加するリポジトリ関数**
+
+- `updateFindingAggregate(db, findingId, { category, initialVerdict })`（決定 9）
+- `nextCandidateIndex(db, runId): number`（決定 22。`COALESCE(MAX(candidate_index), -1) + 1`）
+- `findRunByStartOperationId(db, startOperationId): RunRecord | null`（決定 12）
+
+**テスト**：
+
+- S3 `claimUnit` / `claimRecheckUnit` が `started_at` を同じ更新で設定し、`from` に合わない行を変えないこと
+- S4 `finish*` が `expectedStatus` に合わない行を更新せず false を返すこと（3 関数すべて）
+- T4b `nextCandidateIndex` が 0 から始まり、保存のたびに増えること
+- T6 ロールバックすると `nextCandidateIndex` が元の値に戻ること
+- T7 実行が 2 つあるとき、それぞれの `nextCandidateIndex` が互いに影響しないこと
+- Mig1 `0000` だけを適用して行を作った DB に `0001` を適用でき、既存行が `recoveryConfirmMs: 0` になること
+- Mig2 空の DB に `0000` → `0001` を順に適用できること（`applyMigrations` の複数適用）
+
+### Task 4：状態遷移 `run/state.ts` と境界検証 `run/persist.ts`
+
+**目的**：状態を書く経路と、パイプラインの値を DB レコードにする経路を 1 箇所に集める
+（決定 3・17・18・23、PR8 必須事項 3）。
+
+**作る**：`packages/server/src/run/state.ts`、`run/state.test.ts`、`run/persist.ts`、`run/persist.test.ts`
+
+**`state.ts`**：
+
+```ts
+export function canTransitionRun(from: RunStatus, to: RunStatus): boolean;
+export function canTransitionUnit(from: UnitStatus, to: UnitStatus): boolean;
+/** 決定 23。stop.generationUnconfirmed が true なら recovery-waiting、false なら stopped。 */
+export function runStatusForStop(stop: RunStop): Extract<RunStatus, "stopped" | "recovery-waiting">;
+```
+
+許容遷移は本書「決定 3」の 2 つの表がそのまま仕様。表にない遷移は false。
+
+**`persist.ts`**：保存の直前に検査し、違反は `PersistBoundaryError` を投げる（決定 17）。
+
+1. `mergeKey` は `locateStatus === "located"` の指摘にだけ入れてよい
+2. 抑制は `category === "notation"` かつ `suggestion !== null` かつ位置確定済みのときだけ非 null
+3. 位置確定済みの `paragraphId` は、保存本文と段落表から `range.start` を含む段落として導いた値と一致すること
+4. 引用・修正案・本文に孤立サロゲートを含まないこと（`db/errors.ts` の `assertWellFormedBody` を使う）
+
+あわせて `RunTargetRecord` → `CheckInput` の変換（`paragraphIds`、`contextBefore` / `contextAfter` →
+`ContextWindow`、`input` → `inputRange`）をここに置く（決定 18）。
+
+**テスト**：
+
+- S1 決定 3 の表にある遷移がすべて true
+- S2 表にない遷移がすべて false（`stopped` → `completed` を含む）
+- S6 決定 23 の表 9 行すべてで `runStatusForStop` の結果が一致すること。特に「生成中に応答を受け取れず
+  切断」（`connection-lost`、`generationUnconfirmed: true`）が `recovery-waiting` になること
+- P1 `not-found` の指摘に非 null の `mergeKey` を渡すと `PersistBoundaryError`
+- P2 `category !== "notation"` の指摘に抑制を渡すと例外
+- P3 修正案 null の指摘に抑制を渡すと例外
+- P4 位置確定済みの `paragraphId` が本文から導いた値と食い違うと例外
+- P5 孤立サロゲートを含む引用・修正案で例外
+- P6 `RunTargetRecord` → `CheckInput` の往復（参考文脈の有無の 4 通り）
+
+### Task 5：増分マージ `run/merge-store.ts`
+
+**目的**：初回でも再開でも同じ経路で統合する（決定 9）。
+
+**作る**：`packages/server/src/run/merge-store.ts`、`run/merge-store.test.ts`
+
+```ts
+export interface MergeCandidateInput {
+  readonly runId: string;
+  readonly manuscriptVersionId: string;
+  readonly targetId: string;
+  readonly checkUnitId: string;
+  readonly candidateIndex: number;
+  readonly candidate: LocatedCandidate;
+  readonly paragraphId: number;   // persist.ts が本文から導いた値
+  readonly allowedWords: readonly string[];
+  readonly now: Date;
+}
+/** 候補 1 件を保存し、統合先の指摘を返す。トランザクションハンドルを受け取る。 */
+export function mergeCandidateIntoRun(
+  db: AppDatabaseLike, input: MergeCandidateInput,
+): { readonly finding: FindingRecord; readonly created: boolean };
+```
+
+**規則**：
+
+- `mergeKey(candidate)` が null（修正案なし）→ 常に新しい指摘を作る。
+- 非 null → 同じ `run_id` の `findings` を `merge_key` で引き、あれば `attachCandidateToFinding` して
+  集約（`category`・`initialVerdict`）を再計算、なければ `insertFinding`。
+- 集約の規則は `mergeCandidates`（`@shuten/shared`）と同じ：`category` は元候補が一致すればその値、
+  不一致なら `unclear`。`initialVerdict` は全候補が `likely-error` のときだけ `likely-error`。
+- 照合は**同じ実行 ID の中だけ**（仕様 6.4）。
+- 新規指摘を作るときは `judgments` の `undecided` 行も同じ呼び出しで作る（`insertFinding` の既存の挙動）。
+- 抑制（`findSuppression`）の適用もここで行い、`persist.ts` の検査を通してから保存する。
+- 自分でトランザクションを開かない（呼び出し元が包む）。
+
+**テスト**：
+
+- M1 **オラクル**：1 検査対象ぶんの候補列を (a) `mergeCandidates` で一括処理、(b) `mergeCandidateIntoRun` で
+  1 件ずつ処理し、グルーピング・`category`・`initialVerdict` が一致すること。
+  候補列には「同じ `mergeKey` が 3 件」「`category` が食い違う 2 件」「`verdict` が食い違う 2 件」
+  「修正案なし 2 件」を含める
+- M2 修正案なし（`mergeKey` が null）の候補が常に別の指摘になること
+- M3 実行 ID が違う同じ `mergeKey` の候補が統合されないこと
+- M4 既存指摘に候補を足したとき `judgments` の行が増えず、内容も変わらないこと（仕様 5.4）
+- M5 呼び出し元が `db.transaction` で包んでロールバックすると、指摘・候補・判断のいずれも残らないこと
+
+### Task 6：ドキュメント
+
+**変える**：`README.md`（現在の状態を「PR9a 完了、次は PR9b」に）、
+`docs/plans/2026-09-07-mvp-roadmap.md`（PR9 節を PR9a / PR9b に分け、本詳細計画へのリンクを張る）。
+
+**変えない**：`docs/spec/mvp-spec.md`（`checkMs` の意味の改訂は PR9b）。
 
 ## PR10 以降への持ち越し（本 PR では作らない）
 
