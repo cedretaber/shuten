@@ -85,6 +85,8 @@ function buildIO(overrides: Partial<MainIO> = {}): CapturedIO {
   const io: MainIO = {
     readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode("dummy")),
     readAllowedWordsBytes: () => Promise.resolve(new TextEncoder().encode("")),
+    // 既定では「どのファイルも存在しない」。実体の比較が要るテストだけ上書きする。
+    statFile: () => Promise.resolve(null),
     writeResult: (outPath, json) => {
       if (outPath === null) {
         stdout.push(json);
@@ -374,5 +376,122 @@ describe("main C9: 接続先 URL と API キーが出力に現れない", () => 
     const json = captured.stdout[0] ?? "";
     expect(json).not.toContain(SECRET_URL);
     expect(json).not.toContain(SECRET_KEY);
+  });
+});
+
+describe("main: --out が入力ファイルを上書きしないこと", () => {
+  it("--out が --manuscript と同じパス文字列なら引数エラーで終了する", async () => {
+    const captured = buildIO();
+    const code = await main(
+      ["--manuscript", "novel.txt", "--model", "test-model", "--out", "novel.txt"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("--manuscript");
+  });
+
+  it("相対表記の違い（./novel.txt と novel.txt）でも拒否する", async () => {
+    const captured = buildIO();
+    const code = await main(
+      ["--manuscript", "novel.txt", "--model", "test-model", "--out", "./novel.txt"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+  });
+
+  it("dev/ino が一致する別パス（シンボリックリンク相当）でも拒否する", async () => {
+    const captured = buildIO({
+      statFile: (path) =>
+        Promise.resolve(
+          path === "out.json" || path === "novel.txt" ? { dev: 1, ino: 42 } : { dev: 1, ino: 7 },
+        ),
+    });
+    const code = await main(
+      ["--manuscript", "novel.txt", "--model", "test-model", "--out", "out.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+  });
+
+  it("--out が --allowed-words と同じ実体でも拒否する", async () => {
+    const captured = buildIO({
+      statFile: (path) =>
+        Promise.resolve(
+          path === "out.json" || path === "words.txt" ? { dev: 1, ino: 99 } : { dev: 1, ino: 7 },
+        ),
+    });
+    const code = await main(
+      [
+        "--manuscript",
+        "novel.txt",
+        "--model",
+        "test-model",
+        "--allowed-words",
+        "words.txt",
+        "--out",
+        "out.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("--allowed-words");
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+  });
+
+  it("エラーメッセージにパス文字列を含めない", async () => {
+    const captured = buildIO();
+    await main(
+      ["--manuscript", "novel.txt", "--model", "test-model", "--out", "novel.txt"],
+      {},
+      captured.io,
+    );
+
+    expect(captured.stderr.join("\n")).not.toContain("novel.txt");
+  });
+
+  it("既存の別ファイルを指す --out なら従来どおり成功する", async () => {
+    const captured = buildIO({
+      statFile: (path) =>
+        Promise.resolve(path === "out.json" ? { dev: 1, ino: 8 } : { dev: 1, ino: 7 }),
+    });
+    const code = await main(
+      ["--manuscript", "novel.txt", "--model", "test-model", "--out", "out.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+    expect(captured.receivedPipelineArgs).toHaveLength(1);
+    expect(captured.writtenFiles.map((file) => file.path)).toEqual(["out.json"]);
+  });
+
+  it("出力先が存在しない新規ファイルなら成功する", async () => {
+    const captured = buildIO({
+      statFile: (path) => Promise.resolve(path === "out.json" ? null : { dev: 1, ino: 7 }),
+    });
+    const code = await main(
+      ["--manuscript", "novel.txt", "--model", "test-model", "--out", "out.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+    expect(captured.receivedPipelineArgs).toHaveLength(1);
+    expect(captured.writtenFiles.map((file) => file.path)).toEqual(["out.json"]);
   });
 });

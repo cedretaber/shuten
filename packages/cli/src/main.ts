@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { parseLmStudioApiKey, parseLmStudioUrl } from "@shuten/server/config.ts";
 import { createLmStudioClient } from "@shuten/server/lmstudio/client.ts";
 import type { LmStudioClient, LmStudioClientOptions } from "@shuten/server/lmstudio/types.ts";
@@ -17,6 +18,12 @@ import { parseArgs } from "./args.ts";
  */
 const DEFAULT_LM_STUDIO_URL = "http://127.0.0.1:1234";
 
+/** 同一ファイル判定に使う識別情報（`stat` の dev/ino）。 */
+export interface FileIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
 /**
  * main の外界依存をすべてここにまとめる。テストでは `runPipeline` などをモックに差し替え、
  * 実際の LM Studio や実ファイルシステムに触れずに検証する。
@@ -24,6 +31,8 @@ const DEFAULT_LM_STUDIO_URL = "http://127.0.0.1:1234";
 export interface MainIO {
   readonly readManuscriptBytes: (path: string) => Promise<Uint8Array>;
   readonly readAllowedWordsBytes: (path: string) => Promise<Uint8Array>;
+  /** ファイルの識別情報。存在しない・取得できないときは null（比較を諦める）。 */
+  readonly statFile: (path: string) => Promise<FileIdentity | null>;
   readonly writeResult: (outPath: string | null, json: string) => Promise<void>;
   readonly writeProgressLine: (line: string) => void;
   readonly writeErrorLine: (line: string) => void;
@@ -35,6 +44,12 @@ function defaultIO(): MainIO {
   return {
     readManuscriptBytes: (path) => readFile(path),
     readAllowedWordsBytes: (path) => readFile(path),
+    // シンボリックリンクを追う stat を使う（リンク先が入力ファイルなら同一と判定したいため）。
+    statFile: (path) =>
+      stat(path).then(
+        (stats) => ({ dev: stats.dev, ino: stats.ino }),
+        () => null,
+      ),
     writeResult: async (outPath, json) => {
       if (outPath === null) {
         process.stdout.write(`${json}\n`);
@@ -51,6 +66,49 @@ function defaultIO(): MainIO {
     createClient: createLmStudioClient,
     runPipeline: runPipelineImpl,
   };
+}
+
+/**
+ * `--out` が入力ファイルと同じ実体を指していないか調べる。衝突していればその引数名を返す。
+ *
+ * 実原稿を結果 JSON で上書きする事故を防ぐための検査。パス文字列の正規化比較（`./x.txt` と
+ * `x.txt` を同一と見る）に加えて、出力先が既存ファイルのときは `stat` の dev/ino も比べ、
+ * シンボリックリンクとハードリンク経由の別名も捕まえる。
+ */
+async function findOutPathConflict(
+  io: MainIO,
+  outPath: string,
+  manuscriptPath: string,
+  allowedWordsPath: string | null,
+): Promise<string | null> {
+  const inputs: readonly (readonly [string, string])[] = [
+    ["--manuscript", manuscriptPath],
+    ...(allowedWordsPath === null ? [] : ([["--allowed-words", allowedWordsPath]] as const)),
+  ];
+
+  const resolvedOut = resolve(outPath);
+  for (const [name, inputPath] of inputs) {
+    if (resolve(inputPath) === resolvedOut) {
+      return name;
+    }
+  }
+
+  // 出力先が存在しない（これから作る）なら実体の比較はできないので、ここで終わる。
+  const outIdentity = await io.statFile(outPath);
+  if (outIdentity === null) {
+    return null;
+  }
+  for (const [name, inputPath] of inputs) {
+    const inputIdentity = await io.statFile(inputPath);
+    if (
+      inputIdentity !== null &&
+      inputIdentity.dev === outIdentity.dev &&
+      inputIdentity.ino === outIdentity.ino
+    ) {
+      return name;
+    }
+  }
+  return null;
 }
 
 function messageOf(error: unknown): string {
@@ -114,6 +172,21 @@ export async function main(
     return 1;
   }
   const args = parsed.value;
+
+  // 生成要求を送る前に（クライアントを作る前に）確かめる。原稿を結果 JSON で潰さないため。
+  // エラーメッセージにパス文字列は含めない（利用者名を含むパスが標準エラーに出るのを避ける）。
+  if (args.outPath !== null) {
+    const conflict = await findOutPathConflict(
+      io,
+      args.outPath,
+      args.manuscriptPath,
+      args.allowedWordsPath,
+    );
+    if (conflict !== null) {
+      io.writeErrorLine(`引数エラー: --out が ${conflict} と同じファイルを指しています`);
+      return 1;
+    }
+  }
 
   // 接続先 URL は解析に失敗しても生の値を出さない（不正な env の値に接続情報が写り込みうるため）。
   let lmStudioUrl: string;
