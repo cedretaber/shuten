@@ -121,7 +121,9 @@ export interface TargetPlan {
  * パイプライン実行（`runPipeline`）が返す状態。DB の実行状態（`./status.ts` の `RunStatus`）の
  * うち、1 回のパイプライン呼び出しの結果として取りうるものだけを `Extract` で絞り込む
  * （「実行中」「復旧待ち」はパイプライン呼び出しの外で管理する状態なのでここには含まれない）。
- * `Extract` で導くことで、`status.ts` の値が変わったときにコンパイルで気づける。
+ * `Extract` で導くことで、`status.ts` から値が削られたときにコンパイルで気づける。ただし
+ * 型エラーが出るのはこの `Extract` の定義行ではなく、`PipelineRunStatus` を使う下流の箇所
+ * （`pipeline.ts` の代入、`packages/cli` の `switch`）である。
  */
 export type PipelineRunStatus = Extract<RunStatus, "completed" | "partially-failed" | "stopped">;
 

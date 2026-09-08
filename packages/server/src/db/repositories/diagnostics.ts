@@ -40,8 +40,37 @@ export function insertDiagnostic(db: AppDatabase, input: DiagnosticRecord): Diag
   return { ...input };
 }
 
+/**
+ * `transform_version` / `transform_candidates` / `omitted` / `tied` の 4 列がそろって null か、
+ * そろって非 null かを確かめる。片方だけ埋まった行は保存時の不変条件が壊れているということなので、
+ * 既定値に丸めず例外にする（`docs/reference/invariants.md`「失敗・形式不正を正常な値に置き換えない」、
+ * `findings.ts` の `toDiagnosticColumns` が書き込み側で守っている対称の読み出し側の防御）。
+ *
+ * `omitted: 0`・`tied: false`・`transformCandidates: []` はいずれも非 null の正当な値なので、
+ * 真偽値としてではなく `=== null` で数える。
+ */
+function assertDiagnosticColumnsConsistent(
+  row: Pick<
+    typeof diagnostics.$inferSelect,
+    "candidateId" | "transformVersion" | "transformCandidates" | "omitted" | "tied"
+  >,
+): void {
+  const nullCount = [
+    row.transformVersion === null,
+    row.transformCandidates === null,
+    row.omitted === null,
+    row.tied === null,
+  ].filter(Boolean).length;
+  if (nullCount !== 0 && nullCount !== 4) {
+    throw new Error(
+      `diagnostics の transform_version / transform_candidates / omitted / tied が一部だけ null です（候補 ID: ${row.candidateId}）`,
+    );
+  }
+}
+
 /** `diagnostics` の 1 行を `DiagnosticRecord` に変換する。JSON 列は `db/json.ts` のスキーマで検証する。 */
 function rowToDiagnosticRecord(row: typeof diagnostics.$inferSelect): DiagnosticRecord {
+  assertDiagnosticColumnsConsistent(row);
   return {
     candidateId: row.candidateId,
     runId: row.runId,

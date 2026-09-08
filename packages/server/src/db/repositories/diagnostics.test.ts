@@ -1,4 +1,5 @@
 import type { DiagnosticCandidate } from "@shuten/shared";
+import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { createDatabase } from "../client.ts";
@@ -190,6 +191,32 @@ describe("db/repositories/diagnostics", () => {
   it("findDiagnostic: 存在しない候補 ID は null を返す", () => {
     const { db, close } = setupDb();
     expect(findDiagnostic(db, "no-such-id")).toBeNull();
+    close();
+  });
+
+  it("diagnostics の変換候補4列（transform_version / transform_candidates / omitted / tied）が一部だけ埋まった行は読み出しで例外になる（不変条件の防御）", () => {
+    const { db, close } = setupDb();
+    const { run } = setupCandidate(db, "c-broken");
+
+    // insertDiagnostic 経由ではこの壊れた行は作れない（4 列を対で書くため）。
+    // 不変条件が壊れた行を模すため SQL で直接書き込む（transform_version だけ非 null、
+    // transform_candidates / omitted / tied は NULL のまま）。
+    db.run(sql`
+      INSERT INTO diagnostics (
+        candidate_id, run_id, quote, reason, search_start, search_end, exact_matches,
+        transform_version
+      ) VALUES (
+        'c-broken', ${run.id}, '引用', 'not-found', 0, 10, '[]',
+        '1'
+      )
+    `);
+
+    expect(() => findDiagnostic(db, "c-broken")).toThrow(
+      /transform_version \/ transform_candidates \/ omitted \/ tied/,
+    );
+    expect(() => listDiagnostics(db, run.id)).toThrow(
+      /transform_version \/ transform_candidates \/ omitted \/ tied/,
+    );
     close();
   });
 });

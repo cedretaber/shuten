@@ -264,6 +264,61 @@ export function insertCandidate(db: AppDatabase, input: InsertCandidateInput): C
 }
 
 /**
+ * `candidates.start` / `end` の対から `Range | null` を組み立てる。両方 null なら `located` 以外
+ * として null を返すが、片方だけ null の行は保存時の不変条件が壊れているということなので、
+ * 既定値に丸めず例外にする（`toRangeOrNull`・`runs.ts` の同名関数と同じ姿勢）。
+ */
+function toCandidateRangeOrNull(
+  start: number | null,
+  end: number | null,
+  candidateId: string,
+): Range | null {
+  if (start === null && end === null) {
+    return null;
+  }
+  if (start === null || end === null) {
+    throw new Error(`candidates の start / end が片方だけ null です（候補 ID: ${candidateId}）`);
+  }
+  return { start, end };
+}
+
+/** `candidates` の 1 行を `CandidateRecord` に変換する。`llm`（JSON 列）は `db/json.ts` のスキーマで検証する。 */
+function rowToCandidateRecord(row: typeof candidates.$inferSelect): CandidateRecord {
+  return {
+    id: row.id,
+    runId: row.runId,
+    checkUnitId: row.checkUnitId,
+    findingId: row.findingId,
+    candidateIndex: row.candidateIndex,
+    llm: parseJsonColumn(candidateLlmSchema, row.llm, "llm"),
+    locateStatus: row.locateStatus,
+    range: toCandidateRangeOrNull(row.start, row.end, row.id),
+    mergeKey: row.mergeKey,
+    createdAt: row.createdAt,
+  };
+}
+
+/** 元候補を ID で 1 件探す。見つからなければ null。 */
+export function findCandidate(db: AppDatabase, id: string): CandidateRecord | null {
+  const row = db.select().from(candidates).where(eq(candidates.id, id)).get();
+  if (!row) {
+    return null;
+  }
+  return rowToCandidateRecord(row);
+}
+
+/** 検査実行に属する元候補を `candidate_index` の昇順で列挙する。 */
+export function listCandidates(db: AppDatabase, runId: string): CandidateRecord[] {
+  const rows = db
+    .select()
+    .from(candidates)
+    .where(eq(candidates.runId, runId))
+    .orderBy(asc(candidates.candidateIndex))
+    .all();
+  return rows.map(rowToCandidateRecord);
+}
+
+/**
  * 候補を指摘に紐づける（候補を先に書いて後から `finding_id` を更新する経路のため。決定 16）。
  * `locate_status` など他の列は変えない。
  */

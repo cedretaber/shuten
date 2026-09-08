@@ -146,7 +146,7 @@ describe("db/repositories/judgments", () => {
     close();
   });
 
-  it("R17: 指摘の読み出しに再確認結果と採否が付き、再確認の書き込みが採否を変えない（仕様5.4）", () => {
+  it("R17: 指摘・再確認・採否を独立に読め、再確認の書き込みが採否を変えない（仕様5.4）", () => {
     const { db, close } = setupDb();
     const { run, target } = setupBase(db);
     const finding = makeFinding(db, run, target, "f1");
@@ -190,8 +190,8 @@ describe("db/repositories/judgments", () => {
       finishedAt: new Date("2026-09-09T02:00:00.000Z"),
     });
 
-    // 指摘の読み出しに再確認結果と採否が付く（findFinding・findRecheckUnitByFinding・findJudgment を
-    // 組み合わせて読む。指摘・再確認・採否の各行は独立して読み書きできる）。
+    // 指摘・再確認・採否は別々の行で、findFinding・findRecheckUnitByFinding・findJudgment の
+    // それぞれ独立した呼び出しで読む（1 回の読み出しで 3 つがまとめて付いてくるわけではない）。
     const foundFinding = findFinding(db, finding.id);
     expect(foundFinding).not.toBeNull();
     expect(foundFinding?.quote).toBe("誤字");

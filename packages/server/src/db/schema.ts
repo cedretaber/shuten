@@ -22,9 +22,15 @@ import { foreignKey, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm
 import type { ModelInfo, Usage } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
 import { JUDGMENT_STATUSES, type JudgmentStatus } from "../run/judgment.ts";
-import type { StopReason, UnitFailure } from "../run/result.ts";
 import { RUN_STATUSES, type RunStatus, UNIT_STATUSES, type UnitStatus } from "../run/status.ts";
 import { PERSPECTIVES } from "./json.ts";
+import type {
+  CandidateLocateStatus,
+  FindingLocateStatus,
+  RecheckNotApplicableReason,
+  RunStopReason,
+  UnitFailureRecord,
+} from "./records.ts";
 
 /**
  * Drizzle スキーマ（仕様書 8.1 節）。
@@ -44,15 +50,54 @@ import { PERSPECTIVES } from "./json.ts";
  */
 export type SchemaPerspective = (typeof PERSPECTIVES)[number];
 
-/** `candidates` / `findings` の位置特定状態。`LocateFailureReason`（shared）に `located` を加えたもの。 */
-const CANDIDATE_LOCATE_STATUSES = ["located", "not-found", "ambiguous", "outside-target"] as const;
-const FINDING_LOCATE_STATUSES = ["located", "not-found", "ambiguous"] as const;
+/**
+ * `candidates` / `findings` の位置特定状態。`LocateFailureReason`（shared）に `located` を加えたもの。
+ * `satisfies` を付け、`records.ts` の `CandidateLocateStatus` から値が抜けたときにコンパイルで気づける
+ * ようにする（`PERSPECTIVES` と同じ姿勢）。ただし検出できるのは既存の値が削れたときだけで、
+ * 型に値が増えたのにここへ足し忘れたケースまでは検出できない。
+ */
+const CANDIDATE_LOCATE_STATUSES = [
+  "located",
+  "not-found",
+  "ambiguous",
+  "outside-target",
+] as const satisfies readonly CandidateLocateStatus[];
+const FINDING_LOCATE_STATUSES = [
+  "located",
+  "not-found",
+  "ambiguous",
+] as const satisfies readonly FindingLocateStatus[];
 
 /** `recheck_units.not_applicable_reason`。仕様書 6.5 節。 */
-const RECHECK_NOT_APPLICABLE_REASONS = ["disabled", "suppressed", "unlocated"] as const;
+const RECHECK_NOT_APPLICABLE_REASONS = [
+  "disabled",
+  "suppressed",
+  "unlocated",
+] as const satisfies readonly RecheckNotApplicableReason[];
 
 /** `UnitFailure.origin`。ensureLoaded 由来・生成要求由来・送信前の例外の別。 */
-type FailureOrigin = UnitFailure["origin"];
+type FailureOrigin = UnitFailureRecord["origin"];
+const FAILURE_ORIGINS = [
+  "ensure-loaded",
+  "chat",
+  "local",
+] as const satisfies readonly FailureOrigin[];
+
+/** `runs.stop_reason`。`db/records.ts` の `RunStopReason` の値をそのまま列挙にする。 */
+const RUN_STOP_REASONS = [
+  "model-not-loaded",
+  "recovery-needed",
+  "connection-lost",
+  "settings",
+  "aborted",
+] as const satisfies readonly RunStopReason[];
+
+/** `diagnostics.reason`。`LocateFailureReason`（shared）は `located` を含まない 3 値。 */
+const LOCATE_FAILURE_REASONS = [
+  "not-found",
+  "ambiguous",
+  "outside-target",
+] as const satisfies readonly LocateFailureReason[];
 
 /** ---------------------------------------------------------------------- */
 /** 原稿版 */
@@ -106,7 +151,7 @@ export const runs = sqliteTable(
     promptVersion: text("prompt_version").notNull(),
     diagnosticTransformVersion: text("diagnostic_transform_version").notNull(),
     status: text("status", { enum: RUN_STATUSES }).notNull().$type<RunStatus>(),
-    stopReason: text("stop_reason").$type<StopReason>(),
+    stopReason: text("stop_reason", { enum: RUN_STOP_REASONS }).$type<RunStopReason>(),
     stopMessage: text("stop_message"),
     /** PR9 の「復旧待ち」の入口。 */
     generationUnconfirmed: integer("generation_unconfirmed", { mode: "boolean" })
@@ -178,7 +223,7 @@ export const checkUnits = sqliteTable(
     failureReason: text("failure_reason", { enum: FAILURE_REASONS }).$type<FailureReason>(),
     failureMessage: text("failure_message"),
     failureFinishReason: text("failure_finish_reason"),
-    failureOrigin: text("failure_origin").$type<FailureOrigin>(),
+    failureOrigin: text("failure_origin", { enum: FAILURE_ORIGINS }).$type<FailureOrigin>(),
     /** 未完了の理由（未送信、停止、アンロードなど）。 */
     pendingNote: text("pending_note"),
     usage: text("usage", { mode: "json" }).$type<Usage>(),
@@ -312,13 +357,14 @@ export const recheckUnits = sqliteTable(
     inputStart: integer("input_start"),
     inputEnd: integer("input_end"),
     status: text("status", { enum: UNIT_STATUSES }).notNull().$type<UnitStatus>(),
-    notApplicableReason:
-      text("not_applicable_reason").$type<(typeof RECHECK_NOT_APPLICABLE_REASONS)[number]>(),
+    notApplicableReason: text("not_applicable_reason", {
+      enum: RECHECK_NOT_APPLICABLE_REASONS,
+    }).$type<(typeof RECHECK_NOT_APPLICABLE_REASONS)[number]>(),
     attempts: integer("attempts").notNull().default(0),
     failureReason: text("failure_reason", { enum: FAILURE_REASONS }).$type<FailureReason>(),
     failureMessage: text("failure_message"),
     failureFinishReason: text("failure_finish_reason"),
-    failureOrigin: text("failure_origin").$type<FailureOrigin>(),
+    failureOrigin: text("failure_origin", { enum: FAILURE_ORIGINS }).$type<FailureOrigin>(),
     pendingNote: text("pending_note"),
     verdict: text("verdict", { enum: RECHECK_VERDICTS }).$type<RecheckVerdict>(),
     reasonKind: text("reason_kind", { enum: RECHECK_REASON_KINDS }).$type<RecheckReasonKind>(),
@@ -353,7 +399,7 @@ export const diagnostics = sqliteTable(
       .references(() => runs.id),
     /** LLM の引用。 */
     quote: text("quote").notNull(),
-    reason: text("reason").notNull().$type<LocateFailureReason>(),
+    reason: text("reason", { enum: LOCATE_FAILURE_REASONS }).notNull().$type<LocateFailureReason>(),
     /** 照合に使った `inputRange`。 */
     searchStart: integer("search_start").notNull(),
     searchEnd: integer("search_end").notNull(),

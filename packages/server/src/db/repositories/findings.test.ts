@@ -1,18 +1,19 @@
 import type { LlmFinding } from "@shuten/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { createDatabase } from "../client.ts";
-import { candidateLlmSchema, parseJsonColumn } from "../json.ts";
 import { applyMigrations } from "../migrate.ts";
 import { candidates, judgments } from "../schema.ts";
 import { insertCheckUnit } from "./check-units.ts";
 import { listDiagnostics } from "./diagnostics.ts";
 import {
   attachCandidateToFinding,
+  findCandidate,
   findFinding,
   insertCandidate,
   insertFinding,
+  listCandidates,
   listFindings,
   saveUnlocatedCandidate,
   type UnlocatedLocateResult,
@@ -141,13 +142,76 @@ describe("db/repositories/findings", () => {
       mergeKey: null,
     });
 
-    // 実際に DB へ書いた行を読み戻し、引用が 1 文字も変わっていないことを確認する。
-    const row = db.select().from(candidates).where(eq(candidates.id, "c1")).get();
-    expect(row).toBeDefined();
-    // biome-ignore lint/style/noNonNullAssertion: 直前で toBeDefined() を確認済み
-    const roundTripped = parseJsonColumn(candidateLlmSchema, row!.llm, "llm");
-    expect(roundTripped).toEqual(llm);
-    expect(roundTripped.quote).toBe(quote);
+    // findCandidate 経由で読み戻し、引用が 1 文字も変わっていないことを確認する。
+    const found = findCandidate(db, "c1");
+    expect(found).not.toBeNull();
+    expect(found?.llm).toEqual(llm);
+    expect(found?.llm.quote).toBe(quote);
+    close();
+  });
+
+  it("findCandidate: 存在しない候補 ID は null を返す", () => {
+    const { db, close } = setupDb();
+    expect(findCandidate(db, "no-such-id")).toBeNull();
+    close();
+  });
+
+  it("listCandidates は検査実行に属する元候補を candidate_index の昇順で列挙する（ID の辞書順とは逆にして検査する）", () => {
+    const { db, close } = setupDb();
+    const { run, typoUnit } = setupTargets(db);
+
+    // ID の辞書順（c-a < c-b）と candidate_index の順（c-b が 0、c-a が 1）をわざと逆にする。
+    // orderBy を asc(candidates.id) に取り違えても検出できるように（A-5-1 と同じ姿勢。
+    // レビュアーが実際に asc(candidates.id) へ変異させて本テストが落ちることを確認済み）。
+    insertCandidate(db, {
+      id: "c-a",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 1,
+      llm: makeLlm({ reason: "2番目" }),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    insertCandidate(db, {
+      id: "c-b",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 0,
+      llm: makeLlm({ reason: "1番目" }),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+
+    const listed = listCandidates(db, run.id);
+    // candidate_index の昇順（c-b が 0、c-a が 1）なので id の辞書順（c-a, c-b）とは逆になる。
+    expect(listed.map((c) => c.id)).toEqual(["c-b", "c-a"]);
+    expect(listed.map((c) => c.llm.reason)).toEqual(["1番目", "2番目"]);
+    close();
+  });
+
+  it("candidates の start / end が片方だけ null の行は読み出しで例外になる（不変条件の防御）", () => {
+    const { db, close } = setupDb();
+    const { run, typoUnit } = setupTargets(db);
+
+    // insertCandidate は同一の Range から start/end を導出するため、片方だけ null の行は
+    // リポジトリ経由では作れない。不変条件が壊れた行を模すため SQL で直接書き込む。
+    db.run(sql`
+      INSERT INTO candidates (
+        id, run_id, check_unit_id, finding_id, candidate_index, llm, locate_status,
+        start, end, merge_key, created_at
+      ) VALUES (
+        'c-broken', ${run.id}, ${typoUnit.id}, NULL, 0,
+        ${JSON.stringify(makeLlm())}, 'located',
+        10, NULL, NULL, ${Date.now()}
+      )
+    `);
+
+    expect(() => findCandidate(db, "c-broken")).toThrow(/candidates の start \/ end/);
+    expect(() => listCandidates(db, run.id)).toThrow(/candidates の start \/ end/);
     close();
   });
 
@@ -398,9 +462,12 @@ describe("db/repositories/findings", () => {
       suppression: null,
     });
 
-    // 挿入の順序を逆（index 1 → index 0）にする。candidate_index を持つ理由の検査。
+    // 挿入の順序を逆（index 1 → index 0）にし、かつ ID の辞書順を candidate_index の順とは
+    // 逆にする（candidate_index 0 の候補が "c-b"、1 の候補が "c-a"）。ID の辞書順（c-a < c-b）で
+    // 並べても候補が 2 件なので偶然一致しないよう、orderBy を asc(candidates.id) に取り違えても
+    // 本テストが落ちることを確認済み（レビュー対応）。
     insertCandidate(db, {
-      id: "c-index1",
+      id: "c-a",
       runId: run.id,
       checkUnitId: naturalnessUnit.id,
       findingId: finding.id,
@@ -411,7 +478,7 @@ describe("db/repositories/findings", () => {
       mergeKey: "key1",
     });
     insertCandidate(db, {
-      id: "c-index0",
+      id: "c-b",
       runId: run.id,
       checkUnitId: typoUnit.id,
       findingId: finding.id,
@@ -425,10 +492,10 @@ describe("db/repositories/findings", () => {
     const found = findFinding(db, "f1");
     expect(found).not.toBeNull();
     expect(found?.reasons).toHaveLength(2);
-    // candidate_index の昇順（挿入順ではない）。
+    // candidate_index の昇順（挿入順でも ID の辞書順でもない）。
     expect(found?.reasons).toEqual([
-      { candidateId: "c-index0", perspective: "typo", reason: "誤字の理由" },
-      { candidateId: "c-index1", perspective: "naturalness", reason: "自然さの理由" },
+      { candidateId: "c-b", perspective: "typo", reason: "誤字の理由" },
+      { candidateId: "c-a", perspective: "naturalness", reason: "自然さの理由" },
     ]);
 
     const listed = listFindings(db, run.id);
@@ -530,6 +597,145 @@ describe("db/repositories/findings", () => {
 
     const listed = listFindings(db, run.id);
     expect(listed.map((f) => f.id)).toEqual(["f-start2", "f-start5", "f-null"]);
+    close();
+  });
+
+  it("findings の start / end が片方だけ null の行は読み出しで例外になる（不変条件の防御。runs.ts の run_targets と同型のテスト）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+
+    // insertFinding は Range から start/end を導出するため、片方だけ null の行はリポジトリ経由
+    // では作れない。不変条件が壊れた行を模すため SQL で直接書き込む。
+    db.run(sql`
+      INSERT INTO findings (
+        id, run_id, manuscript_version_id, target_id, locate_status,
+        start, end, paragraph_id, quote, category, initial_verdict, created_at
+      ) VALUES (
+        'f-broken', ${run.id}, 'mv1', ${target.id}, 'located',
+        10, NULL, 0, '引用', 'notation', 'likely-error', ${Date.now()}
+      )
+    `);
+
+    expect(() => findFinding(db, "f-broken")).toThrow(/findings の start \/ end/);
+    expect(() => listFindings(db, run.id)).toThrow(/findings の start \/ end/);
+    close();
+  });
+
+  it("findings の suppression_word / suppression_rule_version が片方だけ null の行は読み出しで例外になる（不変条件の防御）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+
+    db.run(sql`
+      INSERT INTO findings (
+        id, run_id, manuscript_version_id, target_id, locate_status,
+        start, end, paragraph_id, quote, category, initial_verdict, suppression_word, created_at
+      ) VALUES (
+        'f-broken-suppression', ${run.id}, 'mv1', ${target.id}, 'located',
+        0, 2, 0, '引用', 'notation', 'likely-error', '許容語', ${Date.now()}
+      )
+    `);
+
+    expect(() => findFinding(db, "f-broken-suppression")).toThrow(
+      /findings の suppression_word \/ suppression_rule_version/,
+    );
+    close();
+  });
+
+  /**
+   * A-6：入れ子トランザクションの検証。
+   *
+   * `insertFinding` / `saveUnlocatedCandidate` は内部で自分の `db.transaction` を開く。
+   * 決定 16 は「1 つの検査対象分をまとめて 1 トランザクションで書く」ことを前提にしており、
+   * PR9 がこれらを外側のトランザクションの中で呼ぶと入れ子になる。drizzle + better-sqlite3 の
+   * 組み合わせで `db.transaction` の入れ子が SAVEPOINT として正しく振る舞うかは型では分からない
+   * ため、実行時に確かめる（`saveUnlocatedCandidate` も同じ `db.transaction` の仕組みを使うので、
+   * ここでは代表として `insertFinding` で検証する）。
+   */
+  it("入れ子トランザクション：insertFinding を外側の db.transaction から呼んでも正常に完了し、行が書かれる", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+
+    db.transaction((tx) => {
+      insertFinding(tx, {
+        id: "f-nested-ok",
+        runId: run.id,
+        manuscriptVersionId: "mv1",
+        targetId: target.id,
+        locateStatus: "located",
+        range: { start: 0, end: 2 },
+        paragraphId: 0,
+        quote: "誤字",
+        suggestion: null,
+        category: "notation",
+        initialVerdict: "likely-error",
+        mergeKey: "key-nested-ok",
+        suppression: null,
+      });
+    });
+
+    expect(findFinding(db, "f-nested-ok")).not.toBeNull();
+    const judgment = db
+      .select()
+      .from(judgments)
+      .where(eq(judgments.findingId, "f-nested-ok"))
+      .get();
+    expect(judgment).toBeDefined();
+    expect(judgment?.status).toBe("undecided");
+    close();
+  });
+
+  it("入れ子トランザクション：外側の db.transaction が例外を投げると、内側の insertFinding が書いた行も巻き戻る（SAVEPOINT の検証）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+
+    expect(() =>
+      db.transaction((tx) => {
+        insertFinding(tx, {
+          id: "f-nested-rollback",
+          runId: run.id,
+          manuscriptVersionId: "mv1",
+          targetId: target.id,
+          locateStatus: "located",
+          range: { start: 0, end: 2 },
+          paragraphId: 0,
+          quote: "誤字",
+          suggestion: null,
+          category: "notation",
+          initialVerdict: "likely-error",
+          mergeKey: "key-nested-rollback",
+          suppression: null,
+        });
+        throw new Error("外側のトランザクションで失敗");
+      }),
+    ).toThrow("外側のトランザクションで失敗");
+
+    // 内側の insertFinding が書いた findings・judgments の両方が巻き戻っている。
+    expect(findFinding(db, "f-nested-rollback")).toBeNull();
+    const judgment = db
+      .select()
+      .from(judgments)
+      .where(eq(judgments.findingId, "f-nested-rollback"))
+      .get();
+    expect(judgment).toBeUndefined();
+
+    // 接続がロールバック後も使える（トランザクション途中で詰まっていない）ことを、
+    // もう一度別の指摘を書いて確認する。
+    insertFinding(db, {
+      id: "f-after-rollback",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字",
+      suggestion: null,
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key-after-rollback",
+      suppression: null,
+    });
+    expect(findFinding(db, "f-after-rollback")).not.toBeNull();
     close();
   });
 });
