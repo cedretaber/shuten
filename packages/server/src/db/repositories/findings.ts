@@ -6,7 +6,7 @@ import type {
   Perspective,
   Range,
 } from "@shuten/shared";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 
 import type { AppDatabaseLike } from "../client.ts";
 import { createId } from "../ids.ts";
@@ -223,6 +223,28 @@ export function findFinding(db: AppDatabaseLike, id: string): FindingWithReasons
   return toFindingWithReasons(db, row);
 }
 
+/**
+ * 同じ検査実行内で `merge_key` が一致する指摘を探す（仕様 6.4「重複統合は同一の検査実行内に
+ * 限定する」）。`run/merge-store.ts` が候補 1 件ずつの統合の照合に使う唯一の経路（決定 9）。
+ * `(run_id, merge_key)` の部分一意索引（`merge_key` が非 null の行だけ。PR8 決定 6）がそのまま
+ * 索引になるので、`run_id` と `merge_key` の両方で絞る。見つからなければ null。
+ */
+export function findFindingByMergeKey(
+  db: AppDatabaseLike,
+  runId: string,
+  mergeKey: string,
+): FindingRecord | null {
+  const row = db
+    .select()
+    .from(findings)
+    .where(and(eq(findings.runId, runId), eq(findings.mergeKey, mergeKey)))
+    .get();
+  if (!row) {
+    return null;
+  }
+  return rowToFindingRecord(row);
+}
+
 /** ---------------------------------------------------------------------- */
 /** 元候補 */
 /** ---------------------------------------------------------------------- */
@@ -326,6 +348,25 @@ export function listCandidates(db: AppDatabaseLike, runId: string): CandidateRec
 }
 
 /**
+ * 1 件の指摘に統合された元候補を `candidate_index` の昇順で列挙する。
+ * `run/merge-store.ts` が統合のたびに `category` / `initialVerdict` の集約を再計算するのに使う
+ * （`mergeCandidates` と同じ規則を候補 1 件ずつ適用しても同じ結果になるよう、統合先の全候補を
+ * 読み直してから畳み込む。決定 9）。
+ */
+export function listCandidatesForFinding(
+  db: AppDatabaseLike,
+  findingId: string,
+): CandidateRecord[] {
+  const rows = db
+    .select()
+    .from(candidates)
+    .where(eq(candidates.findingId, findingId))
+    .orderBy(asc(candidates.candidateIndex))
+    .all();
+  return rows.map(rowToCandidateRecord);
+}
+
+/**
  * 実行内で次に使う `candidate_index` を返す（決定 22）。
  *
  * `SELECT COALESCE(MAX(candidate_index), -1) + 1 FROM candidates WHERE run_id = ?` そのもの。
@@ -375,6 +416,27 @@ export function updateFindingAggregate(
 ): void {
   db.update(findings)
     .set({ category: input.category, initialVerdict: input.initialVerdict })
+    .where(eq(findings.id, findingId))
+    .run();
+}
+
+/**
+ * 指摘の抑制（許容語による自動抑制。仕様書 6.4）を更新する。
+ *
+ * 統合で候補が増えて `category` が `notation` から外れる（`unclear` になる）と、抑制の前提
+ * （`category === "notation"`）が崩れるため、`run/merge-store.ts` は集約を再計算するたびに
+ * 抑制も再計算してここに渡す。判定ロジック（`findSuppression`）はここでは再実装しない。
+ */
+export function updateFindingSuppression(
+  db: AppDatabaseLike,
+  findingId: string,
+  suppression: { readonly word: string; readonly ruleVersion: string } | null,
+): void {
+  db.update(findings)
+    .set({
+      suppressionWord: suppression?.word ?? null,
+      suppressionRuleVersion: suppression?.ruleVersion ?? null,
+    })
     .where(eq(findings.id, findingId))
     .run();
 }
