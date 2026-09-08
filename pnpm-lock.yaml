@@ -21,6 +21,15 @@ importers:
         specifier: 5.0.0
         version: 5.0.0(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(tsx@4.23.13))
 
+  packages/cli:
+    dependencies:
+      '@shuten/server':
+        specifier: workspace:*
+        version: link:../server
+      '@shuten/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/server:
     dependencies:
       '@hono/node-server':
