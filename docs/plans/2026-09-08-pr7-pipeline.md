@@ -91,7 +91,9 @@ export type CheckUnitResult =
       readonly status: "pending";
       readonly targetIndex: number;
       readonly perspective: Perspective;
-      /** 未送信の理由（モデル未ロード、先行する停止など）。 */
+      /** 送信した生成要求の回数。未送信なら 0。 */
+      readonly attempts: number;
+      /** 未完了の理由（未送信、送信後のアンロード、停止操作など）。 */
       readonly note: string;
     }
   | {
@@ -343,9 +345,12 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 
 ### 決定 4：単位の状態は `pending` / `done` / `failed` の 3 つ
 
-- `pending`：生成要求を 1 度も送っていない。モデル未ロードや実行の途中終了で残った単位。
-  仕様 7 節の「当該処理を失敗にせず未完了のまま残す」に対応する。`note` に理由を書く。
-- `failed`：送ったが失敗した。`attempts` と `UnitFailure` を持つ。
+- `pending`：**未完了**。成功も失敗もしていない。生成要求を 1 度も送っていない場合と、
+  送った後にモデルがアンロードされた場合・停止操作で中断した場合の両方を含む。
+  仕様 7 節「実行中にアンロードされた場合も…当該処理を失敗にせず未完了のまま残す」と
+  仕様 8.2「停止操作では新しい要求の送信を止める」（停止は失敗ではない）に対応する。
+  `attempts` と `note` に、送ったかどうかと理由を書く。PR9 の再開はこの単位から進める。
+- `failed`：送って失敗した。`attempts` と `UnitFailure` を持つ（仕様 8.1 の「失敗理由」）。
 - `done`：応答をスキーマまで通した。
 
 判別可能ユニオンにして、`done` なのに `failure` がある、`pending` なのに `attempts` が 1、
@@ -364,9 +369,9 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 | `truncated` | 1 回 | 同上 |
 | `connection` | 1 回 | 2 回目も `connection` なら実行を `stopped`（`connection-lost`、`generationUnconfirmed: false`） |
 | `timeout` | しない | 実行を `stopped`（`recovery-needed`、`generationUnconfirmed: true`）。当該単位は `failed` |
-| `aborted` | しない | 実行を `stopped`（`aborted`、`generationUnconfirmed: true`）。当該単位は `failed` |
-| `input-too-long` | しない | 実行を `stopped`（`settings`）。当該単位は `failed` |
-| `model-not-loaded` | しない | 実行を `stopped`（`model-not-loaded`）。当該単位は `failed`（送信済みのため） |
+| `aborted` | しない | 実行を `stopped`（`aborted`、`generationUnconfirmed: true`）。当該単位は **`pending`**（停止操作は失敗ではない。仕様 8.2） |
+| `input-too-long` | しない | 初回検査なら実行を `stopped`（`settings`）で当該単位は `failed`。再確認ならその再確認だけ `failed`（決定 5(c) と揃える） |
+| `model-not-loaded` | しない | 実行を `stopped`（`model-not-loaded`、`generationUnconfirmed: false`）。当該単位は **`pending`**（仕様 7 節「実行中にアンロードされた場合も…未完了のまま残す」。`attempts` は送った回数） |
 
 **(b) `ensureLoaded` 由来**
 
@@ -384,11 +389,20 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 | --- | --- |
 | `InvalidChunkSettingsError` | `runPipeline` の冒頭で `stopped`（`settings`）。`targets` は空、`checkUnits` も空 |
 | 初回検査の `InputTooLongError` | 実行を `stopped`（`settings`）。当該対象以降の単位は `pending` |
-| 再確認の `InputTooLongError` | その再確認だけ `failed`（`input-too-long`）。実行は続け、`partially-failed` |
+| 再確認の `InputTooLongError` | その再確認だけ `failed`（`input-too-long`）。実行は続け、`partially-failed`。LM Studio が HTTP 400 で返す `input-too-long` も再確認の段階では同じ扱いにする |
 
 再確認だけ扱いを変えるのは、再確認が指摘 1 件ごとに独立していて、他の指摘の再確認は成功しうるため。
 初回検査は本文の被覆に関わるので、1 件でも入力上限を超えたら設定を直してもらう。
 いずれの場合も本文は縮めない（仕様 7 節）。
+
+**停止した対象の後処理**：ある検査対象の途中で停止した場合でも、その対象ですでに成功している
+観点の応答は捨てない。LLM を使わない処理（位置確定 → 分割 → 統合 → 抑制）はそのまま実行し、
+`findings` に残す。再確認は送らず `pending` にする。成功した観点の指摘を捨てることは
+「失敗を指摘ゼロにしない」の違反になる。
+
+**中断がすでに要求されている場合**：`execute` の入口で `signal.aborted` が真なら、
+`ensureLoaded` も `chat` も送らずに `halt`（`aborted`、`generationUnconfirmed: false`）を返し、
+当該単位は `attempts: 0` の `pending` にする。
 
 `RunStop` には停止の原因になった `UnitFailure` を残す。`settings` に潰れても
 `input-too-long` か設定値の誤りかが結果 JSON から辿れるようにする。
@@ -428,6 +442,10 @@ CLI は許容語ファイルの中身をそのまま `allowedWordsRaw` に渡す
 `countGraphemes(sliceRange(text, inputRange)) > chunkSettings.maxInputGraphemes` なら
 `InputTooLongError` を投げ、決定 5(c) の初回検査と同じ扱いにする（縮めない）。
 再確認は行わない（`mode` の組み合わせとして持たない）。
+
+暫定の `maxInputGraphemes`（12000）では 1 万字を超える原稿が `stopped`（`settings`）になる。
+仕様 10 節の比較を行うときは `--max-input-graphemes` とモデルのコンテキスト長を上げる必要がある。
+この制約は CLI の使い方として試運転の記録に書く。
 
 これは仕様 10 節の「現在の全文チャット方式」との比較用だが、プロンプトは PR6 の構造化プロンプトの
 ままなので、自由形式のチャットとの比較ではない。この差は結果の記録に明記する。
@@ -539,6 +557,7 @@ PR9 の永続化では、ロードマップの実行状態（`running`、`recove
 | `maxInputGraphemes` | 12000 | 再確認の最大入力（1500 + 3000 × 2 = 7500）に余裕を見た値。コンテキスト長からの換算係数は下記の実測で決める |
 | `maxTokens` | 16000 | 決定記録 0003（1,500 字の検査対象に対する思考込みの初期値） |
 | `temperature` | 0 | 決定記録 0003 の比較実験の設定。仕様 10 節は全モデル必須にはしていない |
+| `reasoningEffort` | 未指定 | 未指定はモデル既定（qwen では思考あり）。思考を止めるときだけ `--reasoning-effort none` を渡す。既定のタイムアウトが長いのはこのため |
 | `checkTimeoutMs` | 300000 | 決定記録 0003「思考ありの qwen で 1 要求 2〜3 分、思考なしなら 10 秒前後」。決定 5 では 1 件のタイムアウトが実行全体を止めるので、既定は思考ありに合わせて長めに取り、思考なしでは CLI で下げる |
 | `recheckTimeoutMs` | 300000 | 同上 |
 
@@ -548,6 +567,13 @@ PR9 の永続化では、ロードマップの実行状態（`running`、`recove
 換算係数の実測：各要求について `inputGraphemes` と `usage.promptTokens` を結果 JSON に残す。
 試運転の後、両者の比（書記素あたりのトークン数）を集計し、`loaded_context_length` から
 `maxInputGraphemes` を導く係数を提案する。本 PR では数値を決め打ちしない。
+
+仕様 8.1 の保存項目との対応：検査実行の「モデル ID・生成設定・分割設定・許容語一覧・規則版・
+プロンプト版・開始終了日時・状態」は `RunConditions` と `PipelineResult.status` が持つ。
+「ID・原稿版 ID・接続先」は永続化側の項目なので PR8 で足す（接続先は本 PR では意図的に持たない）。
+検査単位の「対象範囲・観点・処理状態・試行回数・失敗理由」は `CheckUnitResult` と `TargetPlan`、
+再確認単位の「統合候補 ID・入力範囲・処理状態・試行回数・失敗理由・対象外理由」は
+`FindingResult.finding.id` と `RecheckResult` が持つ。位置診断の「検索範囲」は `TargetPlan.input.inputRange`。
 
 `RunConditions` に載らない実行条件（LM Studio 本体とランタイムの版、`seed` の対応可否）は
 `GET /api/v0/models` から取れないので、試運転の記録に手で書く。仕様 10 節は「取得可能な実行条件」
@@ -613,7 +639,8 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | E8 | `ensureLoaded` の `model-not-loaded` は `chat` を呼ばず、`attempts: 0`、`origin: "ensure-loaded"` |
 | E9 | `ensureLoaded` の `timeout` は `connection-lost`（`recovery-needed` にしない）、`generationUnconfirmed: false` |
 | E10 | `chat` の `timeout` は `recovery-needed`、`generationUnconfirmed: true` |
-| E11 | 呼び出し元の `signal` の中断で `halt.reason` が `aborted` |
+| E11 | 呼び出し元の `signal` の中断で `halt.reason` が `aborted`、`generationUnconfirmed: true` |
+| E11b | `execute` を呼ぶ前から `signal.aborted` が真なら `ensureLoaded` も `chat` も呼ばず、`attempts: 0`、`generationUnconfirmed: false` |
 | E12 | 最初の `ensureLoaded` の `ModelInfo` が `modelInfo` に残る |
 | E13 | 失敗しても `usage` と `elapsedMs` が結果に載る（`truncated` で `usage` が非 null） |
 | E14 | `requestCount` が再試行を含む送信回数と一致する |
@@ -636,8 +663,10 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | P12 | 全観点が失敗した対象があっても他の対象の結果は残り、`checkUnits` から「指摘ゼロ」と区別できる |
 | P13 | `finish_reason: "length"` の応答で当該単位が `failed`（`truncated`）になり、`findings` が空にならない |
 | P14 | `timeout` の後に `chat` が 1 度も呼ばれず、残りの単位が `pending`、`stop.reason` が `recovery-needed`、`generationUnconfirmed: true` |
-| P15 | k 番目の `ensureLoaded` が `model-not-loaded` のとき、それ以前は `done`、k 番目以降は `pending`、`stopped` |
-| P16 | `signal` を途中で中断すると `stopped`（`aborted`）で、以後の要求が送られない |
+| P14b | 同じ対象ですでに成功している観点があるとき、その指摘が統合・抑制まで進んで `findings` に残り、再確認は `pending` になる |
+| P15 | k 番目の `ensureLoaded` が `model-not-loaded` のとき、それ以前は `done`、k 番目以降は `pending`（`attempts: 0`）、`stopped` |
+| P15b | `chat` の途中でアンロードされた（`chat` が `model-not-loaded`）とき、当該単位が `failed` ではなく `pending`（`attempts: 1`）になる |
+| P16 | `signal` を途中で中断すると `stopped`（`aborted`）で以後の要求が送られず、中断された単位が `pending` |
 | P17 | 初回検査の `InputTooLongError`（`maxInputGraphemes` を小さくする）で `stopped`（`settings`）、`stop.failure.reason` が `input-too-long`、本文は縮まない |
 | P18 | 再確認の `InputTooLongError` はその再確認だけ `failed` にし、実行は続いて `partially-failed` |
 | P19 | `InvalidChunkSettingsError` で `stopped`（`settings`）、`targets` と `checkUnits` が空、`findings` が空 |
@@ -645,7 +674,7 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | P21 | `mode: "full-text"` で観点ごとに要求が 1 件だけ、`targets` が 1 件、再確認なし |
 | P22 | `mode: "full-text"` で本文が `maxInputGraphemes` を超えると `stopped`（`settings`） |
 | P23 | 同じ入力・同じモック応答で 2 回実行すると ID と結果 JSON が一致する |
-| P24 | 結果 JSON に接続先 URL と API キーが現れない（`JSON.stringify` を文字列検索） |
+| P24 | API キーと接続先を渡した実クライアント（`fetch` をモック）でパイプラインを回し、結果 JSON の文字列にどちらも現れない |
 | P25 | `conditions.versions` が `PROMPT_VERSION` などの実際の値を持ち、`targets[i].input` が要求に使った `CheckInput` と一致する |
 | P26 | `onEvent` が例外を投げても実行が続き、結果が変わらない |
 | P27 | イベント順が `run-started` で始まり `run-finished` で終わる（`stopped` の場合も） |
