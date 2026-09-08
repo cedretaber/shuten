@@ -1,4 +1,5 @@
 import { FAILURE_REASONS } from "@shuten/shared";
+import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import type { Usage } from "../../lmstudio/types.ts";
@@ -243,6 +244,46 @@ describe("db/repositories/check-units", () => {
     const stillRunning = findCheckUnit(db, "cu1");
     expect(stillRunning?.status).toBe("running");
     expect(stillRunning?.startedAt).toEqual(startedAt1);
+    close();
+  });
+
+  it("S3c: claimUnit（started_at 付き）は check_units への UPDATE を1回しか発行しない（必須事項1の本体：同じ1文であること）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTarget(db);
+    insertCheckUnit(db, {
+      id: "cu1",
+      runId: run.id,
+      targetId: target.id,
+      perspective: "typo",
+      status: "pending",
+      attempts: 0,
+      failure: null,
+      pendingNote: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: null,
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    // check_units への UPDATE の発行回数を、行レベルの AFTER UPDATE トリガーで数える。
+    // WHERE が対象行1件にちょうど一致する構成なので、トリガーの発火回数 = 実際に発行された
+    // UPDATE 文の本数になる（2文に分けて status → started_at の順に書けば2回発火する）。
+    db.run(sql`CREATE TEMP TABLE update_log (n integer)`);
+    db.run(sql`
+      CREATE TEMP TRIGGER t_check_units_update AFTER UPDATE ON check_units
+      BEGIN
+        INSERT INTO update_log VALUES (1);
+      END
+    `);
+
+    const claimed = claimUnit(db, "cu1", "pending", "running", {
+      startedAt: new Date("2026-09-09T00:00:00.000Z"),
+    });
+    expect(claimed).toBe(true);
+
+    const count = db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM update_log`);
+    expect(count.n).toBe(1);
     close();
   });
 

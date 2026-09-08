@@ -811,6 +811,42 @@ describe("db/repositories/findings", () => {
     close();
   });
 
+  it("T4c: nextCandidateIndex は歯抜けの candidate_index があっても MAX+1 を返す（count(*) ではないことの固定。決定 22）", () => {
+    const { db, close } = setupDb();
+    const { run, typoUnit } = setupTargets(db);
+
+    // candidate_index を 0 と 5 の2件だけにし、間（1〜4）を歯抜けにする。個別再試行などで
+    // 途中の番号が別経路（別トランザクション）で使われず、まだ埋まっていないケースを模す。
+    // count(*) を使う実装ならここで 2（歯抜けの件数）を返してしまうが、MAX+1 の実装なら
+    // 歯抜けと無関係に 6 を返す。
+    insertCandidate(db, {
+      id: "c0",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 0,
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+    insertCandidate(db, {
+      id: "c5",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 5,
+      llm: makeLlm(),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+
+    // 件数（2）ではなく最大値+1（6）を返す。
+    expect(nextCandidateIndex(db, run.id)).toBe(6);
+    close();
+  });
+
   it("T6: ロールバックすると nextCandidateIndex が元の値に戻る（決定 22。外部カウンターを持たない理由）", () => {
     const { db, close } = setupDb();
     const { run, typoUnit } = setupTargets(db);

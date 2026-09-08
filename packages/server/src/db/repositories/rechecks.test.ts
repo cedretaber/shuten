@@ -318,6 +318,32 @@ describe("db/repositories/rechecks", () => {
     close();
   });
 
+  it("S3c: claimRecheckUnit（started_at 付き）は recheck_units への UPDATE を1回しか発行しない（必須事項1の本体：同じ1文であること）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f1");
+    insertRecheckUnit(db, basePendingInput({ id: "rc1", runId: run.id, findingId: finding.id }));
+
+    // recheck_units への UPDATE の発行回数を、行レベルの AFTER UPDATE トリガーで数える
+    // （`check-units.test.ts` の S3c と同じ仕組み）。
+    db.run(sql`CREATE TEMP TABLE update_log (n integer)`);
+    db.run(sql`
+      CREATE TEMP TRIGGER t_recheck_units_update AFTER UPDATE ON recheck_units
+      BEGIN
+        INSERT INTO update_log VALUES (1);
+      END
+    `);
+
+    const claimed = claimRecheckUnit(db, "rc1", "pending", "running", {
+      startedAt: new Date("2026-09-09T00:00:00.000Z"),
+    });
+    expect(claimed).toBe(true);
+
+    const count = db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM update_log`);
+    expect(count.n).toBe(1);
+    close();
+  });
+
   it("S4b: finishRecheckUnit は expectedStatus に合わない行を更新せず false を返し、状態以外の列も一切変わらない", () => {
     const { db, close } = setupDb();
     const { run, target } = setupBase(db);
