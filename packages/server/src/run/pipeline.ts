@@ -271,7 +271,6 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
       };
     }
 
-    emit({ type: "recheck-started", findingId: finding.id });
     const outcome = await executeRecheckUnit({
       text: args.text,
       paragraphs,
@@ -283,6 +282,11 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
       generation: args.generation,
       recheckMs: args.timeouts.recheckMs,
       executor,
+      // buildRecheckInput が成功し、実際に要求を送る直前にだけ recheck-started を出す
+      // （InputTooLongError で送らずに終わるときは出さない。抽出前と同じ挙動）。
+      onStarted: () => {
+        emit({ type: "recheck-started", findingId: finding.id });
+      },
     });
     if (outcome.halt !== null) {
       stop ??= outcome.halt;

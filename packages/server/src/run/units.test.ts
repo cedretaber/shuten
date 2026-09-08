@@ -379,17 +379,18 @@ describe("executeRecheckUnit", () => {
     expect(timeoutCalls).toEqual([1250]);
   });
 
-  it("buildRecheckInput が InputTooLongError を投げたら、その単位だけ failed になり halt は null", async () => {
+  it("buildRecheckInput が InputTooLongError を投げたら、その単位だけ failed になり halt は null。onStarted は呼ばれない", async () => {
     const narrowSettings: ChunkSettings = {
       ...SETTINGS,
       targetGraphemes: 1,
       roundingTolerance: 0,
       maxInputGraphemes: 1,
     };
+    const onStarted = vi.fn();
     const { executor, timeoutCalls } = createFakeExecutor(() => Promise.resolve(DONE_OUTCOME));
 
     const outcome = await executeRecheckUnit(
-      baseRecheckArgs(executor, { chunkSettings: narrowSettings }),
+      baseRecheckArgs(executor, { chunkSettings: narrowSettings, onStarted }),
     );
 
     expect(timeoutCalls).toEqual([]);
@@ -400,6 +401,54 @@ describe("executeRecheckUnit", () => {
       expect(outcome.result.inputRange).toBeNull();
     }
     expect(outcome.halt).toBeNull();
+    // buildRecheckInput が失敗して生成要求を送らなかったので、onStarted は呼ばれない
+    // （pipeline.ts はこれを使って recheck-started イベントの発火を判断する）。
+    expect(onStarted).not.toHaveBeenCalled();
+  });
+
+  it("正常系では生成要求を送る直前に onStarted がちょうど 1 回呼ばれる", async () => {
+    const calls: string[] = [];
+    const onStarted = vi.fn(() => {
+      calls.push("onStarted");
+    });
+    const { executor } = createFakeExecutor(() => {
+      calls.push("execute");
+      return Promise.resolve<
+        ExecOutcome<{
+          reason: string;
+          reasonKind: string;
+          verdict: string;
+          suggestionValid: boolean;
+        }>
+      >({
+        ok: true,
+        value: {
+          reason: "実在する誤字である",
+          reasonKind: "error-confirmed",
+          verdict: "keep",
+          suggestionValid: true,
+        },
+        attempts: 1,
+        usage: null,
+        elapsedMs: 0,
+      });
+    });
+
+    const outcome = await executeRecheckUnit(baseRecheckArgs(executor, { onStarted }));
+
+    expect(outcome.result.status).toBe("done");
+    expect(onStarted).toHaveBeenCalledTimes(1);
+    // 要求を送る（executor.execute を呼ぶ）よりも前に onStarted が呼ばれている。
+    expect(calls).toEqual(["onStarted", "execute"]);
+  });
+
+  it("suppressed なら onStarted も呼ばれない", async () => {
+    const onStarted = vi.fn();
+    const { executor } = createFakeExecutor(() => Promise.resolve(DONE_OUTCOME));
+
+    await executeRecheckUnit(baseRecheckArgs(executor, { suppressed: true, onStarted }));
+
+    expect(onStarted).not.toHaveBeenCalled();
   });
 
   it("localFailure は origin: local の UnitFailure を作る", () => {

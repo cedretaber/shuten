@@ -207,6 +207,12 @@ export interface RecheckUnitArgs {
   readonly executor: Executor;
   /** recheckMs を超えたときに 1 回だけ呼ぶ。省略可。 */
   readonly onSlow?: ((elapsedMs: number) => void) | undefined;
+  /**
+   * `buildRecheckInput` が成功し、実際に生成要求を送る直前に 1 回だけ呼ぶ。省略可。
+   * `suppressed` で短絡したときや、`buildRecheckInput` が `InputTooLongError` を投げたときは呼ばない
+   * （`pipeline.ts` がこれを使って `recheck-started` イベントを、要求を送るときだけ出す）。
+   */
+  readonly onStarted?: (() => void) | undefined;
 }
 
 export interface RecheckUnitOutcome {
@@ -249,6 +255,7 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
     };
   }
 
+  args.onStarted?.();
   const request = buildRecheckRequest({
     text: args.text,
     paragraphs: args.paragraphs,
