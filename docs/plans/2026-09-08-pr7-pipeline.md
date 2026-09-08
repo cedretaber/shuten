@@ -58,6 +58,7 @@ PR1〜PR6 で作った部品をつなぎ、本文と設定と `LmStudioClient` �
 | `server/src/run/result.ts` | 結果の型（`PipelineResult` ほか）と `RESULT_VERSION` |
 | `server/src/run/events.ts` | 進捗イベントの型（PR10 の SSE がそのまま流せる形） |
 | `server/src/run/allowed-words.ts` | 改行区切りの許容語文字列を配列にする（server 側の責務） |
+| `server/src/lmstudio/models.ts` | `isGenerationCapable` を統合テスト用ヘルパーから本番の場所へ移す（`integration-support.ts` は再輸出に変える） |
 | `server/src/run/executor.ts` | 生成要求の直列実行、`ensureLoaded`、再試行 1 回、停止判定 |
 | `server/src/run/pipeline.ts` | `runPipeline`。分割から再確認までの本体 |
 | `packages/cli/` | 新規パッケージ `@shuten/cli`。`src/`、`bin/shuten-eval.ts` |
@@ -72,7 +73,7 @@ PR1〜PR6 で作った部品をつなぎ、本文と設定と `LmStudioClient` �
 // server/src/run/result.ts
 export const RESULT_VERSION: string = "1";
 
-/** 検査方式。仕様書 10 節の 3 方式に 1 対 1 で対応する。 */
+/** 検査方式。分割の効果を比べるための対照。仕様書 10 節の「現在の全文チャット方式」とは別条件（決定 8）。 */
 export type PipelineMode = "split" | "split-recheck" | "full-text";
 
 /** 失敗の記録。reason は shared の FailureReason をそのまま使う（列挙は増やさない）。 */
@@ -121,7 +122,14 @@ export type CheckUnitResult =
 export type RecheckResult =
   | { readonly status: "disabled" }
   | { readonly status: "suppressed" }
-  | { readonly status: "pending"; readonly note: string }
+  | {
+      readonly status: "pending";
+      /** 送信した生成要求の回数。未送信なら 0。 */
+      readonly attempts: number;
+      /** 入力を組み立てる前に終わったら null。 */
+      readonly inputRange: Range | null;
+      readonly note: string;
+    }
   | {
       readonly status: "failed";
       readonly attempts: number;
@@ -353,9 +361,13 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 - `failed`：送って失敗した。`attempts` と `UnitFailure` を持つ（仕様 8.1 の「失敗理由」）。
 - `done`：応答をスキーマまで通した。
 
-判別可能ユニオンにして、`done` なのに `failure` がある、`pending` なのに `attempts` が 1、
+判別可能ユニオンにして、`done` なのに `failure` がある、`failed` なのに `findingCount` がある、
 といった状態を型で作れないようにする。`findingCount` は `done` にしかないので、
 指摘ゼロ（`findingCount: 0`）と失敗（そもそも項目がない）を取り違えられない。
+
+`pending` も `attempts` を持つ。0 なら未送信、1 以上なら「送ったが未完了」（アンロード・停止）。
+再確認の `pending` も同じ理由で `attempts` と `inputRange`（未構築なら null）を持ち、
+未送信と生成中の停止を区別できるようにする。
 
 ### 決定 5：再試行と停止の分岐
 
@@ -367,7 +379,8 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 | --- | --- | --- |
 | `malformed` | 1 回 | 2 回目も失敗なら単位を `failed`。実行は続ける |
 | `truncated` | 1 回 | 同上 |
-| `connection` | 1 回 | 2 回目も `connection` なら実行を `stopped`（`connection-lost`、`generationUnconfirmed: false`） |
+| `connection`（HTTP 応答あり＝`status` が非 null） | 1 回 | 2 回目も同じなら実行を `stopped`（`connection-lost`、`generationUnconfirmed: false`）。応答を受け取れている以上、生成は走っていない |
+| `connection`（HTTP 応答なし＝`status` が null） | **しない** | 実行を `stopped`（`connection-lost`、`generationUnconfirmed: true`）。当該単位は `failed` |
 | `timeout` | しない | 実行を `stopped`（`recovery-needed`、`generationUnconfirmed: true`）。当該単位は `failed` |
 | `aborted` | しない | 実行を `stopped`（`aborted`、`generationUnconfirmed: true`）。当該単位は **`pending`**（停止操作は失敗ではない。仕様 8.2） |
 | `input-too-long` | しない | 初回検査なら実行を `stopped`（`settings`）で当該単位は `failed`。再確認ならその再確認だけ `failed`（決定 5(c) と揃える） |
@@ -375,13 +388,27 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 
 **(b) `ensureLoaded` 由来**
 
-再試行しない。当該単位は `pending`（生成要求を送っていない）のまま、実行を `stopped` にする。
-`model-not-loaded` なら `model-not-loaded`、それ以外（`connection` / `timeout` / `malformed`）は
+再試行しない。当該単位は `pending`（生成要求を送っていない、`attempts: 0`）のまま、
+実行を `stopped` にする。`model-not-loaded` なら `model-not-loaded`、
+`aborted`（一覧取得中の停止）なら `aborted`、それ以外（`connection` / `timeout` / `malformed`）は
 `connection-lost`。いずれも `generationUnconfirmed: false`（生成を送っていない）。
 
 理由：一覧が取れない＝ロード状態を確認できない状態で生成要求を送らない（仕様 7 節）。
 `GET /api/v0/models` のタイムアウトは生成が走り続けていることを意味しないので、
 `recovery-needed` ではない。
+
+**モデル種別の検査**：`ensureLoaded` は ID とロード状態しか見ない。仕様 7 節は
+「モデル種別（`llm`、`vlm`、`embeddings` など）で生成に使えるモデルを絞る」と定めているので、
+executor は `ensureLoaded` の直後に `isGenerationCapable(modelInfo)`（`llm` または `vlm` で、
+種別が欠けていれば偽）を確認する。偽なら `chat` を送らず、当該単位を `pending`（`attempts: 0`）
+のまま実行を `stopped`（`settings`、`generationUnconfirmed: false`）にし、
+`UnitFailure` は `{ reason: "model-not-loaded", origin: "ensure-loaded" }` で
+「モデル種別が生成に使えない（`llm` / `vlm` 以外、または種別欠落）」と記録する。
+`FailureReason` は増やさない。
+
+この判定は PR6 が統合テスト用に `lmstudio/integration-support.ts` へ置いた `isGenerationCapable`
+と同じ規則なので、関数を `lmstudio/models.ts` に移して本番経路と統合テストで共用する
+（`integration-support.ts` は再輸出にする。既存の呼び出し側は変えない）。
 
 **(c) 送信前の例外（`origin: "local"`）**
 
@@ -400,14 +427,26 @@ PR9 は保存本文から同じ関数で同じ段落を得るので、共用の�
 `findings` に残す。再確認は送らず `pending` にする。成功した観点の指摘を捨てることは
 「失敗を指摘ゼロにしない」の違反になる。
 
-**中断がすでに要求されている場合**：`execute` の入口で `signal.aborted` が真なら、
-`ensureLoaded` も `chat` も送らずに `halt`（`aborted`、`generationUnconfirmed: false`）を返し、
-当該単位は `attempts: 0` の `pending` にする。
+**中断がすでに要求されている場合**：`execute` は、直列化の順番が回ってきて実際に処理を始める
+時点で `signal.aborted` を確認する（呼ばれた時点ではなく）。真なら `ensureLoaded` も `chat` も
+送らずに `halt`（`aborted`、`generationUnconfirmed: false`）を返し、当該単位は `attempts: 0` の
+`pending` にする。待ち行列に積まれた要求が、停止後に送信されないようにするため。
 
 `RunStop` には停止の原因になった `UnitFailure` を残す。`settings` に潰れても
 `input-too-long` か設定値の誤りかが結果 JSON から辿れるようにする。
 
-補足：`connection` は HTTP の非 2xx をすべて含む（PR5 のクライアントの分類）。
+`connection` を 2 つに分けるのは、PR5 のクライアントが接続の失敗と応答本文の読み取り中の切断を
+同じ `connection` にまとめているため（`packages/server/src/lmstudio/client.ts` の `sendRequest` は
+`await response.text()` を同じ `try` の中に入れている）。本文の読み取り中に切れた場合、
+LM Studio 側の生成が終わっているかは確認できない。そのまま再試行すると生成が重複する。
+
+両者は `LmStudioError.status` で区別できる。非 null は「HTTP 応答（非 2xx）を受け取った」＝
+要求が拒否されたことが確定しており、生成は走っていない。null は「応答を受け取れなかった」＝
+接続自体に失敗したか、本文の読み取り中に切れたかのどちらかで、後者を否定できない。
+接続自体の失敗（生成は始まっていない）まで `generationUnconfirmed: true` にするのは
+過剰に安全側だが、誤って再試行して生成を重複させるより手動確認 1 回のほうが軽い。
+
+補足：`status` が非 null の `connection` には HTTP の非 2xx がすべて入る（PR5 のクライアントの分類）。
 API キーの誤りや `response_format` の拒否のような恒久的な 4xx でも
 「1 回再試行 → `connection-lost` で停止」になる。ここは実行を止めるのが安全側なのでそのままにする。
 
@@ -447,8 +486,11 @@ CLI は許容語ファイルの中身をそのまま `allowedWordsRaw` に渡す
 仕様 10 節の比較を行うときは `--max-input-graphemes` とモデルのコンテキスト長を上げる必要がある。
 この制約は CLI の使い方として試運転の記録に書く。
 
-これは仕様 10 節の「現在の全文チャット方式」との比較用だが、プロンプトは PR6 の構造化プロンプトの
-ままなので、自由形式のチャットとの比較ではない。この差は結果の記録に明記する。
+`full-text` は**分割の効果を比べるための対照**であって、仕様 10 節の「現在の全文チャット方式」
+そのものではない。プロンプトは PR6 の構造化プロンプト、出力は `response_format` による
+文法制約付き JSON のままなので、条件が違う。したがって「仕様 10 節の 3 方式に 1 対 1 で対応する」
+とは書かない。従来方式（自由形式のチャット）との比較は PR13 で別に用意する
+（下の「PR8・PR9・PR13 への持ち越し」に残す）。
 
 ### 決定 9：ID は注入可能な連番を 2 本
 
@@ -526,12 +568,12 @@ shuten-eval --manuscript <path> --model <id>
 
 | 対象 | 状態 | 意味 |
 | --- | --- | --- |
-| 検査単位（対象 × 観点） | `pending` | 未送信。未ロード・`ensureLoaded` 失敗・先行する停止で残った |
+| 検査単位（対象 × 観点） | `pending` | 未完了。`attempts: 0` なら未送信（`ensureLoaded` 失敗・種別不適合・先行する停止）、1 以上なら送信後のアンロード・停止 |
 | | `done` | 応答をスキーマまで通した（`findingCount` を持つ） |
 | | `failed` | 送ったが失敗（`attempts` と `UnitFailure` を持つ） |
 | 再確認 | `disabled` | `mode` が再確認なし |
 | | `suppressed` | 許容語により対象外（仕様 6.4） |
-| | `pending` | 送る前に実行が終わった |
+| | `pending` | 未完了。`attempts` と `inputRange` で、未送信か送信後の停止・アンロードかを区別する |
 | | `failed` | 送ったが失敗、または送信前に `InputTooLongError` |
 | | `done` | `LlmRecheckOutput` を得た |
 | 実行 | `completed` / `partially-failed` / `stopped` | 決定 11 |
@@ -586,8 +628,8 @@ PR9 の永続化では、ロードマップの実行状態（`running`、`recove
 2. `timeout` で実行全体を止める（決定 5(a)）。仕様 7 節の「生成終了を確認できるまで後続を送らない」を
    PR7 の範囲で守る最も安全な解釈だが、1 単位のタイムアウトで全体が止まる。既定値を 5 分に取って
    緩和した。
-3. `truncated` の再試行を 1 回行う（決定 5(a)）。`temperature: 0` では同じ結果になる可能性が高く、
-   時間の無駄になりうる。仕様 7 節の「自動再試行は各処理 1 回」を素直に適用した。
+3. `truncated` の再試行を 1 回行う（決定 5(a)）。仕様 7 節は「1 回まで」であって必須ではなく、
+   `temperature: 0` では同じ結果になる可能性が高い。試運転で無駄が目立つなら再試行なしに変える。
 4. `connection` の 2 回連続で実行を止める（決定 5(a)）。仕様に明記はない。恒久的な 4xx も
    ここに含まれる。
 5. 再確認の `InputTooLongError` だけ実行を止めず単位の失敗にする（決定 5(c)）。仕様に明記はない。
@@ -608,6 +650,8 @@ PR9 の永続化では、ロードマップの実行状態（`running`、`recove
 - 評価指標の集計（検出率、誤検出、位置特定失敗率、診断候補の正誤、抑制の適否）と、
   段落マーカーの引用への混入率の集計（PR13）。本 PR は結果 JSON に生の `LlmFinding` と
   `LocateResult` を残すところまでとし、集計ロジックをパイプラインに入れない。
+- 仕様 10 節の「現在の全文チャット方式」との比較（自由形式のプロンプトを別に用意する。PR13）。
+  本 PR の `full-text` は分割の効果を見る対照にとどめる。
 - `<think>` の分離（実測で必要になったモデルが出たときに、決定記録 0003 への追記と同時に）。
 - `before` / `after` の長さの調整、思考の有無で分けたタイムアウト値（試運転の観測を材料にする）。
 
@@ -643,6 +687,11 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | E11b | `execute` を呼ぶ前から `signal.aborted` が真なら `ensureLoaded` も `chat` も呼ばず、`attempts: 0`、`generationUnconfirmed: false` |
 | E12 | 最初の `ensureLoaded` の `ModelInfo` が `modelInfo` に残る |
 | E13 | 失敗しても `usage` と `elapsedMs` が結果に載る（`truncated` で `usage` が非 null） |
+| E15 | HTTP 応答を受け取った `connection`（`status` 非 null）は 1 回再試行する |
+| E16 | 応答本文の読み取り中に切れた `connection`（`status` が null）は再試行せず、`connection-lost` かつ `generationUnconfirmed: true` |
+| E17 | `ensureLoaded` 中の `aborted` は `chat` を呼ばず、`stop.reason` が `aborted`、`attempts: 0`、`generationUnconfirmed: false` |
+| E18 | 種別が `embeddings`・未知・欠落のロード済みモデルでは `chat` を呼ばず、`stopped`（`settings`）。`llm` と `vlm` は通る |
+| E19 | 直列待ちの間に中断されると、順番が回ってきた要求は `ensureLoaded` も `chat` も呼ばない |
 | E14 | `requestCount` が再試行を含む送信回数と一致する |
 
 ### P：`pipeline.ts`（モック `LmStudioClient` での結合）
@@ -671,6 +720,8 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | P18 | 再確認の `InputTooLongError` はその再確認だけ `failed` にし、実行は続いて `partially-failed` |
 | P19 | `InvalidChunkSettingsError` で `stopped`（`settings`）、`targets` と `checkUnits` が空、`findings` が空 |
 | P20 | 再確認が `malformed` を 2 回返すと `recheck.status: "failed"`、実行は `partially-failed` |
+| P20b | 再確認の生成中にアンロード・停止が起きると `recheck.status: "pending"` で `attempts: 1`、`inputRange` が非 null |
+| P20c | 再確認を送る前に実行が終わると `recheck.status: "pending"` で `attempts: 0` |
 | P21 | `mode: "full-text"` で観点ごとに要求が 1 件だけ、`targets` が 1 件、再確認なし |
 | P22 | `mode: "full-text"` で本文が `maxInputGraphemes` を超えると `stopped`（`settings`） |
 | P23 | 同じ入力・同じモック応答で 2 回実行すると ID と結果 JSON が一致する |
@@ -702,6 +753,7 @@ PR6 からの持ち越しのうち、**段落マーカー・タグの引用へ�
 | L1 | `listModels` の既定タイムアウト（10 秒）が適用される |
 | L2 | 応答本文の読み取り中にタイムアウトすると `timeout` |
 | L3 | `truncateRaw` が長い応答本文を切り詰め、例外の `raw` に全文を載せない |
+| L4 | 応答ヘッダーを受け取った後、本文の読み取り中に切断されると `connection` かつ `status` が null になる（決定 5(a) の分岐の前提） |
 
 ### I：実 LM Studio（`pnpm test:llm`）
 
