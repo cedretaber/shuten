@@ -73,15 +73,19 @@ describe("parseArgs C2: 未知のオプション・不正な値", () => {
     expect(result.ok).toBe(false);
   });
 
-  it.each(["-1", "3", "2.1", "abc"])("範囲外・不正な --temperature %s を拒否する", (raw) => {
+  it.each(["abc", "2.", "1e1"])("数値でない --temperature %s を拒否する", (raw) => {
     const result = parseArgs([...REQUIRED, "--temperature", raw]);
     expect(result.ok).toBe(false);
   });
 
-  it.each(["0", "1", "2"])("範囲内の --temperature %s を受け付ける", (raw) => {
-    const result = parseArgs([...REQUIRED, "--temperature", raw]);
-    expect(result.ok).toBe(true);
-  });
+  // 仕様書 13 節（モデルごとの生成パラメーター）が未決のため、CLI では範囲を課さない。
+  it.each(["0", "1", "2", "-1", "3", "2.1"])(
+    "有限数の --temperature %s は範囲によらず受け付ける",
+    (raw) => {
+      const result = parseArgs([...REQUIRED, "--temperature", raw]);
+      expect(result.ok).toBe(true);
+    },
+  );
 
   it("値のないオプションを拒否する", () => {
     const result = parseArgs([...REQUIRED, "--max-tokens"]);

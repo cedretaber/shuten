@@ -124,19 +124,35 @@ function parseIntegerOption(raw: string, name: string, min: number, max: number)
   return ok(value);
 }
 
-/** 十進の小数表記（指数表記は不可）であることを確認してから変換する。 */
-function parseFiniteNumberOption(
+/**
+ * 十進の小数表記（指数表記は不可）であることを確認してから変換する。範囲は課さない。
+ * 桁数が極端な表記は `Number` で Infinity になりうるので、有限数であることまで確かめる。
+ */
+function parseFiniteNumberOption(raw: string, name: string): Result<number> {
+  if (!/^-?[0-9]+(\.[0-9]+)?$/.test(raw)) {
+    return err(`${name} は数値でなければなりません: ${JSON.stringify(raw)}`);
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return err(`${name} は有限の数値でなければなりません: ${raw}`);
+  }
+  return ok(value);
+}
+
+/** `parseFiniteNumberOption` に加えて範囲も検証する。 */
+function parseRangedNumberOption(
   raw: string,
   name: string,
   min: number,
   max: number,
   maxInclusive: boolean,
 ): Result<number> {
-  if (!/^-?[0-9]+(\.[0-9]+)?$/.test(raw)) {
-    return err(`${name} は数値でなければなりません: ${JSON.stringify(raw)}`);
+  const parsed = parseFiniteNumberOption(raw, name);
+  if (!parsed.ok) {
+    return parsed;
   }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < min || (maxInclusive ? value > max : value >= max)) {
+  const value = parsed.value;
+  if (value < min || (maxInclusive ? value > max : value >= max)) {
     const upper = maxInclusive ? `${String(max)} 以下` : `${String(max)} 未満`;
     return err(`${name} は ${String(min)} 以上 ${upper} でなければなりません: ${raw}`);
   }
@@ -222,12 +238,12 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
   if (!maxTokens.ok) return maxTokens;
 
   const temperatureRaw = raw.get("--temperature");
-  // 0〜2 は LM Studio が中継する OpenAI 互換 API の一般的な範囲。仕様書は範囲を定めていないため、
-  // ここでの妥当性検証は CLI 側の安全弁として置く。
+  // 範囲は課さない。妥当な範囲はモデルごとに異なり、仕様書 13 節の未決事項（モデルごとの
+  // 生成パラメーター）に属するため、CLI では構文上の検証（有限数であること）だけを行う。
   const temperature =
     temperatureRaw === undefined
       ? ok(DEFAULTS.temperature)
-      : parseFiniteNumberOption(temperatureRaw, "--temperature", 0, 2, true);
+      : parseFiniteNumberOption(temperatureRaw, "--temperature");
   if (!temperature.ok) return temperature;
 
   const seedRaw = raw.get("--seed");
@@ -268,7 +284,7 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
   const roundingTolerance =
     roundingToleranceRaw === undefined
       ? ok(DEFAULTS.roundingTolerance)
-      : parseFiniteNumberOption(roundingToleranceRaw, "--rounding-tolerance", 0, 1, false);
+      : parseRangedNumberOption(roundingToleranceRaw, "--rounding-tolerance", 0, 1, false);
   if (!roundingTolerance.ok) return roundingTolerance;
 
   const maxInputGraphemesRaw = raw.get("--max-input-graphemes");
