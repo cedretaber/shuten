@@ -86,7 +86,14 @@ function formatEvent(event: PipelineEvent): string {
     case "recheck-finished":
       return `recheck-finished finding=${event.findingId} status=${event.result.status}`;
     case "run-finished":
-      return `run-finished status=${event.status}${event.stop === null ? "" : ` stopReason=${event.stop.reason}`}`;
+      // generationUnconfirmed が真なら、LM Studio 側で生成が走り続けている可能性がある。
+      // 確認せずにすぐ再実行すると仕様 8.2 が禁じる「生成終了を確認しないままの後続送信」を
+      // 人手で起こすため、試運転をする人が見る標準エラーに必ず出す。
+      return `run-finished status=${event.status}${
+        event.stop === null
+          ? ""
+          : ` stopReason=${event.stop.reason} generationUnconfirmed=${String(event.stop.generationUnconfirmed)}`
+      }`;
   }
 }
 

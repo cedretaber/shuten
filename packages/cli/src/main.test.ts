@@ -248,6 +248,55 @@ describe("main C8: 終了コードが RunStatus に対応する", () => {
   });
 });
 
+describe("main: run-finished の進捗行に generationUnconfirmed を出す", () => {
+  function runWithStop(stop: RunStop | null): Promise<CapturedIO> {
+    const captured = buildIO({
+      runPipeline: (args) => {
+        args.onEvent?.({
+          type: "run-finished",
+          status: stop === null ? "completed" : "stopped",
+          stop,
+        });
+        return Promise.resolve(buildResult(stop === null ? "completed" : "stopped", stop));
+      },
+    });
+    return main(REQUIRED, {}, captured.io).then(() => captured);
+  }
+
+  it("停止したときは stopReason とともに generationUnconfirmed を出す", async () => {
+    const captured = await runWithStop({
+      reason: "recovery-needed",
+      message: "生成要求がタイムアウトしたため実行を停止した",
+      failure: null,
+      generationUnconfirmed: true,
+    });
+
+    expect(captured.stderr).toContain(
+      "run-finished status=stopped stopReason=recovery-needed generationUnconfirmed=true",
+    );
+  });
+
+  it("generationUnconfirmed が偽なら false と出す", async () => {
+    const captured = await runWithStop({
+      reason: "model-not-loaded",
+      message: "モデルがロードされていないため実行を停止した",
+      failure: null,
+      generationUnconfirmed: false,
+    });
+
+    expect(captured.stderr).toContain(
+      "run-finished status=stopped stopReason=model-not-loaded generationUnconfirmed=false",
+    );
+  });
+
+  it("stop が null のときは出さない", async () => {
+    const captured = await runWithStop(null);
+
+    expect(captured.stderr).toContain("run-finished status=completed");
+    expect(captured.stderr.join("\n")).not.toContain("generationUnconfirmed");
+  });
+});
+
 describe("main C9: 接続先 URL と API キーが出力に現れない", () => {
   const SECRET_URL = "http://secret-lmstudio-host.internal:19999";
   const SECRET_KEY = "sk-super-secret-token-xyz";

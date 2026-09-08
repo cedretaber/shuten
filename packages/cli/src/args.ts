@@ -143,7 +143,11 @@ function parseFiniteNumberOption(
   return ok(value);
 }
 
-/** `--perspectives typo,naturalness` を分割し、未知の観点を拒否する。 */
+/**
+ * `--perspectives typo,naturalness` を分割し、未知の観点を拒否する。
+ * 重複は出現順を保って除く（許容語の重複除去と方針をそろえる）。同じ観点を 2 回渡すと
+ * 同じ要求を 2 回送ることになり、`sources` が水増しされるため。
+ */
 function parsePerspectives(raw: string): Result<readonly Perspective[]> {
   const parts = raw.split(",").map((part) => part.trim());
   if (parts.length === 0 || parts.some((part) => part === "")) {
@@ -156,7 +160,8 @@ function parsePerspectives(raw: string): Result<readonly Perspective[]> {
     }
     perspectives.push(part as Perspective);
   }
-  return ok(perspectives);
+  // 未知の観点の検出を先に済ませてから重複を除く（`typo,unknown,typo` は unknown で拒否する）。
+  return ok([...new Set(perspectives)]);
 }
 
 function parseMode(raw: string): Result<PipelineMode> {

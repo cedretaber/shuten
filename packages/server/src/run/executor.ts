@@ -128,8 +128,12 @@ function haltForChatError(error: LmStudioError, failure: UnitFailure): RunStop |
       // executor は初回検査と再確認を区別できないので、停止の判断は呼び出し元に委ねる。
       // HTTP 400 で返る（status 非 null）ため生成は走っておらず、門を閉じる必要もない。
       return null;
-    default:
-      return null;
+    default: {
+      // `FailureReason` に値が増えたらここで型エラーにする。default で黙って null（＝停止しない）に
+      // 落ちると、新しい失敗理由が停止すべき場合でも実行が続いてしまう。
+      const _exhaustive: never = error.kind;
+      return _exhaustive;
+    }
   }
 }
 

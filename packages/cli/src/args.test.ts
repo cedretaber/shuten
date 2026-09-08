@@ -123,6 +123,23 @@ describe("parseArgs C3: --perspectives の分割と検証", () => {
     const result = parseArgs([...REQUIRED, "--perspectives", "typo,"]);
     expect(result.ok).toBe(false);
   });
+
+  it("重複を出現順を保って除く", () => {
+    const single = parseArgs([...REQUIRED, "--perspectives", "typo,typo"]);
+    expect(single.ok).toBe(true);
+    if (!single.ok) return;
+    expect(single.value.perspectives).toEqual(["typo"]);
+
+    const both = parseArgs([...REQUIRED, "--perspectives", "naturalness,typo,naturalness"]);
+    expect(both.ok).toBe(true);
+    if (!both.ok) return;
+    expect(both.value.perspectives).toEqual(["naturalness", "typo"]);
+  });
+
+  it("重複除去より先に未知の観点を拒否する", () => {
+    const result = parseArgs([...REQUIRED, "--perspectives", "typo,unknown,typo"]);
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("parseArgs C4: full-text でも recheck-context-graphemes を検証する", () => {
