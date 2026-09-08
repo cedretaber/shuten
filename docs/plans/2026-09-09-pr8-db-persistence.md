@@ -1,7 +1,7 @@
 # PR8 詳細計画：DB スキーマと永続化（server）
 
 作成日：2026-09-09
-状態：計画（未実装）
+状態：実装済み
 仕様：`docs/spec/mvp-spec.md`（v0.8）8.1 全体、8.2（永続化する対象）、5.3、5.4、6.3、6.4、6.5、11 節（12・13 項）
 前提：`docs/plans/2026-09-07-mvp-roadmap.md` の PR8 節、`docs/reference/invariants.md`、
 `docs/decisions/0001-tech-stack.md`、PR1〜PR4（`shared`）、PR7（`server/src/run/`）

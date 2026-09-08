@@ -369,6 +369,17 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 ### PR9 server：実行キューとオーケストレーション
 
+- PR8 からの持ち越し：
+  - 保存済み `TargetPlan[]` を `runPipeline` に渡す口の設計と、`target-planned` イベント。PR8 は `run_targets` を作るところまでで、パイプライン側の入口は触っていない
+  - 生成終了の確認と上限付き待機（`recovery-waiting` への遷移）の制御。PR8 は列（`status`、`generation_unconfirmed`）だけ用意した
+  - `mergeKey` / `suppression` を `not-found` / `ambiguous` の指摘に渡せてしまう（永続化層にランタイム検査はなく、呼び出し側の責務）
+  - `started_at` を更新する関数がない（`claimUnit` は状態のみ、`finishCheckUnit` は `finishedAt` のみ）
+  - 決定 4 の散文が言う「位置特定失敗の指摘に `recheck_units`（`not-applicable` / `unlocated`）を作る」は `saveUnlocatedCandidate` では行っていない。`disabled`（再確認そのものが無効）と `unlocated` のどちらを書くかは実行の `recheck_enabled` に依存するため PR9 の判断
+  - 決定 15 の「`located` の `paragraph_id` は保存本文から導く」は呼び出し側の責務で、永続化層にランタイム検査はない
+  - `finishCheckUnit` / `finishRecheckUnit` / `finishRun` は状態ガードなしの無条件 UPDATE。停止後に遅れて到着した完了報告が `stopped` を上書きしうる（順序制御は PR9 の責務）
+  - `listFindings` が N+1（指摘 1 件につき `reasons` を 1 クエリ）。PR12 の表示要件が固まってから直す
+  - 入れ子トランザクション（`insertFinding` / `saveUnlocatedCandidate` が内部で自分の `db.transaction` を開く）は、drizzle + better-sqlite3 の組み合わせで SAVEPOINT として正しく動くことを確認済み（正常完了・ロールバックとも）。PR9 が外側のトランザクションから呼ぶ設計にしてよい
+
 - 仕様：2（単一キュー）、6（処理順序）、6.4（観点の一部失敗）、7（未ロード、再試行 1 回）、8.2 全体
 - 作る：`server/src/run/queue.ts`（PR7 の実行器を包み、複数の実行・タブからの要求を単一キューに直列化）、`run/orchestrator.ts`（PR7 のパイプラインに永続化・再開・停止を加える）、`run/state.ts`（状態遷移）、`run/recovery.ts`（生成終了の確認と上限付き待機）
 - 規則：
@@ -385,6 +396,12 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 大きさ：大
 
 ### PR10 server：HTTP API と SSE
+
+- PR8 からの持ち越し：
+  - UI からの接続先上書きを保存する `settings` 表
+  - `LmStudioClient` の `close()` / `dispose()`（PR7 からの持ち越し）
+  - 貼り付け経路の孤立サロゲートを API 側でも弾くか。PR8 は決定 17 で永続化層が拒否するようにしたので保存は守られるが、ユーザーに何を返すかは PR10 で決める
+  - `index.ts` が DB ハンドルを閉じない（graceful shutdown なし）
 
 - 仕様：4、5.1（ファイル読み込み）、8.2（ブラウザを閉じても継続）、9（ループバック、テキストとして扱う）
 - 作る：`server/src/api/*.ts`（接続設定と確認、原稿、実行、指摘、採否、エクスポート）、`api/events.ts`（SSE）、zod による入出力検証
@@ -421,6 +438,8 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 - 大きさ：大
 
 ### PR13 all：評価ツール、エクスポート、実原稿での評価
+
+- PR8 からの持ち越し：一括エクスポート形式と、そこでの接続先 URL の扱い
 
 - 仕様：10 全体、11（最後の 2 項）、8.2（エクスポート）
 - 作る：`packages/cli/` に正解ファイルとの突き合わせと集計（検出率、誤検出、位置特定失敗率、診断候補の正誤、抑制の適否、所要時間）、複数回実行の集計、`docs/experiments/` への評価記録

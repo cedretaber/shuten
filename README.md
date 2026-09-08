@@ -21,7 +21,7 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 ## 現在の状態
 
 scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.8）。
-実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR7（検査パイプラインと評価ハーネス）まで完了。次は PR8（DB スキーマと永続化）。
+実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR8（DB スキーマと永続化）まで完了。次は PR9（実行キューとオーケストレーション）。
 
 ## 技術スタック
 
@@ -69,6 +69,9 @@ Vite は `/api` をサーバーへプロキシする。
 環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）、
 `SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`。LM Studio のルート URL。`/v1` を付けると起動時にエラー）、
 `SHUTEN_LM_STUDIO_API_KEY`（省略可）。
+
+`SHUTEN_DATA_DIR` の下に SQLite ファイル `shuten.db` を作る。起動時に `createApp` の前に
+DB マイグレーションを適用し、失敗したら API を受け付けずにプロセスを非ゼロ終了させる。
 
 実 LM Studio を使う統合テストは通常のテストから分離してある。`SHUTEN_LM_STUDIO_URL` を設定して `pnpm test:llm`
 を実行する（未設定なら全件 skip）。モデルは `SHUTEN_LM_STUDIO_MODEL` で指定でき、未指定ならロード済みの

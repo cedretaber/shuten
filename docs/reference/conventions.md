@@ -7,6 +7,8 @@
 - 仕様書を改訂したら、`docs/spec/mvp-spec.md` の改訂記録（15 節）に追記し、同じコミットに含める。
 - プロンプトのスナップショット（`packages/server/src/prompts/__snapshots__/`）を更新するときは、
   `PROMPT_VERSION`（`packages/shared/src/versions.ts`。初版は `"1"`）の更新と同じコミットで行う。
+- `packages/server/src/db/schema.ts` を変えたら `pnpm --filter @shuten/server db:generate` を実行し、
+  生成された `packages/server/drizzle/` を同じコミットに含める。
 - 設計上の決定は `docs/decisions/` に連番で追加する。結論と理由だけを短く書き、
   検証の手順や生データは `docs/experiments/` に置いて参照する。
 - Windows で未確認の変更は、その旨を PR やコミットメッセージに書く。
@@ -71,4 +73,5 @@ pnpm test             # vitest run（全パッケージ）
 pnpm build            # web のビルド
 pnpm dev              # server（node --watch）と web（vite）を同時起動
 pnpm start            # server を起動し、ビルド済み web を配信
+pnpm --filter @shuten/server db:generate   # schema.ts から drizzle/ の SQL を生成
 ```
