@@ -369,14 +369,17 @@ PR9 はその上に永続化・再開・キュー管理を加える。
 
 ### PR9 server：実行キューとオーケストレーション
 
-- PR8 からの持ち越し：
+- PR8 からの持ち越し（**先頭 3 件は PR9 の必須事項**。レビューで確認済み）：
+  - **必須**：`claim` 時に `started_at` を設定する。永続化層の `claimUnit` は状態だけを更新し、
+    `finishCheckUnit` は `finishedAt` だけを更新するので、このままでは `started_at` が永久に null になる
+  - **必須**：`finishCheckUnit` / `finishRecheckUnit` / `finishRun` の無条件 UPDATE を、
+    安全な状態遷移か条件付き更新に置き換える。停止後に遅れて到着した完了報告が `stopped` を上書きしうる
+  - **必須**：パイプライン結果から DB レコードへ変換する境界で、`mergeKey`・許容語抑制・段落 ID を検証する。
+    永続化層にランタイム検査はなく（`not-found` / `ambiguous` の指摘に `mergeKey` を渡せてしまう、
+    `located` の `paragraph_id` を保存本文から導くのは呼び出し側の責務）、この境界が最後の砦になる
   - 保存済み `TargetPlan[]` を `runPipeline` に渡す口の設計と、`target-planned` イベント。PR8 は `run_targets` を作るところまでで、パイプライン側の入口は触っていない
   - 生成終了の確認と上限付き待機（`recovery-waiting` への遷移）の制御。PR8 は列（`status`、`generation_unconfirmed`）だけ用意した
-  - `mergeKey` / `suppression` を `not-found` / `ambiguous` の指摘に渡せてしまう（永続化層にランタイム検査はなく、呼び出し側の責務）
-  - `started_at` を更新する関数がない（`claimUnit` は状態のみ、`finishCheckUnit` は `finishedAt` のみ）
   - 決定 4 の散文が言う「位置特定失敗の指摘に `recheck_units`（`not-applicable` / `unlocated`）を作る」は `saveUnlocatedCandidate` では行っていない。`disabled`（再確認そのものが無効）と `unlocated` のどちらを書くかは実行の `recheck_enabled` に依存するため PR9 の判断
-  - 決定 15 の「`located` の `paragraph_id` は保存本文から導く」は呼び出し側の責務で、永続化層にランタイム検査はない
-  - `finishCheckUnit` / `finishRecheckUnit` / `finishRun` は状態ガードなしの無条件 UPDATE。停止後に遅れて到着した完了報告が `stopped` を上書きしうる（順序制御は PR9 の責務）
   - `listFindings` が N+1（指摘 1 件につき `reasons` を 1 クエリ）。PR12 の表示要件が固まってから直す
   - 入れ子トランザクション（`insertFinding` / `saveUnlocatedCandidate` が内部で自分の `db.transaction` を開く）は、drizzle + better-sqlite3 の組み合わせで SAVEPOINT として正しく動くことを確認済み（正常完了・ロールバックとも）。PR9 が外側のトランザクションから呼ぶ設計にしてよい
 
