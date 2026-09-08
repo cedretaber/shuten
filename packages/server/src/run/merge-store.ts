@@ -45,7 +45,7 @@ import {
 } from "@shuten/shared";
 
 import type { AppDatabaseLike } from "../db/client.ts";
-import type { CandidateRecord, FindingRecord } from "../db/records.ts";
+import type { FindingRecord } from "../db/records.ts";
 import {
   findFindingByMergeKey,
   insertCandidate,
@@ -86,30 +86,23 @@ export interface MergeCandidateResult {
   readonly created: boolean;
 }
 
-/** グループの `category` 集約：全メンバーの値が一致すればその値、不一致なら `unclear`。 */
+/**
+ * グループの `category` 集約：全メンバーの値が先頭と一致すればその値、不一致なら `unclear`。
+ * `mergeCandidates`（`merge.ts`）の `group.members.every((m) => m.llm.category ===
+ * group.first.llm.category) ? group.first.llm.category : "unclear"` と同じ形にして、
+ * 同一規則であることを目視で照合できるようにしている。
+ */
 function aggregateCategory(categories: readonly FindingCategory[]): FindingCategory {
-  const unique = new Set(categories);
-  if (unique.size !== 1) {
-    return "unclear";
+  const first = categories[0];
+  if (first === undefined) {
+    throw new Error("集約対象の候補が1件もありません（呼び出し側の組み立てミス）");
   }
-  const [only] = unique;
-  return only as FindingCategory;
+  return categories.every((c) => c === first) ? first : "unclear";
 }
 
 /** グループの `initialVerdict` 集約：全メンバーが `likely-error` のときだけ `likely-error`。 */
 function aggregateVerdict(verdicts: readonly InitialVerdict[]): InitialVerdict {
   return verdicts.every((v) => v === "likely-error") ? "likely-error" : "confirm-with-author";
-}
-
-/** 統合先の指摘に現在紐づく全候補から `category` / `initialVerdict` を再計算する。 */
-function recomputeAggregate(members: readonly CandidateRecord[]): {
-  readonly category: FindingCategory;
-  readonly initialVerdict: InitialVerdict;
-} {
-  return {
-    category: aggregateCategory(members.map((m) => m.llm.category)),
-    initialVerdict: aggregateVerdict(members.map((m) => m.llm.verdict)),
-  };
 }
 
 /**
@@ -195,7 +188,15 @@ function createFinding(
   return { finding, created: true };
 }
 
-/** 統合先が見つかったとき：候補を紐づけ、集約・抑制を再計算する。 */
+/**
+ * 統合先が見つかったとき：候補を紐づけ、集約・抑制を再計算する。
+ *
+ * `createFinding` と同じく「検査 → 書き込み」の順序を守る（`assertFindingBoundary` を通す前に
+ * 候補の行を書かない）。そのため、統合先に**既に**紐づく候補（`listCandidatesForFinding`）と、
+ * まだ書き込んでいない今回の候補を合わせて先に集約・抑制を計算し、境界検査を通してから
+ * `insertCandidate` する。DB 往復は増えない（元々「挿入 → 読み直し」だった 2 回のアクセスが
+ * 「読み出し → 挿入」の順に入れ替わるだけ）。
+ */
 function attachToFinding(
   db: AppDatabaseLike,
   input: MergeCandidateInput,
@@ -205,23 +206,17 @@ function attachToFinding(
   const { candidate } = input;
   const range = candidate.locate.range;
 
-  insertCandidate(db, {
-    id: candidate.id,
-    runId: input.runId,
-    checkUnitId: input.checkUnitId,
-    findingId: existing.id,
-    candidateIndex: input.candidateIndex,
-    llm: candidate.llm,
-    locateStatus: "located",
-    range,
-    mergeKey: key,
-    createdAt: input.now,
-  });
-
-  // 統合先に紐づく全候補（今挿入した分を含む）を読み直して畳み込む。到着順や既存の集約値には
-  // 依存しない（モジュール先頭のコメント参照）。
-  const members = listCandidatesForFinding(db, existing.id);
-  const { category, initialVerdict } = recomputeAggregate(members);
+  // 到着順や既存の集約値（DB に保存された 1 スカラー値）には依存しない（モジュール先頭の
+  // コメント参照）。まだ書き込んでいない今回の候補も加えて畳み込む。
+  const existingMembers = listCandidatesForFinding(db, existing.id);
+  const category = aggregateCategory([
+    ...existingMembers.map((m) => m.llm.category),
+    candidate.llm.category,
+  ]);
+  const initialVerdict = aggregateVerdict([
+    ...existingMembers.map((m) => m.llm.verdict),
+    candidate.llm.verdict,
+  ]);
   const suppression = findSuppression(
     { category, quote: existing.quote, suggestion: existing.suggestion },
     input.allowedWords,
@@ -241,6 +236,19 @@ function attachToFinding(
     suppression,
   };
   assertFindingBoundary(boundary, input.body, input.paragraphs);
+
+  insertCandidate(db, {
+    id: candidate.id,
+    runId: input.runId,
+    checkUnitId: input.checkUnitId,
+    findingId: existing.id,
+    candidateIndex: input.candidateIndex,
+    llm: candidate.llm,
+    locateStatus: "located",
+    range,
+    mergeKey: key,
+    createdAt: input.now,
+  });
 
   updateFindingAggregate(db, existing.id, { category, initialVerdict });
   updateFindingSuppression(db, existing.id, suppression);

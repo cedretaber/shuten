@@ -10,10 +10,11 @@ import {
   listCandidatesForFinding,
   listFindings,
 } from "../db/repositories/findings.ts";
-import { findJudgment, listJudgments } from "../db/repositories/judgments.ts";
+import { findJudgment, listJudgments, setJudgment } from "../db/repositories/judgments.ts";
 import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { insertRun, insertRunTarget } from "../db/repositories/runs.ts";
 import { type MergeCandidateInput, mergeCandidateIntoRun } from "./merge-store.ts";
+import { PersistBoundaryError } from "./persist.ts";
 
 // 単一段落（改行なし）の本文。範囲 [0,2)/[2,4)/[4,6)/[6,8)/[8,10)/[10,14) を候補の引用に使う。
 const BODY = "あいうえおかきくけこAねこB";
@@ -326,16 +327,34 @@ describe("run/merge-store", () => {
     const first = mergeCandidateIntoRun(db, makeInput(base, c1, 0));
     expect(first.created).toBe(true);
 
+    // 作者が実際に採否を記録した状態を作る（仕様 5.4「再確認や統合は作者の採否を上書きしない」）。
+    // 統合のたびに judgments 行を undecided に初期化し直すバグは、行が最初から undecided の
+    // ままだと（1回目の insertFinding が作る初期値と区別が付かず）検出できない。加えて
+    // updatedAt も 1 回目の insertFinding と別の値にし、「同じ Date で上書きし直す」バグも検出する。
+    setJudgment(db, first.finding.id, {
+      status: "adopt-planned",
+      note: "作者のメモ",
+      updatedAt: new Date("2026-09-09T01:00:00.000Z"),
+    });
     const before = findJudgment(db, first.finding.id);
-    expect(before).not.toBeNull();
+    expect(before).toEqual({
+      findingId: first.finding.id,
+      status: "adopt-planned",
+      note: "作者のメモ",
+      updatedAt: new Date("2026-09-09T01:00:00.000Z"),
+    });
 
     // 同じ mergeKey・category が食い違う候補を追加する（集約は変わるが judgments には触れない）。
+    // now も 1 回目と別の値にする（同じ固定 Date だと初期化し直すバグと偶然一致しうるため）。
     const c2 = makeCandidate(
       "c2",
       { start: 0, end: 2 },
       { category: "grammar", suggestion: "訂正" },
     );
-    const second = mergeCandidateIntoRun(db, makeInput(base, c2, 1));
+    const second = mergeCandidateIntoRun(
+      db,
+      makeInput(base, c2, 1, { now: new Date("2026-09-09T02:00:00.000Z") }),
+    );
     expect(second.created).toBe(false);
     expect(second.finding.id).toBe(first.finding.id);
     // 集約は実際に変わっている（category が unclear になる）ことを確認し、
@@ -344,6 +363,9 @@ describe("run/merge-store", () => {
 
     const after = findJudgment(db, first.finding.id);
     expect(after).toEqual(before);
+    expect(after?.status).toBe("adopt-planned");
+    expect(after?.note).toBe("作者のメモ");
+    expect(after?.updatedAt).toEqual(new Date("2026-09-09T01:00:00.000Z"));
     expect(listJudgments(db, run.id)).toHaveLength(1);
     close();
   });
@@ -365,6 +387,57 @@ describe("run/merge-store", () => {
     expect(listFindings(db, run.id)).toHaveLength(0);
     expect(listCandidates(db, run.id)).toHaveLength(0);
     expect(listJudgments(db, run.id)).toHaveLength(0);
+    close();
+  });
+
+  it("新規指摘の作成時：paragraphId が range から導いた値と食い違うと PersistBoundaryError になり、何も書き込まれない", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const { run, target, checkUnit } = setupRun(db, "r1", "t1", "cu1");
+    const base = { runId: run.id, targetId: target.id, checkUnitId: checkUnit.id };
+
+    // BODY は単一段落（id 0）。range.start = 0 から導かれる段落 ID は 0 なので、99 は明らかに食い違う。
+    const c1 = makeCandidate("c1", { start: 0, end: 2 }, { suggestion: "訂正" });
+    expect(() => mergeCandidateIntoRun(db, makeInput(base, c1, 0, { paragraphId: 99 }))).toThrow(
+      PersistBoundaryError,
+    );
+
+    expect(listFindings(db, run.id)).toHaveLength(0);
+    expect(listCandidates(db, run.id)).toHaveLength(0);
+    close();
+  });
+
+  it("既存指摘への統合時：paragraphId が食い違うと PersistBoundaryError になり、候補は書き込まれない（検査 → 書き込みの順序を守る）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const { run, target, checkUnit } = setupRun(db, "r1", "t1", "cu1");
+    const base = { runId: run.id, targetId: target.id, checkUnitId: checkUnit.id };
+
+    const c1 = makeCandidate(
+      "c1",
+      { start: 0, end: 2 },
+      { category: "notation", suggestion: "訂正" },
+    );
+    const first = mergeCandidateIntoRun(db, makeInput(base, c1, 0));
+    expect(first.created).toBe(true);
+    expect(listCandidatesForFinding(db, first.finding.id)).toHaveLength(1);
+
+    // 同じ mergeKey（range・quote・suggestion 完全一致）だが paragraphId だけ間違えて渡す。
+    // insertCandidate → assertFindingBoundary の順（検査より先に書き込む）だと、この検査は
+    // 例外発生後に候補が既に書き込まれた状態を見逃す。検査 → 書き込みの順を守っていれば、
+    // 例外発生時に候補は書き込まれない。
+    const c2 = makeCandidate(
+      "c2",
+      { start: 0, end: 2 },
+      { category: "notation", suggestion: "訂正" },
+    );
+    expect(() => mergeCandidateIntoRun(db, makeInput(base, c2, 1, { paragraphId: 99 }))).toThrow(
+      PersistBoundaryError,
+    );
+
+    const members = listCandidatesForFinding(db, first.finding.id);
+    expect(members).toHaveLength(1);
+    expect(members.map((c) => c.id)).toEqual(["c1"]);
     close();
   });
 
