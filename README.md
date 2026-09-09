@@ -26,7 +26,9 @@ scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は
 個別再試行・起動時照合（バックエンド再起動後の状態整合）が関数として呼べる形で動く。受け入れ条件のうち
 11 節 3・4・5・11・14・15・16・18 項をサーバー側で満たした（画面がまだ無いため、利用者が実際に触って
 確認できるのは PR11・PR12 の完了後）。詳細計画は `docs/plans/2026-09-09-pr9-orchestration.md`（決定 1〜23）
-と `docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）。次は PR10（HTTP API と SSE）。
+と `docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）。次は PR10（HTTP API と SSE。
+詳細計画 `docs/plans/2026-09-09-pr10-http-api.md`）。2026-09-09 に残りの工程を見直し、PR11b・PR12a/12b・PR13a/13b に
+分け直した（ロードマップの「2026-09-09 の見直し」節）。評価原稿と正解データの準備は並行して進める。
 
 ## 技術スタック
 
