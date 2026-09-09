@@ -30,7 +30,13 @@ import type { RunStatus, UnitStatus } from "../run/status.ts";
 export type CandidateLocateStatus = "located" | "not-found" | "ambiguous" | "outside-target";
 export type FindingLocateStatus = "located" | "not-found" | "ambiguous";
 
-/** `runs.stop_reason`。`../run/result.ts` の `StopReason` と値は同じだが、独立させて持つ。 */
+/**
+ * `runs.stop_reason`。`../run/result.ts` の `StopReason` と値は同じだが、独立させて持つ。
+ *
+ * `backend-restarted` は `run/result.ts` の `StopReason` には無い（決定 13・40）。起動時照合
+ * （`reconcileOnStartup`）は executor の halt を経由せずに直接この値を書くので、halt 由来の
+ * `StopReason` に足す必要が無い。
+ */
 export type RunStopReason =
   | "model-not-loaded"
   | "recovery-needed"
@@ -38,7 +44,8 @@ export type RunStopReason =
   | "settings"
   | "aborted"
   | "internal-error"
-  | "recovery-blocked";
+  | "recovery-blocked"
+  | "backend-restarted";
 
 /** `recheck_units.not_applicable_reason`。仕様書 6.5 節。 */
 export type RecheckNotApplicableReason = "disabled" | "suppressed" | "unlocated";

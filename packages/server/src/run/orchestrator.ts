@@ -37,12 +37,7 @@ import {
 import type { AppDatabase, AppDatabaseLike } from "../db/client.ts";
 import { isUniqueConstraintViolation } from "../db/errors.ts";
 import { createId as createIdDefault } from "../db/ids.ts";
-import type {
-  ManuscriptVersionRecord,
-  RunRecord,
-  RunStopReason,
-  UnitFailureRecord,
-} from "../db/records.ts";
+import type { ManuscriptVersionRecord, RunRecord, UnitFailureRecord } from "../db/records.ts";
 import { findCheckUnit, insertCheckUnit, listCheckUnits } from "../db/repositories/check-units.ts";
 import { findManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { findRecheckUnit, listRecheckUnits } from "../db/repositories/rechecks.ts";
@@ -894,16 +889,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
       }
 
-      // stop_reason の選び方（判断に迷った点。task-9-report.md に詳細）：
-      // - hadRunning（recovery-waiting）→ "recovery-needed"。決定 23 の表にある既存の意味
-      //   「生成終了を確認できない」がそのまま当てはまる。
-      // - !hadRunning（stopped）→ "internal-error"。ユーザーの停止操作ではなくプロセスの
-      //   予期しない終了によるものという点で決定 14 の internal-error と性質が同じだが、専用の
-      //   値ではない代替。`stop_message` で「バックエンドが終了しました」と区別する。
+      // stop_reason はレビュー裁定（R-1）どおり、両分岐とも専用の "backend-restarted" を使う。
+      // "internal-error" は「想定外の例外」の意味（決定 14）なので、正常な起動処理である
+      // 起動時照合の結果に流用しない。"recovery-needed" は決定 23 の表で「生成のハード上限超過」
+      // という発生源にすでに割り当て済みで、混ぜると発生源の手がかりが失われる。
+      // recovery-waiting 側と stopped 側の区別は status・generationUnconfirmed・stopMessage が
+      // すでに担っているので、stop_reason は 1 つで足りる。
       const ok = finishRunChecked(tx, runId, {
         expectedStatus: "running",
         status: hadRunning ? "recovery-waiting" : "stopped",
-        stopReason: hadRunning ? "recovery-needed" : "internal-error",
+        stopReason: "backend-restarted",
         stopMessage: hadRunning ? RECONCILE_RECOVERY_MESSAGE : RECONCILE_STOPPED_MESSAGE,
         generationUnconfirmed: hadRunning,
         finishedAt,
@@ -964,7 +959,11 @@ interface PlannedTarget {
  * `InvalidChunkSettingsError`）では null。
  */
 interface StartStop {
-  readonly reason: RunStopReason;
+  // planStart（開始時の計算）が作る停止理由は "settings" だけ（決定 18・44）。RunStopReason 全体
+  // ではなく実際に使う値だけに絞る：`RunStopReason` に起動時照合専用の値（"backend-restarted"）を
+  // 足したときに、この型を経由する run-settled イベントの `stop.reason`（`StopReason`）との
+  // 互換性が壊れないようにするため。
+  readonly reason: "settings";
   readonly message: string;
   readonly failure: UnitFailureRecord | null;
 }
