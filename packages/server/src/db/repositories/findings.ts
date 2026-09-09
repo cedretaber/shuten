@@ -214,6 +214,26 @@ export function listFindings(db: AppDatabaseLike, runId: string): FindingWithRea
   return rows.map((row) => toFindingWithReasons(db, row));
 }
 
+/**
+ * 検査対象に属する指摘を列挙する（決定 38）。`listFindings` と同じ並び（`start` が null のものを
+ * 最後に、`start` 昇順、同順位は `created_at` → `id`）を `target_id` で絞ったもの。
+ * `listFindings` と異なり `reasons` は含まない（再確認の起票が `FindingRecord` だけを要る。決定 34）。
+ */
+export function listFindingsForTarget(db: AppDatabaseLike, targetId: string): FindingRecord[] {
+  const rows = db
+    .select()
+    .from(findings)
+    .where(eq(findings.targetId, targetId))
+    .orderBy(
+      sql`${findings.start} is null`,
+      asc(findings.start),
+      asc(findings.createdAt),
+      asc(findings.id),
+    )
+    .all();
+  return rows.map(rowToFindingRecord);
+}
+
 /** 指摘を ID で 1 件探す。見つからなければ null。 */
 export function findFinding(db: AppDatabaseLike, id: string): FindingWithReasons | null {
   const row = db.select().from(findings).where(eq(findings.id, id)).get();
@@ -364,6 +384,43 @@ export function listCandidatesForFinding(
     .orderBy(asc(candidates.candidateIndex))
     .all();
   return rows.map(rowToCandidateRecord);
+}
+
+/**
+ * 指摘に紐づく元候補を、観点（`check_units.perspective`）を添えて `candidate_index` の昇順で返す
+ * （決定 38）。`candidates` 表は観点を持たない（`check_unit_id` しか持たない）ため、
+ * `check_units` と結合して観点を導く（`listReasons` と同じ結合）。
+ * `run/persist.ts` の `mergedFindingFromRecords` が `MergedFinding.sources`（`LocatedCandidate[]`。
+ * 各候補の観点が要る）を組み立てるのに使う。
+ */
+export function listCandidateSourcesForFinding(
+  db: AppDatabaseLike,
+  findingId: string,
+): ReadonlyArray<{ readonly candidate: CandidateRecord; readonly perspective: Perspective }> {
+  const rows = db
+    .select({
+      id: candidates.id,
+      runId: candidates.runId,
+      checkUnitId: candidates.checkUnitId,
+      findingId: candidates.findingId,
+      candidateIndex: candidates.candidateIndex,
+      llm: candidates.llm,
+      locateStatus: candidates.locateStatus,
+      start: candidates.start,
+      end: candidates.end,
+      mergeKey: candidates.mergeKey,
+      createdAt: candidates.createdAt,
+      perspective: checkUnits.perspective,
+    })
+    .from(candidates)
+    .innerJoin(checkUnits, eq(candidates.checkUnitId, checkUnits.id))
+    .where(eq(candidates.findingId, findingId))
+    .orderBy(asc(candidates.candidateIndex))
+    .all();
+  return rows.map((row) => ({
+    candidate: rowToCandidateRecord(row),
+    perspective: row.perspective,
+  }));
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { Range } from "@shuten/shared";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 
+import type { ModelInfo } from "../../lmstudio/types.ts";
 import type { GenerationSettings } from "../../prompts/types.ts";
 import type { RunStatus } from "../../run/status.ts";
 import type { AppDatabaseLike } from "../client.ts";
@@ -172,14 +173,79 @@ export function toGenerationSettings(record: RunRecord): GenerationSettings {
 /**
  * 状態の条件付き更新（決定 14）。`status` が `from` のときだけ `to` に更新し、成功したら true を返す。
  * 状態以外の列は変えない。同一処理の同時取得・実行を防ぐために使う。
+ *
+ * `options.clearStopState` が true のとき、状態の更新と**同じ 1 文の UPDATE** で次の 5 列を
+ * null（`generationUnconfirmed` は false）にする（決定 36）。2 文に分けないのは、途中でプロセスが
+ * 落ちた場合に「実行中なのに停止済みに見える」行が残るため（`check-units.ts` の `claimUnit` が
+ * `started_at` を同じ 1 文で設定するのと同じ理由）。再開・再試行（`run/transitions.ts` の
+ * `claimRunChecked`）が使う。`from` に一致しない行はこれらの列も含め 1 列も変わらない。
+ *
+ * - `stop_requested_at` → null（決定 21）
+ * - `generation_unconfirmed` → false
+ * - `finished_at` → null
+ * - `stop_reason` / `stop_message` → null（前回の停止の記録）
  */
-export function claimRun(db: AppDatabaseLike, id: string, from: RunStatus, to: RunStatus): boolean {
+export function claimRun(
+  db: AppDatabaseLike,
+  id: string,
+  from: RunStatus,
+  to: RunStatus,
+  options?: { readonly clearStopState?: boolean },
+): boolean {
   const result = db
     .update(runs)
-    .set({ status: to })
+    .set(
+      options?.clearStopState
+        ? {
+            status: to,
+            stopRequestedAt: null,
+            generationUnconfirmed: false,
+            finishedAt: null,
+            stopReason: null,
+            stopMessage: null,
+          }
+        : { status: to },
+    )
     .where(and(eq(runs.id, id), eq(runs.status, from)))
     .run();
   return result.changes === 1;
+}
+
+/**
+ * 停止要求を受けた時刻を記録する（決定 21・決定 36）。`runs.status` には触れない
+ * （停止要求を受けた時点でも実行は `running` のまま。実際に打ち切るのはループ側）。
+ */
+export function setStopRequestedAt(db: AppDatabaseLike, id: string, at: Date): void {
+  db.update(runs).set({ stopRequestedAt: at }).where(eq(runs.id, id)).run();
+}
+
+/**
+ * `model_info` が null の行だけを更新する条件付き UPDATE（決定 30）。
+ *
+ * `RunRecord.modelInfo` は「最初の `ensureLoaded` 成功で 1 度だけ書く」対象なので、2 度目以降の
+ * 呼び出し（すでに `model_info` が非 null の行）では何も更新しない。`WHERE model_info IS NULL`
+ * を条件に含めることで、呼び出し側が「初回かどうか」を別途判定しなくても安全に呼べる。
+ */
+export function updateRunModelInfo(db: AppDatabaseLike, id: string, info: ModelInfo): void {
+  db.update(runs)
+    .set({ modelInfo: info })
+    .where(and(eq(runs.id, id), isNull(runs.modelInfo)))
+    .run();
+}
+
+/**
+ * 指定した状態のいずれかに一致する検査実行を列挙する（決定 39・40）。
+ * 起動時照合は `running` を、復旧ゲートの復元は `recovery-waiting` を読む。
+ * 並びは `started_at` の昇順、同順位は `id` で安定させる。
+ */
+export function listRunsByStatus(db: AppDatabaseLike, statuses: readonly RunStatus[]): RunRecord[] {
+  const rows = db
+    .select()
+    .from(runs)
+    .where(inArray(runs.status, statuses))
+    .orderBy(asc(runs.startedAt), asc(runs.id))
+    .all();
+  return rows.map(rowToRunRecord);
 }
 
 /** `finishRun` の入力。 */

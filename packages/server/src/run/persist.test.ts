@@ -1,14 +1,16 @@
+import type { LlmFinding } from "@shuten/shared";
 import { splitParagraphs } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
 
 import { MalformedBodyError } from "../db/errors.ts";
-import type { RunTargetRecord } from "../db/records.ts";
+import type { CandidateRecord, FindingRecord, RunTargetRecord } from "../db/records.ts";
 import {
   assertFindingBoundary,
   assertUnlocatedFindingBoundary,
   checkInputFromTargetRecord,
   deriveParagraphId,
   type FindingBoundaryInput,
+  mergedFindingFromRecords,
   PersistBoundaryError,
   type UnlocatedFindingBoundaryInput,
 } from "./persist.ts";
@@ -218,5 +220,136 @@ describe("checkInputFromTargetRecord", () => {
     expect(input.target).toEqual({ index: 2, range: { start: 10, end: 20 }, paragraphIds: [1, 2] });
     expect(input.context).toEqual({ before: contextBefore, after: contextAfter });
     expect(input.inputRange).toEqual({ start: 0, end: 30 });
+  });
+});
+
+describe("mergedFindingFromRecords", () => {
+  function makeLlm(overrides: Partial<LlmFinding> = {}): LlmFinding {
+    return {
+      paragraphId: 0,
+      quote: "誤字",
+      before: "",
+      after: "",
+      category: "notation",
+      reason: "理由",
+      suggestion: "修正案",
+      verdict: "likely-error",
+      ...overrides,
+    };
+  }
+
+  /** 位置確定済みの指摘（保存済みの集約値を持つ）。各テストはここから 1 項目だけ崩す。 */
+  const LOCATED_FINDING: FindingRecord = {
+    id: "f1",
+    runId: "r1",
+    manuscriptVersionId: "mv1",
+    targetId: "t1",
+    locateStatus: "located",
+    range: { start: 0, end: 2 },
+    paragraphId: 0,
+    quote: "誤字",
+    suggestion: "修正案",
+    category: "notation",
+    initialVerdict: "confirm-with-author",
+    mergeKey: "mk",
+    suppression: null,
+    createdAt: new Date("2026-09-09T00:00:00.000Z"),
+  };
+
+  function makeCandidate(overrides: Partial<CandidateRecord> = {}): CandidateRecord {
+    return {
+      id: "c1",
+      runId: "r1",
+      checkUnitId: "cu1",
+      findingId: "f1",
+      candidateIndex: 0,
+      llm: makeLlm(),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "mk",
+      createdAt: new Date("2026-09-09T00:00:00.000Z"),
+      ...overrides,
+    };
+  }
+
+  it("保存済みの集約値（category・quote・suggestion・range・verdict）をそのまま使い、候補側の値では上書きしない（再計算しない）", () => {
+    // 候補の llm.category / llm.quote / llm.suggestion をわざと指摘と食い違わせ、
+    // 出力が指摘（保存済みの集約値）側であって候補側ではないことを確認する。
+    const candidateWithDifferentValues = makeCandidate({
+      llm: makeLlm({ category: "grammar", quote: "候補側の引用", suggestion: "候補側の修正案" }),
+    });
+
+    const merged = mergedFindingFromRecords(LOCATED_FINDING, [
+      { candidate: candidateWithDifferentValues, perspective: "typo" },
+    ]);
+
+    expect(merged.id).toBe("f1");
+    expect(merged.range).toEqual({ start: 0, end: 2 });
+    expect(merged.quote).toBe("誤字"); // 指摘側の quote（候補側の "候補側の引用" ではない）
+    expect(merged.category).toBe("notation"); // 指摘側の category（候補側の "grammar" ではない）
+    expect(merged.suggestion).toBe("修正案"); // 指摘側の suggestion
+    expect(merged.verdict).toBe("confirm-with-author"); // 指摘側の initialVerdict
+  });
+
+  it("sources は各候補の id・観点・llm・located の locate をそのまま並べる（入力順）", () => {
+    const candidate1 = makeCandidate({
+      id: "c-typo",
+      llm: makeLlm({ reason: "誤字観点の理由" }),
+      range: { start: 0, end: 2 },
+    });
+    const candidate2 = makeCandidate({
+      id: "c-naturalness",
+      llm: makeLlm({ reason: "自然さ観点の理由" }),
+      range: { start: 0, end: 2 },
+    });
+
+    const merged = mergedFindingFromRecords(LOCATED_FINDING, [
+      { candidate: candidate1, perspective: "typo" },
+      { candidate: candidate2, perspective: "naturalness" },
+    ]);
+
+    expect(merged.sources).toEqual([
+      {
+        id: "c-typo",
+        perspective: "typo",
+        llm: candidate1.llm,
+        locate: { status: "located", range: { start: 0, end: 2 } },
+      },
+      {
+        id: "c-naturalness",
+        perspective: "naturalness",
+        llm: candidate2.llm,
+        locate: { status: "located", range: { start: 0, end: 2 } },
+      },
+    ]);
+  });
+
+  it("locateStatus が located でない指摘には使えない（PersistBoundaryError）", () => {
+    const unlocatedFinding: FindingRecord = {
+      ...LOCATED_FINDING,
+      locateStatus: "not-found",
+      range: null,
+      mergeKey: null,
+    };
+    expect(() => mergedFindingFromRecords(unlocatedFinding, [])).toThrow(PersistBoundaryError);
+  });
+
+  it("locateStatus が located でも range が null（不変条件が壊れた行）なら PersistBoundaryError", () => {
+    const brokenFinding: FindingRecord = { ...LOCATED_FINDING, range: null };
+    expect(() => mergedFindingFromRecords(brokenFinding, [])).toThrow(PersistBoundaryError);
+  });
+
+  it("候補側の range が null（located のはずなのに不変条件が壊れている）なら PersistBoundaryError", () => {
+    const brokenCandidate = makeCandidate({ range: null });
+    expect(() =>
+      mergedFindingFromRecords(LOCATED_FINDING, [
+        { candidate: brokenCandidate, perspective: "typo" },
+      ]),
+    ).toThrow(PersistBoundaryError);
+  });
+
+  it("sources が空配列でも組み立てられる（起票の下準備段階など）", () => {
+    const merged = mergedFindingFromRecords(LOCATED_FINDING, []);
+    expect(merged.sources).toEqual([]);
   });
 });

@@ -13,8 +13,10 @@ import {
   findFinding,
   insertCandidate,
   insertFinding,
+  listCandidateSourcesForFinding,
   listCandidates,
   listFindings,
+  listFindingsForTarget,
   nextCandidateIndex,
   saveUnlocatedCandidate,
   type UnlocatedLocateResult,
@@ -989,6 +991,201 @@ describe("db/repositories/findings", () => {
     expect(nextCandidateIndex(db, run2.id)).toBe(2);
     // run2 側の書き込みは run1 の採番に影響しない。
     expect(nextCandidateIndex(db, run1.id)).toBe(1);
+    close();
+  });
+
+  it("listFindingsForTarget は listFindings と同じ並びを target_id で絞って返す（決定 38）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+    const target2 = insertRunTarget(db, {
+      id: "t2",
+      runId: run.id,
+      targetIndex: 1,
+      target: { start: 10, end: 20 },
+      contextBefore: null,
+      contextAfter: null,
+      input: { start: 10, end: 20 },
+      paragraphIds: [1],
+    });
+
+    // t1 に位置特定失敗（start null）と位置確定済み（start 昇順の逆順で作る）を混ぜる。
+    insertFinding(db, {
+      id: "f-t1-located-2",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 5, end: 7 },
+      paragraphId: 0,
+      quote: "誤字2",
+      suggestion: null,
+      category: "grammar",
+      initialVerdict: "confirm-with-author",
+      mergeKey: null,
+      suppression: null,
+    });
+    insertFinding(db, {
+      id: "f-t1-located-1",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字1",
+      suggestion: null,
+      category: "grammar",
+      initialVerdict: "confirm-with-author",
+      mergeKey: null,
+      suppression: null,
+    });
+    insertFinding(db, {
+      id: "f-t1-unlocated",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "not-found",
+      range: null,
+      paragraphId: 0,
+      quote: "見つからない",
+      suggestion: null,
+      category: "grammar",
+      initialVerdict: "confirm-with-author",
+      mergeKey: null,
+      suppression: null,
+    });
+    // t2 の指摘は listFindingsForTarget(db, target.id) の結果に含まれてはならない。
+    insertFinding(db, {
+      id: "f-t2",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target2.id,
+      locateStatus: "located",
+      range: { start: 12, end: 14 },
+      paragraphId: 1,
+      quote: "別対象",
+      suggestion: null,
+      category: "grammar",
+      initialVerdict: "confirm-with-author",
+      mergeKey: null,
+      suppression: null,
+    });
+
+    const forTarget = listFindingsForTarget(db, target.id);
+    // start 昇順（0, 5）の後に start null（unlocated）が最後に来る（listFindings と同じ並び）。
+    expect(forTarget.map((f) => f.id)).toEqual([
+      "f-t1-located-1",
+      "f-t1-located-2",
+      "f-t1-unlocated",
+    ]);
+
+    // listFindings（run 全体）は対象をまたいで start 昇順に並べる。f-t2（start: 12）は
+    // 非 null なので、null（f-t1-unlocated）より前、start 5 の後に来る。
+    const all = listFindings(db, run.id);
+    expect(all.map((f) => f.id)).toEqual([
+      "f-t1-located-1",
+      "f-t1-located-2",
+      "f-t2",
+      "f-t1-unlocated",
+    ]);
+
+    expect(listFindingsForTarget(db, target2.id).map((f) => f.id)).toEqual(["f-t2"]);
+    close();
+  });
+
+  it("listFindingsForTarget: 指摘のない対象には空配列を返す", () => {
+    const { db, close } = setupDb();
+    const { target } = setupTargets(db);
+    expect(listFindingsForTarget(db, target.id)).toEqual([]);
+    close();
+  });
+
+  it("listCandidateSourcesForFinding は指摘に統合された候補を candidate_index 昇順で返し、観点を check_units から引く（決定 38）", () => {
+    const { db, close } = setupDb();
+    const { run, target, typoUnit, naturalnessUnit } = setupTargets(db);
+
+    const finding = insertFinding(db, {
+      id: "f1",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字",
+      suggestion: "修正案",
+      category: "notation",
+      initialVerdict: "confirm-with-author",
+      mergeKey: null,
+      suppression: null,
+    });
+
+    // ID の辞書順（c-a < c-b）と candidate_index の順（c-b が 0、c-a が 1）をわざと逆にする
+    // （`listCandidates` のテストと同じ姿勢：orderBy の取り違えを検出できるように）。
+    insertCandidate(db, {
+      id: "c-a",
+      runId: run.id,
+      checkUnitId: naturalnessUnit.id,
+      findingId: finding.id,
+      candidateIndex: 1,
+      llm: makeLlm({ reason: "2番目・自然さ観点" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "mk",
+    });
+    insertCandidate(db, {
+      id: "c-b",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: finding.id,
+      candidateIndex: 0,
+      llm: makeLlm({ reason: "1番目・誤字観点" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "mk",
+    });
+    // 別の指摘に属する候補は結果に含まれない。
+    insertCandidate(db, {
+      id: "c-other",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 2,
+      llm: makeLlm({ reason: "無関係" }),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+
+    const sources = listCandidateSourcesForFinding(db, finding.id);
+    expect(sources.map((s) => s.candidate.id)).toEqual(["c-b", "c-a"]);
+    expect(sources.map((s) => s.perspective)).toEqual(["typo", "naturalness"]);
+    expect(sources.map((s) => s.candidate.llm.reason)).toEqual([
+      "1番目・誤字観点",
+      "2番目・自然さ観点",
+    ]);
+    close();
+  });
+
+  it("listCandidateSourcesForFinding: 候補のない指摘には空配列を返す", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupTargets(db);
+    const finding = insertFinding(db, {
+      id: "f-empty",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字",
+      suggestion: null,
+      category: "grammar",
+      initialVerdict: "confirm-with-author",
+      mergeKey: null,
+      suppression: null,
+    });
+    expect(listCandidateSourcesForFinding(db, finding.id)).toEqual([]);
     close();
   });
 });
