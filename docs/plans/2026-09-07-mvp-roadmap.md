@@ -1,7 +1,7 @@
 # MVP 実装ロードマップ（PR 単位）
 
 作成日：2026-09-07  
-仕様：`docs/spec/mvp-spec.md`（v0.8）  
+仕様：`docs/spec/mvp-spec.md`（v0.9）  
 前提：`docs/reference/invariants.md`、`docs/decisions/0001`〜`0003`
 
 本書は MVP を PR 単位に分解し、各 PR の範囲、対応する仕様の節、ファイル、インターフェース、テスト、担当を定める。
@@ -406,21 +406,22 @@ PR9b はその上に永続化・再開・キュー管理を加える。
 - 担当：Claude が状態機械と実装（委譲しない）、qwen がテストの雛形
 - 大きさ：中
 
-#### PR9b：完成したオーケストレーター（未着手）
+#### PR9b：完成したオーケストレーター（完了）
 
-- PR8 からの持ち越し（**先頭 3 件は PR9a で対応済み**。レビューで確認済み）：
+- 詳細計画：`docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降。決定 1〜23 は PR9a と共通の `docs/plans/2026-09-09-pr9-orchestration.md`）
+- PR8 からの持ち越し（**すべて対応済み**。レビューで確認済み）：
   - **対応済み（PR9a）**：`claim` 時に `started_at` を設定する
   - **対応済み（PR9a）**：`finishCheckUnit` / `finishRecheckUnit` / `finishRun` の無条件 UPDATE を、
     安全な状態遷移か条件付き更新に置き換える
   - **対応済み（PR9a）**：パイプライン結果から DB レコードへ変換する境界で、`mergeKey`・許容語抑制・段落 ID を検証する
-  - 保存済み `TargetPlan[]` を渡す口の設計と、`target-planned` イベント。PR8 は `run_targets` を作るところまでで、パイプライン側の入口は触っていない
-  - 生成終了の確認と上限付き待機（`recovery-waiting` への遷移）の制御。PR8 は列（`status`、`generation_unconfirmed`）だけ用意した
-  - 位置特定失敗の指摘に `recheck_units`（`not-applicable` / `unlocated`）を作ること。`saveUnlocatedCandidate` では行っていない
-  - `listFindings` が N+1（指摘 1 件につき `reasons` を 1 クエリ）。PR12 の表示要件が固まってから直す
-  - 入れ子トランザクションが SAVEPOINT として正しく動くことは確認済み。PR9b が外側のトランザクションから呼ぶ設計にしてよい
+  - **対応済み（PR9b）**：保存済み `TargetPlan[]` を渡す口の設計と、`target-planned` イベント
+  - **対応済み（PR9b）**：生成終了の確認と上限付き待機（`recovery-waiting` への遷移）の制御
+  - **対応済み（PR9b）**：位置特定失敗の指摘に `recheck_units`（`not-applicable` / `unlocated`）を作ること
+  - `listFindings` が N+1（指摘 1 件につき `reasons` を 1 クエリ）。PR12 の表示要件が固まってから直す（未対応のまま持ち越し）
+  - 入れ子トランザクションが SAVEPOINT として正しく動くことは確認済み。PR9b は外側のトランザクションから呼ぶ設計にした
 
 - 仕様：6（処理順序）、6.4（観点の一部失敗）、7（未ロード、再試行 1 回）、8.2 全体
-- 作る：`server/src/run/orchestrator.ts`（実行の開始・停止・再開・失敗単位の個別再試行、単位駆動ループ）、
+- 作った：`server/src/run/orchestrator.ts`（実行の開始・停止・再開・失敗単位の個別再試行、単位駆動ループ）、
   `run/recovery.ts`（生成終了の確認と上限付き待機）、`index.ts` への起動時照合（`reconcileOnStartup`）の組み込み
 - 規則：
   - 開始は常に新しい実行 ID。再開は既存 ID。二重送信は要求の同一性（実行 ID、開始操作の識別子）で判定
@@ -430,15 +431,27 @@ PR9b はその上に永続化・再開・キュー管理を加える。
   - 停止は新規送信を止める。実行中の要求は上限内なら自然な完了を待ち、上限を超えたら abort して `recovery-waiting`
   - 自動再試行は各処理 1 回。完了済みは再開で繰り返さない。失敗単位の個別再試行
   - 分割範囲は開始時に計算して保存し、再開時は保存済みを使う
-  - `checkMs` の意味の改訂（遅延通知の閾値になる。ハード上限は `checkMs + recoveryConfirmMs`）を仕様書に反映し、
-    版を上げて 15 節の改訂記録に追記する（同じコミットに含める）
+  - `checkMs` の意味の改訂（オーケストレーター経路では遅延通知の閾値になり、ハード上限は
+    `checkMs + recoveryConfirmMs`。`runPipeline`（CLI）は従来どおり `checkMs` がハード上限）を
+    仕様書に反映し、版を v0.9 に上げて 15 節の改訂記録に追記した（同じコミットに含める）
 - テスト：モッククライアントでの状態遷移（開始、停止、再開、復旧待ち、部分失敗、再起動後の再開）、同じ開始要求の重複、起動時照合
-- 受け入れ条件：11 節 3・4・5・11・14・15・16・18 項（すべて PR9b の完了時に満たす）
+- 受け入れ条件：11 節 3・4・5・11・14・15・16・18 項（PR9b の完了で達成。表示は PR11・PR12 待ち）
 - 担当：Claude が状態機械と実装（委譲しない）、qwen がテストの雛形
 - 大きさ：大
+- PR9b の実施で分かったことは PR10 への持ち越しとして記録した（`RunRecord` が接続先 URL を持つ内部
+  API であること、応答未受信のまま接続が切れた検査単位が `failed` のまま残り復旧に 2 段の操作が要る
+  ことなど）。詳細は次項「PR10 server：HTTP API と SSE」の「PR9b からの持ち越し」を参照
 
 ### PR10 server：HTTP API と SSE
 
+- PR9b からの持ち越し：
+  - **`RunRecord` は接続先 URL（`endpointUrl`）を持つ内部 API である。** `startRun` などが返す
+    `RunRecord` を HTTP 応答にそのまま流してはならず、接続先を除いた公開 DTO へ射影する（決定 24）
+  - **生成中に応答を受け取れずに接続が切れた検査単位は `failed` のまま残る。** その実行は
+    `recovery-waiting`（生成終了が未確認）になるが、単位の側は `pending` にならないため、復旧には
+    「再開」に加えて「失敗単位の個別再試行」の 2 段の操作が要る。単位も `pending` にするには
+    `UnitFailure` に「応答を受け取ったか否か」を持たせる必要があり、決定 20（打ち切りの経路を
+    停止とタイムアウトの 2 つだけとしている）の文言の改訂も要るため、PR9b では広げなかった
 - PR8 からの持ち越し：
   - UI からの接続先上書きを保存する `settings` 表
   - `LmStudioClient` の `close()` / `dispose()`（PR7 からの持ち越し）

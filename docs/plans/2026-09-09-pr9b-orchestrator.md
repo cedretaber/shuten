@@ -1014,6 +1014,11 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 - **`RunRecord` から接続先 URL を除いた公開 DTO への射影（PR10）。** 本 PR の `startRun` などは
   `endpointUrl` を持つ `RunRecord` をそのまま返す内部 API である（決定 24）。PR10 は HTTP 応答に
   そのまま流してはならない。
+- **生成中に応答を受け取れずに接続が切れた検査単位は `failed` のまま残る。** その実行は
+  `recovery-waiting`（生成終了が未確認）になるが、単位の側は `pending` にならないため、復旧には
+  「再開」に加えて「失敗単位の個別再試行」の 2 段の操作が要る。単位も `pending` にするには
+  `UnitFailure` に「応答を受け取ったか否か」を持たせる必要があり、決定 20（打ち切りの経路を
+  停止とタイムアウトの 2 つだけとしている）の文言の改訂も要るため、本 PR では広げなかった。
 - `settings` 表と接続先の UI 上書き（PR10）。
 - `LmStudioClient` の `close()` / `dispose()` と graceful shutdown（PR10）。
 - `listFindings` の N+1（PR12）。

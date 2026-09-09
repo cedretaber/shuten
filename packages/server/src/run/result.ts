@@ -185,6 +185,12 @@ export interface RunConditions {
   /** 最初の ensureLoaded が返した ModelInfo。取れなければ null。 */
   readonly model: ModelInfo | null;
   readonly chunkSettings: ChunkSettings;
+  /**
+   * オーケストレーター経路（`runs.recovery_confirm_ms` > 0）では、`checkMs` / `recheckMs` は
+   * 打ち切りの上限ではなく、超えた時点で遅延として通知する閾値であり、実際のハード上限は
+   * これに `recoveryConfirmMs` を加えた値になる（決定 7）。`runPipeline`（CLI、
+   * `recoveryConfirmMs: 0`）では従来どおり `checkMs` / `recheckMs` がそのままハード上限になる。
+   */
   readonly timeouts: { readonly checkMs: number; readonly recheckMs: number };
   readonly allowedWords: readonly string[];
   readonly versions: {

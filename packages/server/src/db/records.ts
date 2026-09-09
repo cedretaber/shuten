@@ -77,6 +77,7 @@ export interface RunRecord {
   /** `model` を除いた生成設定（決定 11）。 */
   readonly generationSettings: Omit<GenerationSettings, "model">;
   readonly chunkSettings: ChunkSettings;
+  /** 意味は `recoveryConfirmMs`（下記）に依存する。JSON のキー名自体は変えない（決定 7）。 */
   readonly timeouts: { readonly checkMs: number; readonly recheckMs: number };
   readonly perspectives: readonly Perspective[];
   readonly recheckEnabled: boolean;
@@ -93,7 +94,13 @@ export interface RunRecord {
   readonly startOperationId: string | null;
   /** 停止要求を受けた時刻。未受理・再開後は null（決定 21）。 */
   readonly stopRequestedAt: Date | null;
-  /** 復旧確認の待機上限（ミリ秒）。0 は「checkMs がそのままハード上限」（決定 8）。 */
+  /**
+   * 復旧確認の待機上限（ミリ秒）。オーケストレーター経路では `timeouts.checkMs` は打ち切りの
+   * 上限ではなく、超えた時点で遅延として通知する閾値になり、実際のハード上限は
+   * `checkMs + recoveryConfirmMs` になる（決定 7）。`runPipeline`（CLI）では
+   * `recoveryConfirmMs: 0` を使うため、`checkMs` がそのままハード上限という従来の意味のまま
+   * になる（決定 8）。
+   */
   readonly recoveryConfirmMs: number;
   readonly startedAt: Date;
   readonly finishedAt: Date | null;
