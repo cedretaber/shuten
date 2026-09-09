@@ -12,6 +12,8 @@ import { z } from "zod";
 
 import type { ApiDeps } from "./deps.ts";
 import { handleApiError, respond } from "./errors.ts";
+import { registerRecoveryRoutes } from "./recovery.ts";
+import { registerSettingsRoutes } from "./settings.ts";
 
 /**
  * `GET /api/health` の応答（既存のまま）。`shared` パッケージがサーバー側で解決できることの
@@ -39,9 +41,10 @@ export function createApiRouter(deps: ApiDeps): Hono {
     }),
   );
 
-  // Task 5 以降がここに route を足す。`deps` を使うのはそのときなので、それまでの間だけ
-  // 「使っていない引数」の警告を黙らせる（route を足したらこの行は消す）。
-  void deps;
+  registerSettingsRoutes(router, deps);
+  registerRecoveryRoutes(router, deps);
+
+  // Task 6 以降がここに route を足す。
 
   return router;
 }
