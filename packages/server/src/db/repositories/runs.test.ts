@@ -15,6 +15,7 @@ import {
   type InsertRunInput,
   insertRun,
   insertRunTarget,
+  listRuns,
   listRunsByStatus,
   listRunTargets,
   setRecoveryConfirmedAt,
@@ -582,6 +583,54 @@ describe("db/repositories/runs", () => {
     expect(both.map((r) => r.id)).toEqual(["r-recovery", "r-running-z", "r-running-a"]);
 
     expect(listRunsByStatus(db, ["stopped"])).toEqual([]);
+    close();
+  });
+  it("listRuns は原稿名を添えて started_at の降順（同順位は id の昇順）で全件列挙する（決定 15）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿A", body: "本文" });
+    insertManuscriptVersion(db, { id: "mv2", name: "原稿B", body: "本文" });
+    // 同じ started_at の 2 件（r-old-b / r-old-a）を入れて、同順位が id の昇順で安定することを見る。
+    // id の辞書順と時系列順をわざと食い違わせ、orderBy の取り違えを検出できるようにする。
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-old-b",
+        manuscriptVersionId: "mv2",
+        startedAt: new Date("2026-09-09T01:00:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-old-a",
+        manuscriptVersionId: "mv1",
+        startedAt: new Date("2026-09-09T01:00:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-new",
+        manuscriptVersionId: "mv2",
+        startedAt: new Date("2026-09-09T03:00:00.000Z"),
+      }),
+    );
+
+    const entries = listRuns(db);
+
+    expect(entries.map((entry) => entry.run.id)).toEqual(["r-new", "r-old-a", "r-old-b"]);
+    expect(entries.map((entry) => entry.manuscriptName)).toEqual(["原稿B", "原稿A", "原稿B"]);
+    // 結合しても RunRecord の中身は findRun と同じ（JSON 列も復元されている）。
+    expect(entries[0]?.run).toEqual(findRun(db, "r-new"));
+
+    close();
+  });
+
+  it("listRuns は実行が 1 件も無ければ空配列", () => {
+    const { db, close } = setupDb();
+
+    expect(listRuns(db)).toEqual([]);
+
     close();
   });
 });

@@ -1,5 +1,5 @@
 import type { Range } from "@shuten/shared";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import type { ModelInfo } from "../../lmstudio/types.ts";
 import type { GenerationSettings } from "../../prompts/types.ts";
@@ -17,7 +17,7 @@ import {
   runTimeoutsSchema,
 } from "../json.ts";
 import type { RunRecord, RunTargetRecord } from "../records.ts";
-import { runs, runTargets } from "../schema.ts";
+import { manuscriptVersions, runs, runTargets } from "../schema.ts";
 
 /** ---------------------------------------------------------------------- */
 /** 検査実行 */
@@ -261,6 +261,32 @@ export function listRunsByStatus(db: AppDatabaseLike, statuses: readonly RunStat
     .orderBy(asc(runs.startedAt), asc(runs.id))
     .all();
   return rows.map(rowToRunRecord);
+}
+
+/** `listRuns` の 1 行。実行そのものと、その原稿版の名前（一覧表示に要る）。 */
+export interface RunListEntry {
+  readonly run: RunRecord;
+  readonly manuscriptName: string;
+}
+
+/**
+ * 検査実行を全件列挙する（PR10 決定 15。一覧の絞り込み・ページングはサーバーでは行わない）。
+ *
+ * 並びは `started_at` の降順（新しい実行が先）、同順位は `id` の昇順で安定させる。
+ * 原稿名は `manuscript_versions` との内部結合で引く（`runs.manuscript_version_id` は外部キーで、
+ * `foreign_keys = ON` なので対応する行は必ず存在する）。
+ */
+export function listRuns(db: AppDatabaseLike): RunListEntry[] {
+  const rows = db
+    .select({ run: runs, manuscriptName: manuscriptVersions.name })
+    .from(runs)
+    .innerJoin(manuscriptVersions, eq(runs.manuscriptVersionId, manuscriptVersions.id))
+    .orderBy(desc(runs.startedAt), asc(runs.id))
+    .all();
+  return rows.map((row) => ({
+    run: rowToRunRecord(row.run),
+    manuscriptName: row.manuscriptName,
+  }));
 }
 
 /** `finishRun` の入力。 */
