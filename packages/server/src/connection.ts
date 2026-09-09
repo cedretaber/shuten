@@ -114,10 +114,28 @@ export function createConnectionManager(
     const validatedUrl = parseLmStudioUrl(input.endpointUrl);
     const nextApiKey = resolveNextApiKey(apiKey, input.apiKey);
 
-    setSetting(db, LM_STUDIO_URL_KEY, validatedUrl);
-
+    // 新しいクライアントを先に作る。ここで投げたら、まだ何も変えていない（例外はそのまま伝播する）。
     const old = client;
-    client = createClient({ baseUrl: validatedUrl, apiKey: nextApiKey });
+    const next = createClient({ baseUrl: validatedUrl, apiKey: nextApiKey });
+
+    try {
+      setSetting(db, LM_STUDIO_URL_KEY, validatedUrl);
+    } catch (e) {
+      // DB 書き込みが失敗したら、まだ差し替えていない client / endpointUrl / apiKey はそのまま。
+      // 作ってしまった next だけ閉じ、元の例外はそのまま伝播させる（メッセージは接続先を
+      // 含みうるのでクラス名だけをログに出す。未処理の reject にはしない）。
+      void next
+        .close()
+        .catch((closeErr) =>
+          console.error(
+            "client close failed:",
+            closeErr instanceof Error ? closeErr.name : "unknown",
+          ),
+        );
+      throw e;
+    }
+
+    client = next;
     endpointUrl = validatedUrl;
     apiKey = nextApiKey;
 

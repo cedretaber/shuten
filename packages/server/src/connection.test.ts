@@ -273,6 +273,63 @@ describe("connection: createConnectionManager", () => {
   });
 });
 
+describe("connection: update の書き込み順序（Finding 1: 作成 → DB 書き込み → 差し替え）", () => {
+  it("CN12: createClient が差し替え時に投げると、update は例外を伝播し、settings・describe()・current() は旧値のまま。旧クライアントは close されない", () => {
+    const { db, close } = setupDb();
+    const { createClient: baseCreateClient, clients } = createFakeClientFactory();
+    let callCount = 0;
+    const createClient = (options: LmStudioClientOptions): LmStudioClient => {
+      callCount += 1;
+      if (callCount === 2) {
+        throw new Error("createClient が 2 回目の呼び出しで失敗する（差し替え時を模す）");
+      }
+      return baseCreateClient(options);
+    };
+    const manager = createConnectionManager({
+      db,
+      env: { lmStudioUrl: ENV_URL, lmStudioApiKey: null },
+      createClient,
+    });
+    const before = manager.current().client;
+
+    expect(() => manager.update({ endpointUrl: OTHER_URL })).toThrow();
+
+    expect(getSetting(db, LM_STUDIO_URL_KEY)).toBeNull();
+    expect(manager.describe().endpointUrl).toBe(ENV_URL);
+    expect(manager.current().client).toBe(before);
+    expect(clients).toHaveLength(1);
+    expect(clients[0]?.closeCalls).toBe(0);
+    close();
+  });
+
+  it("CN13: setSetting（DB 書き込み）が失敗すると、update は例外を伝播し、in-memory の状態は変えない。新しく作ったクライアントだけを閉じ、旧クライアントは閉じない", () => {
+    const { db, close } = setupDb();
+    const { createClient, clients } = createFakeClientFactory();
+    const manager = createConnectionManager({
+      db,
+      env: { lmStudioUrl: ENV_URL, lmStudioApiKey: SECRET_API_KEY },
+      createClient,
+    });
+    const before = manager.current().client;
+
+    // sqlite ハンドルを閉じ、以降の書き込み（setSetting の insert().run()）を失敗させる。
+    close();
+
+    // apiKey も変えようとするが、DB 書き込みが失敗するので client / endpointUrl と同じく
+    // 巻き戻らず、旧い hasApiKey（true）のままであることまで確かめる。
+    expect(() => manager.update({ endpointUrl: OTHER_URL, apiKey: null })).toThrow();
+
+    expect(manager.current().client).toBe(before);
+    expect(manager.describe().endpointUrl).toBe(ENV_URL);
+    expect(manager.describe().hasApiKey).toBe(true);
+    expect(clients).toHaveLength(2);
+    // 旧クライアント（使用中のまま）は閉じられていない。
+    expect(clients[0]?.closeCalls).toBe(0);
+    // 新しく作ったが使われなかったクライアントは閉じられている。
+    expect(clients[1]?.closeCalls).toBe(1);
+  });
+});
+
 describe("connection: createConnectionManager の既定の createClient", () => {
   it("CN11: createClient を省略すると本物の createLmStudioClient が使われる（型チェックの範囲での確認）", () => {
     const { db, close } = setupDb();
