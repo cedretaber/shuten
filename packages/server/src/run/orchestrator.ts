@@ -827,6 +827,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     }
     if (hasStaleVersions(existing)) {
       // 決定 45-1：アプリの更新で版が変わった実行は再開できない。DB は 1 行も変えない。
+      if (existing.status === "recovery-waiting") {
+        // ただし復旧ゲートだけは開ける。決定 39 のとおり、ゲートを開ける行為の意味は
+        // 「利用者が LM Studio 側の生成終了を確認した」であって「この実行を続ける」ではない。
+        // 再開を指示した時点で確認は済んでおり、その実行を続けられるかどうかとは独立している。
+        // ここで開けないと、版が変わった `recovery-waiting` の実行がプロセス全体の送信ゲートを
+        // 永久に閉じたままにする（`reconcileOnStartup` が起動のたびに閉じ直すので再起動でも
+        // 解けず、案内どおり新しい実行を始めても `recovery-blocked` で止まる）。
+        // `unblock` はメモリ上のゲートを触るだけで、DB は 1 行も書かない。
+        deps.recoveryGate.unblock(runId);
+      }
       return rejected(existing);
     }
     if (!claimRunChecked(deps.db, runId, existing.status, "running", { clearStopState: true })) {

@@ -1309,6 +1309,73 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
     });
   }
 
+  it("45-1: 版が古い recovery-waiting の実行は再開を拒否しつつ、復旧ゲートだけは開ける", async () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+    const seeded = seedRun(harness.db, {
+      runId: "run-stale-waiting",
+      status: "recovery-waiting",
+      unitStatuses: ["pending", "pending"],
+      promptVersion: "0",
+    });
+    // 起動時照合（reconcileOnStartup）が閉じた状態を模す。
+    harness.recoveryGate.block(seeded.run.id);
+    const runBefore = readRun(harness.db, seeded.run.id);
+    const unitsBefore = unitsOf(harness.db, seeded.run.id);
+
+    const resumed = harness.orchestrator.resumeRun(seeded.run.id);
+
+    expect(resumed.accepted).toBe(false);
+    await flush();
+    // ゲートは開く（「利用者が生成終了を確認した」ことの記録であって、実行を続ける許可ではない）。
+    expect(harness.recoveryGate.blocked).toBe(false);
+    // それでも DB は 1 行も変わらず、生成要求も送らない。
+    expect(scripted.requests).toHaveLength(0);
+    expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+    expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
+  });
+
+  it("45-1: 版が古い stopped の実行を拒否するときは復旧ゲートに触らない", async () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+    const seeded = seedRun(harness.db, {
+      runId: "run-stale-stopped-gate",
+      status: "stopped",
+      unitStatuses: ["pending"],
+      promptVersion: "0",
+    });
+    // `stopped` では起こらない状態だが、unblock が呼ばれたかどうかを見るために閉じておく。
+    harness.recoveryGate.block(seeded.run.id);
+
+    expect(harness.orchestrator.resumeRun(seeded.run.id).accepted).toBe(false);
+    await flush();
+
+    expect(harness.recoveryGate.blocked).toBe(true);
+    expect(harness.recoveryGate.blockedRunIds.has(seeded.run.id)).toBe(true);
+  });
+
+  it("45-1: 版が古い recovery-waiting を拒否した後は、新しい実行が recovery-blocked にならずに走る", async () => {
+    const scripted = scriptedClient([() => checkResponse([])]);
+    const harness = makeHarness(scripted.client);
+    const seeded = seedRun(harness.db, {
+      runId: "run-stale-waiting-then-start",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+      diagnosticTransformVersion: "0",
+    });
+    harness.recoveryGate.block(seeded.run.id);
+
+    expect(harness.orchestrator.resumeRun(seeded.run.id).accepted).toBe(false);
+
+    // 案内どおり「新しい実行を開始してください」が実際に通ること（決定 45-1 の帰結）。
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    const run = await started.done;
+
+    expect(run.stopReason).not.toBe("recovery-blocked");
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(1);
+  });
+
   it("存在しない実行 ID の再開は呼び出し側の誤りとして例外にする", () => {
     const harness = makeHarness(scriptedClient([]).client);
     expect(() => harness.orchestrator.resumeRun("存在しない実行")).toThrow(
