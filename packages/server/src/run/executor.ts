@@ -463,8 +463,9 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
           // halt は上書きせず、単位の失敗も「停止要求により」ではなくそちらの文言にする。
           return finish(blocked(halt, "実行が停止済みのため生成要求を送らなかった", startedAt));
         }
-        // 局所的に作って返すだけ。次の単位は runOne 冒頭の isAborted(signal) で自ら
-        // 同じ halt を立てるので、ループから見た結末は変わらない。
+        // 局所的に作って返すだけ。ループはこの stop を見て break するので、実行の結末は
+        // 変わらない（共有 halt が null のままでも、後続の execute はキュー投入の時点で
+        // 同じ signal により取り消される）。
         const stop = makeStop("aborted", "停止要求により実行を停止した", null, false);
         return finish(blocked(stop, "停止要求により生成要求を送らなかった", startedAt));
       }

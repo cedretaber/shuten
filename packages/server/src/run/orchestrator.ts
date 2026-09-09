@@ -888,12 +888,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     // `settings` の実行を一律に弾かないという意図的な差である。
     //
     // 弾かなければならないのは「**開始前の設定検証で止まった実行**」＝検査単位が 1 件も無いか、
-    // `input-too-long` の `failed` しか無い実行だけである。これは `collectRetryTargets` が
-    // `!isInputTooLong(unit)` で対象から除くため、どちらの形でも対象 0 件になり
-    // `RetryTargetError` が投げられて下のトランザクションごとロールバックされる
-    // （実行の状態も単位も 1 行も変わらない）。**このフィルタを緩めるときは、ここに
-    // 「単位が 0 件、または `input-too-long` の `failed` しか無い実行を拒否する」ガードを
-    // 足すこと。** 緩めたままだと `clearStopState` が停止理由を消したうえで「1 度も検査して
+    // `input-too-long` **以外の** `failed` を 1 件も持たない実行である。上限を超えた対象が
+    // 1 件でもあると `planStart` は超えていない対象も含めて全対象を返すので、
+    // `pending` の単位と `input-too-long` の `failed` が同居する形も実在する
+    // （`failed` の内訳で言い切ること。「`input-too-long` の `failed` しか無い」では
+    // この形を取りこぼす）。いずれも `collectRetryTargets` が `!isInputTooLong(unit)` で
+    // 対象から除くため対象 0 件になり、`RetryTargetError` が投げられて下のトランザクション
+    // ごとロールバックされる（実行の状態も単位も 1 行も変わらない）。
+    // **このフィルタを緩めるときは、ここに「単位が 0 件、または `input-too-long` 以外の
+    // `failed` を持たない実行を拒否する」ガードを足すこと。** 緩めたままだと `clearStopState` が停止理由を消したうえで「1 度も検査して
     // いない実行が completed・指摘 0 件」に見える経路が開き、`resumeRun` が明示的に塞いだ穴
     // （`docs/reference/invariants.md`「失敗を指摘ゼロと誤表示しない」）がこちら側から復活する。
     //

@@ -441,7 +441,9 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 
 **`stop_reason` が `settings` の実行は再開できない**（最終レビューで判明した穴への対処）。
 ただし**再試行（`retryFailedUnits`）には同じガードを置かない**。開始前の設定検証で止まった実行は
-`collectRetryTargets` が対象 0 件で弾く（単位が 0 件か、`input-too-long` の `failed` だけなので）。
+`collectRetryTargets` が対象 0 件で弾く（単位が 0 件か、`input-too-long` **以外の** `failed` を
+1 件も持たないので。上限を超えた対象があると超えていない対象も `pending` で作られるため、
+`pending` と `input-too-long` の `failed` が同居する形もある）。
 実行中に `settings` で止まった実行に無関係な `failed`（`malformed` など）が残っている場合は、
 その単位の再試行を許す。`input-too-long` の単位は `failed` のまま残るので実行は
 `partially-failed` で終わり、「失敗を指摘ゼロと誤表示しない」には反しない。`clearStopState` で
