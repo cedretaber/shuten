@@ -785,8 +785,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     }
     if (existing.stopReason === "settings") {
       // 決定 36：設定エラーで止まった実行は再開できない。`startRun` が決定 18・44 で作る
-      // `stopped`（`settings`）の実行は検査単位が 0 件か全件 `failed`（`input-too-long`）なので、
-      // そのまま受け付けると**生成要求を 1 件も送らずに** `completed` / `partially-failed` になり、
+      // `stopped`（`settings`）の実行は、検査単位が 0 件か、上限を超えた対象の単位が
+      // `failed`（`input-too-long`）になっている。そのまま受け付けると、上限を超えた対象を
+      // 検査しないまま `completed` / `partially-failed` になり（対象がすべて超過していれば
+      // **生成要求を 1 件も送らずに**）、
       // しかも `clearStopState` が停止理由まで消してしまう。1 度も検査していない実行が
       // 「完了・指摘 0 件」として残るのは `docs/reference/invariants.md` の
       // 「失敗を指摘ゼロと誤表示しない」に反する。利用者への案内は「設定を見直して
