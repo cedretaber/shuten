@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatRequest, ChatResult } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
-import type { ExecOutcome, Executor } from "./executor.ts";
+import type { ExecOutcome, ExecuteHooks, Executor } from "./executor.ts";
 import type { RunStop, UnitFailure } from "./result.ts";
 import type { CheckUnitArgs, RecheckUnitArgs } from "./units.ts";
 import { executeCheckUnit, executeRecheckUnit, localFailure } from "./units.ts";
@@ -72,7 +72,12 @@ const ABORTED_CHAT_FAILURE: UnitFailure = {
   origin: "chat",
 };
 
-/** `executor.execute` を差し替えたフェイク。渡された `timeoutMs` を記録する。 */
+/**
+ * `executor.execute` を差し替えたフェイク。渡された `timeoutMs` を記録する。
+ * キュー待ちなし（`execute` が呼ばれたら即座に送信する）を模して、呼ばれた直後に
+ * `hooks.onSend` を、解決したら `hooks.onSettled` を呼ぶ（決定 27）。キュー待ちそのものを
+ * 検査したいテストは `createQueueAwareFakeExecutor` を使う。
+ */
 function createFakeExecutor<T>(resolve: (timeoutMs: number) => Promise<ExecOutcome<T>>): {
   readonly executor: Executor;
   readonly timeoutCalls: number[];
@@ -82,12 +87,83 @@ function createFakeExecutor<T>(resolve: (timeoutMs: number) => Promise<ExecOutco
     _request: ChatRequest,
     _parse: (result: ChatResult) => U,
     timeoutMs: number,
+    hooks?: ExecuteHooks,
   ): Promise<ExecOutcome<U>> {
     timeoutCalls.push(timeoutMs);
-    return resolve(timeoutMs) as unknown as Promise<ExecOutcome<U>>;
+    hooks?.onSend?.();
+    const result = resolve(timeoutMs) as unknown as Promise<ExecOutcome<U>>;
+    void result.finally(() => {
+      hooks?.onSettled?.();
+    });
+    return result;
   }
   return { executor: { execute, requestCount: 0, modelInfo: null }, timeoutCalls };
 }
+
+/**
+ * 共有キューでの順番待ちを模したフェイク executor（決定 27 の G1・G2 用）。
+ * `execute` が呼ばれてから `queueWaitMs` 経ってはじめて `hooks.onSend` を呼び、
+ * その直後に `resolve` の結果で解決して `hooks.onSettled` を呼ぶ。
+ * 「呼ばれた時点」と「実際に送信した時点」がずれることを、遅延通知のタイマーで確かめられる。
+ */
+function createQueueAwareFakeExecutor<T>(
+  resolve: () => Promise<ExecOutcome<T>>,
+  queueWaitMs: number,
+): { readonly executor: Executor } {
+  function execute<U>(
+    _request: ChatRequest,
+    _parse: (result: ChatResult) => U,
+    _timeoutMs: number,
+    hooks?: ExecuteHooks,
+  ): Promise<ExecOutcome<U>> {
+    return new Promise((res) => {
+      setTimeout(() => {
+        hooks?.onSend?.();
+        void (resolve() as unknown as Promise<ExecOutcome<U>>).then((outcome) => {
+          hooks?.onSettled?.();
+          res(outcome);
+        });
+      }, queueWaitMs);
+    });
+  }
+  return { executor: { execute, requestCount: 0, modelInfo: null } };
+}
+
+/** `execute` に渡された hooks を記録するフェイク executor（決定 27 の G3 用）。 */
+function createHookCapturingExecutor<T>(resolve: () => Promise<ExecOutcome<T>>): {
+  readonly executor: Executor;
+  readonly hooksCalls: (ExecuteHooks | undefined)[];
+} {
+  const hooksCalls: (ExecuteHooks | undefined)[] = [];
+  function execute<U>(
+    _request: ChatRequest,
+    _parse: (result: ChatResult) => U,
+    _timeoutMs: number,
+    hooks?: ExecuteHooks,
+  ): Promise<ExecOutcome<U>> {
+    hooksCalls.push(hooks);
+    return resolve() as unknown as Promise<ExecOutcome<U>>;
+  }
+  return { executor: { execute, requestCount: 0, modelInfo: null }, hooksCalls };
+}
+
+const RECHECK_DONE_OUTCOME: ExecOutcome<{
+  reason: string;
+  reasonKind: string;
+  verdict: string;
+  suggestionValid: boolean;
+}> = {
+  ok: true,
+  value: {
+    reason: "実在する誤字である",
+    reasonKind: "error-confirmed",
+    verdict: "keep",
+    suggestionValid: true,
+  },
+  attempts: 1,
+  usage: null,
+  elapsedMs: 0,
+};
 
 /** 外から解決できる Promise。フェイクタイマーで応答到着のタイミングを制御する。 */
 function deferred<T>(): {
@@ -237,6 +313,76 @@ describe("executeCheckUnit", () => {
       // ハード上限を過ぎても呼ばれないなら、応答到着時にタイマーが解除された証拠になる。
       await vi.advanceTimersByTimeAsync(2000);
       expect(onSlow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("G1: 共有キューでの順番待ちは checkMs の計測に含まれない（起点は実際の送信時点。決定 27）", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSlow = vi.fn();
+      // checkMs（1000ms）を超えるキュー待ち（1500ms）をさせてから送信させる。
+      const { executor } = createQueueAwareFakeExecutor(() => Promise.resolve(DONE_OUTCOME), 1500);
+
+      const outcomePromise = executeCheckUnit(
+        baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500, onSlow }),
+      );
+
+      // キュー待ち（1500ms）が checkMs（1000ms）を超えて進んでも、まだ送信していないので
+      // onSlow は呼ばれない（起点が executor.execute の呼び出し時点のままだと、ここで
+      // すでに 1 回呼ばれてしまう）。
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(onSlow).not.toHaveBeenCalled();
+      // 送信後の生成自体は速い（フェイク executor がすぐ解決する）ので、そのあと
+      // checkMs 分進めても onSlow は呼ばれない。
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const outcome = await outcomePromise;
+      expect(outcome.unit.status).toBe("done");
+      expect(onSlow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("再試行（2 回目の送信）でも onSend のたびにタイマーが張り直される（決定 27）", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSlow = vi.fn();
+      const pending = deferred<ExecOutcome<{ findings: [] }>>();
+      // 1 回目の送信はすぐに終わり（速い失敗で内部再試行に入った想定）、2 回目の送信は
+      // pending のまま待たせる。onSend のたびに張り直す実装でないと、1 回目の送信で
+      // 張ったタイマーが残ったまま（速い応答で解除されないまま）2 回目の待ちに引き継がれ、
+      // タイミングがずれる。
+      function execute<U>(
+        _request: ChatRequest,
+        _parse: (result: ChatResult) => U,
+        _timeoutMs: number,
+        hooks?: ExecuteHooks,
+      ): Promise<ExecOutcome<U>> {
+        hooks?.onSend?.();
+        hooks?.onSettled?.();
+        hooks?.onSend?.();
+        return pending.promise.finally(() => {
+          hooks?.onSettled?.();
+        }) as unknown as Promise<ExecOutcome<U>>;
+      }
+      const executor: Executor = { execute, requestCount: 0, modelInfo: null };
+
+      const outcomePromise = executeCheckUnit(
+        baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500, onSlow }),
+      );
+
+      // 1 回目の送信由来のタイマーは onSettled で解除済みなので、2 回目の onSend から
+      // ちょうど checkMs（1000ms）経った時点で初めて onSlow が呼ばれる。
+      await vi.advanceTimersByTimeAsync(999);
+      expect(onSlow).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onSlow).toHaveBeenCalledTimes(1);
+
+      pending.resolve(DONE_OUTCOME);
+      await outcomePromise;
     } finally {
       vi.useRealTimers();
     }
@@ -451,6 +597,28 @@ describe("executeCheckUnit", () => {
     expect(outcome.halt).toEqual(halt);
     expect(outcome.elapsedMs).toBe(1500);
     expect(outcome.usage).toBeNull();
+  });
+
+  it("G3: recoveryConfirmMs の値によらず、引数の onSend/onSettled が executor に届く（決定 27）", async () => {
+    for (const recoveryConfirmMs of [0, 500]) {
+      const onSend = vi.fn();
+      const onSettled = vi.fn();
+      const { executor, hooksCalls } = createHookCapturingExecutor(() =>
+        Promise.resolve(DONE_OUTCOME),
+      );
+
+      await executeCheckUnit(baseCheckArgs(executor, { recoveryConfirmMs, onSend, onSettled }));
+
+      expect(hooksCalls).toHaveLength(1);
+      const hooks = hooksCalls[0];
+      expect(hooks).not.toBeUndefined();
+      // recoveryConfirmMs <= 0 の早期 return でも、recoveryConfirmMs > 0 の合成でも、
+      // 呼び出し元の onSend/onSettled は最終的に executor まで届く。
+      hooks?.onSend?.();
+      hooks?.onSettled?.();
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(onSettled).toHaveBeenCalledTimes(1);
+    }
   });
 });
 
@@ -753,6 +921,31 @@ describe("executeRecheckUnit", () => {
     expect(outcome.halt).toEqual(halt);
     expect(outcome.elapsedMs).toBe(1250);
     expect(outcome.usage).toBeNull();
+  });
+
+  it("G2: executeRecheckUnit でも、共有キューでの順番待ちは recheckMs の計測に含まれない（決定 27）", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSlow = vi.fn();
+      const { executor } = createQueueAwareFakeExecutor(
+        () => Promise.resolve(RECHECK_DONE_OUTCOME),
+        1500,
+      );
+
+      const outcomePromise = executeRecheckUnit(
+        baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 500, onSlow }),
+      );
+
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(onSlow).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const outcome = await outcomePromise;
+      expect(outcome.result.status).toBe("done");
+      expect(onSlow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("localFailure は origin: local の UnitFailure を作る", () => {

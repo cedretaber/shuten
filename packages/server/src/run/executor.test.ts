@@ -532,6 +532,85 @@ describe("createExecutor", () => {
     expect(client.chat).toHaveBeenCalledTimes(1);
   });
 
+  it("E23: onSend/onSettled は client.chat 呼び出しのたびに 1 往復ずつ呼ばれる", async () => {
+    let count = 0;
+    const client = createMockClient({
+      chat: async () => {
+        count += 1;
+        if (count === 1) {
+          throw new LmStudioError("malformed", "解析できなかった");
+        }
+        return chatResult("ok");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+    const order: string[] = [];
+    const onSend = vi.fn(() => order.push("onSend"));
+    const onSettled = vi.fn(() => order.push("onSettled"));
+
+    const outcome = await executor.execute(REQUEST, parse, 1000, { onSend, onSettled });
+
+    expect(outcome.ok).toBe(true);
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(["onSend", "onSettled", "onSend", "onSettled"]);
+  });
+
+  it("E24: client.chat が例外を投げても onSettled は onSend と同数呼ばれる", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new Error("想定外の例外");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+    const onSend = vi.fn();
+    const onSettled = vi.fn();
+
+    await expect(executor.execute(REQUEST, parse, 1000, { onSend, onSettled })).rejects.toThrow(
+      "想定外の例外",
+    );
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("E25: hooks を渡さなくても（既存の 3 引数のモックと同じ形でも）従来どおり動く", async () => {
+    const client = createMockClient({});
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("E26: signal が中断されていたら再試行の chat を送らず、届いていた失敗内容を残す", async () => {
+    const controller = new AbortController();
+    const client = createMockClient({
+      chat: async () => {
+        // 1 回目の応答が届いた直後（malformed の解析中）に停止要求が来た状況を模す。
+        controller.abort();
+        throw new LmStudioError("malformed", "解析できなかった");
+      },
+    });
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    // chat が 1 回しか呼ばれない点は、signal 未確認のままでも ensureLoaded 経由の
+    // isAborted チェックで結局止まるので変わらない。ここで確かめたいのは、
+    // 届いた応答の失敗内容（malformed）が ensure-loaded 由来の aborted に
+    // 置き換わらずに残ること（failure.reason・halt.message が本質）。
+    expect(client.chat).toHaveBeenCalledTimes(1);
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.failure.reason).toBe("malformed");
+    expect(outcome.failure.origin).toBe("chat");
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.message).toBe("停止要求により再試行を送らなかった");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(outcome.halt?.failure?.reason).toBe("malformed");
+  });
+
   it("E22: 再試行前の ensureLoaded が model-not-loaded でも attempts は 1 のまま", async () => {
     let loads = 0;
     const client = createMockClient({

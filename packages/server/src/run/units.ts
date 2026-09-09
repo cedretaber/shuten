@@ -18,7 +18,7 @@ import type { ChatRequest, ChatResult, Usage } from "../lmstudio/types.ts";
 import { buildCheckRequest, buildRecheckRequest } from "../prompts/build.ts";
 import { parseCheckResponse, parseRecheckResponse } from "../prompts/parse.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
-import type { ExecOutcome, Executor } from "./executor.ts";
+import type { ExecOutcome, ExecuteHooks, Executor } from "./executor.ts";
 import type { CheckUnitResult, RecheckResult, RunStop, UnitFailure } from "./result.ts";
 
 /**
@@ -68,12 +68,23 @@ function pendingNote(failure: UnitFailure, recoveryConfirmMs: number): string {
 }
 
 /**
- * `executor.execute` を、遅延通知（`onSlow`）付きで呼ぶ。
+ * `executor.execute` を、遅延通知（`onSlow`）付きで呼ぶ（決定 27）。
+ *
+ * 起点は「実際に生成要求を送った時点」（executor が `client.chat` を呼ぶ直前に呼ぶ `onSend`）。
+ * `executor.execute` を呼んだ時点で張ると、共有キュー（`run/queue.ts`）での順番待ちの時間が
+ * `checkMs`／`recheckMs` の計測に食い込んでしまうため。
  *
  * `recoveryConfirmMs` が 0 以下（既定）なら、従来どおり `budgetMs` をそのままタイムアウトとして渡す
- * （`onSlow` は使わない）。`recoveryConfirmMs > 0` なら、ハード上限は `budgetMs + recoveryConfirmMs` にし、
- * `budgetMs` 経過時点で `onSlow` を 1 回だけ呼ぶ。応答が返る（成功・失敗を問わない）か例外が出たら、
- * このタイマーは必ず解除する。
+ * （`onSlow` 用のタイマーは張らない）。`recoveryConfirmMs > 0` なら、ハード上限は
+ * `budgetMs + recoveryConfirmMs` にし、送信のたびに（再試行を含む）タイマーを張り直して、
+ * `budgetMs` 経過時点で `onSlow` を呼ぶ。応答が返る（成功・失敗を問わない）か例外が出たら、
+ * そのタイマーは必ず解除する。
+ *
+ * `onSend` / `onSettled` は呼び出し元（ループの停止ゲート。決定 26）から渡される任意のフックで、
+ * 自分の遅延通知タイマーと合成して executor に渡す。`recoveryConfirmMs` の値によらず、
+ * 渡されていれば必ず executor に届ける（停止ゲートは CLI 経路では使われないが、
+ * 渡す・渡さないの分岐を `recoveryConfirmMs` に結び付けると、停止ゲートを持たない
+ * オーケストレーター経路が増えたときに破綻するため）。
  */
 async function executeWithSlowNotice<T>(
   executor: Executor,
@@ -82,22 +93,42 @@ async function executeWithSlowNotice<T>(
   budgetMs: number,
   recoveryConfirmMs: number,
   onSlow: ((elapsedMs: number) => void) | undefined,
+  onSend: (() => void) | undefined,
+  onSettled: (() => void) | undefined,
 ): Promise<ExecOutcome<T>> {
   if (recoveryConfirmMs <= 0) {
-    return executor.execute(request, parse, budgetMs);
+    // タイマーは張らないが、呼び出し元の onSend/onSettled はそのまま executor に渡す。
+    return executor.execute(request, parse, budgetMs, { onSend, onSettled });
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
-  if (onSlow !== undefined) {
-    timer = setTimeout(() => {
-      onSlow(budgetMs);
-    }, budgetMs);
-  }
-  try {
-    return await executor.execute(request, parse, budgetMs + recoveryConfirmMs);
-  } finally {
+  function clearSlowTimer(): void {
     if (timer !== undefined) {
       clearTimeout(timer);
+      timer = undefined;
     }
+  }
+  const hooks: ExecuteHooks = {
+    onSend: () => {
+      // 送信のたびに（再試行を含め、1 回の execute で最大 2 回）測り直す。前のタイマーが
+      // 残っていれば解除してから張り直す。
+      clearSlowTimer();
+      if (onSlow !== undefined) {
+        timer = setTimeout(() => {
+          onSlow(budgetMs);
+        }, budgetMs);
+      }
+      onSend?.();
+    },
+    onSettled: () => {
+      clearSlowTimer();
+      onSettled?.();
+    },
+  };
+  try {
+    return await executor.execute(request, parse, budgetMs + recoveryConfirmMs, hooks);
+  } finally {
+    // onSend が一度も呼ばれなかった（門で止まった等）場合の保険。
+    clearSlowTimer();
   }
 }
 
@@ -115,8 +146,19 @@ export interface CheckUnitArgs {
   readonly recoveryConfirmMs?: number | undefined;
   readonly executor: Executor;
   readonly createCandidateId: () => string;
-  /** checkMs を超えたときに 1 回だけ呼ぶ。省略可。 */
+  /**
+   * checkMs を超えたときに呼ぶ。省略可。送信のたび（再試行を含め、1 回の execute で
+   * 最大 2 回）に測り直すので、1 回目の送信も 2 回目の送信も checkMs を超えれば、
+   * この execute で最大 2 回呼ばれうる（決定 27）。
+   */
   readonly onSlow?: ((elapsedMs: number) => void) | undefined;
+  /**
+   * 停止ゲートの beginRequest 相当。executor が実際に生成要求を送る直前に呼ぶ（決定 27）。
+   * 再試行のたびに呼ぶ。省略可（PR9b Task 7 でループが渡す）。
+   */
+  readonly onSend?: (() => void) | undefined;
+  /** 停止ゲートの endRequest 相当。onSend と同数呼ばれる。省略可（PR9b Task 7 でループが渡す）。 */
+  readonly onSettled?: (() => void) | undefined;
 }
 
 export interface CheckUnitOutcome {
@@ -154,6 +196,8 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
     args.checkMs,
     recoveryConfirmMs,
     args.onSlow,
+    args.onSend,
+    args.onSettled,
   );
 
   if (outcome.ok) {
@@ -245,8 +289,19 @@ export interface RecheckUnitArgs {
   /** 既定 0。0 ならハード上限は recheckMs そのもの（従来の挙動）。 */
   readonly recoveryConfirmMs?: number | undefined;
   readonly executor: Executor;
-  /** recheckMs を超えたときに 1 回だけ呼ぶ。省略可。 */
+  /**
+   * recheckMs を超えたときに呼ぶ。省略可。送信のたび（再試行を含め、1 回の execute で
+   * 最大 2 回）に測り直すので、1 回目の送信も 2 回目の送信も recheckMs を超えれば、
+   * この execute で最大 2 回呼ばれうる（決定 27）。
+   */
   readonly onSlow?: ((elapsedMs: number) => void) | undefined;
+  /**
+   * 停止ゲートの beginRequest 相当。executor が実際に生成要求を送る直前に呼ぶ（決定 27）。
+   * 再試行のたびに呼ぶ。省略可（PR9b Task 7 でループが渡す）。
+   */
+  readonly onSend?: (() => void) | undefined;
+  /** 停止ゲートの endRequest 相当。onSend と同数呼ばれる。省略可（PR9b Task 7 でループが渡す）。 */
+  readonly onSettled?: (() => void) | undefined;
   /**
    * `buildRecheckInput` が成功し、実際に生成要求を送る直前に 1 回だけ呼ぶ。省略可。
    * `suppressed` で短絡したときや、`buildRecheckInput` が `InputTooLongError` を投げたときは呼ばない
@@ -328,6 +383,8 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
     args.recheckMs,
     recoveryConfirmMs,
     args.onSlow,
+    args.onSend,
+    args.onSettled,
   );
 
   if (outcome.ok) {

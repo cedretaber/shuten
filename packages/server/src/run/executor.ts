@@ -29,12 +29,28 @@ export type ExecOutcome<T> =
       readonly halt: RunStop | null;
     };
 
+/**
+ * 遅延通知（決定 27）・停止ゲート（決定 26）の起点を「実際に生成要求を送った時点」に
+ * 揃えるためのフック。`runOne` の `client.chat` 呼び出しちょうどを挟む。
+ */
+export interface ExecuteHooks {
+  /** client.chat を呼ぶ直前に呼ぶ。再試行のたびに呼ぶ（1 回の execute で最大 2 回）。 */
+  readonly onSend?: (() => void) | undefined;
+  /** client.chat の finally で呼ぶ。成功・失敗・例外のいずれでも必ず呼ぶ。onSend と同数。 */
+  readonly onSettled?: (() => void) | undefined;
+}
+
 export interface Executor {
-  /** request.model で ensureLoaded を呼んでから chat を送り、parse に通す。同時実行は 1。 */
+  /**
+   * request.model で ensureLoaded を呼んでから chat を送り、parse に通す。同時実行は 1。
+   * `hooks` は任意（決定 27）。既存のテストにある `execute(request, parse, timeoutMs)` だけを
+   * 実装したモックも、引数の少ない関数として代入できる。
+   */
   execute<T>(
     request: ChatRequest,
     parse: (result: ChatResult) => T,
     timeoutMs: number,
+    hooks?: ExecuteHooks,
   ): Promise<ExecOutcome<T>>;
   /** 送信した生成要求の総数（再試行を含む）。 */
   readonly requestCount: number;
@@ -199,6 +215,7 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     request: ChatRequest,
     parse: (result: ChatResult) => T,
     timeoutMs: number,
+    hooks: ExecuteHooks | undefined,
   ): Promise<ExecOutcome<T>> {
     const startedAt = now();
 
@@ -285,10 +302,18 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
         // 送った回数は例外でも数える。
         attempts += 1;
         requestCount += 1;
-        const result = await client.chat(request, {
-          timeoutMs,
-          ...(signal !== undefined ? { signal } : {}),
-        });
+        hooks?.onSend?.();
+        let result: ChatResult;
+        try {
+          result = await client.chat(request, {
+            timeoutMs,
+            ...(signal !== undefined ? { signal } : {}),
+          });
+        } finally {
+          // 決定 27：成功・失敗・例外のいずれでも必ず呼ぶ（onSend と同数にする）。
+          // ensureLoaded は挟まないので、ここが「実際に送信中」の区間そのものになる。
+          hooks?.onSettled?.();
+        }
         lastUsage = result.usage;
         if (result.finishReason !== "stop") {
           // 決定 6：stop 以外の終了理由は成功にせず truncated として扱う。
@@ -311,6 +336,25 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
       }
 
       if (isRetryable(error) && !retried) {
+        // 決定 27：再試行の手前で signal を再確認する。ここで isAborted(signal) を見ずに
+        // continue すると、次の周回の ensureLoaded は当然 isAborted を見て chat を送らずに
+        // 抜けるので、2 回目の chat 自体は結局送らない。それでも先に確認する意味は、
+        // ensureLoaded 経由で抜けると、届いていた応答の失敗内容（malformed など）が
+        // 「モデル一覧の取得中に中断された」（ensure-loaded 由来の aborted）に置き換わって
+        // しまう点にある。ここで確認して直接返すことで、その失敗内容を保ったまま
+        // 「停止要求により再試行を送らなかった」という halt にできる。
+        if (isAborted(signal)) {
+          const failure = toFailure(error, "chat");
+          halt ??= makeStop("aborted", "停止要求により再試行を送らなかった", failure, false);
+          return {
+            ok: false,
+            attempts,
+            failure,
+            usage: lastUsage,
+            elapsedMs: now() - startedAt,
+            halt,
+          };
+        }
         retried = true;
         continue;
       }
@@ -334,6 +378,7 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     request: ChatRequest,
     parse: (result: ChatResult) => T,
     timeoutMs: number,
+    hooks?: ExecuteHooks,
   ): Promise<ExecOutcome<T>> {
     if (queue !== undefined) {
       // queue が渡されているときは、この executor 固有の tail を経由せず、execute の
@@ -345,10 +390,10 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
       // runOne は executor 内の可変状態（halt / requestCount / firstModelInfo）を書き換えるが、
       // 共有キューが同時実行数を 1 に保つ（FIFO で前のジョブが解決してから次を始める）ため、
       // 複数 executor 間でこの状態が競合することはない。
-      return queue.enqueue(() => runOne(request, parse, timeoutMs));
+      return queue.enqueue(() => runOne(request, parse, timeoutMs, hooks));
     }
     // キューなしの経路（runPipeline / CLI）は従来どおり、この executor 内の tail で直列化する。
-    const started = tail.then(() => runOne(request, parse, timeoutMs));
+    const started = tail.then(() => runOne(request, parse, timeoutMs, hooks));
     tail = started.then(
       () => undefined,
       () => undefined,
