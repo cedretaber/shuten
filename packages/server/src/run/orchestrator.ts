@@ -134,6 +134,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         `原稿版が見つかりません（manuscriptVersionId: ${input.manuscriptVersionId}）`,
       );
     }
+    if (input.perspectives.length === 0) {
+      // 呼び出し側の誤り（観点が 1 つも無い）。作れば「running かつ検査単位 0 件」の実行になり、
+      // 決定 18 が 1 トランザクションで防ごうとしている状態（再開が「やることなし」を返して
+      // 復旧できない実行）に、例外ではなく入力経由で到達してしまう。実行を作らずに例外にする。
+      throw new Error("perspectives が空です（観点を 1 つ以上指定すること）");
+    }
 
     const plan = planStart(manuscript, input, deps.recoveryConfirmMs);
     const startedAt = now();
@@ -158,8 +164,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           promptVersion: PROMPT_VERSION,
           diagnosticTransformVersion: DIAGNOSTIC_TRANSFORM_VERSION,
           status: plan.runStatus,
-          stopReason: plan.stopReason,
-          stopMessage: plan.stopMessage,
+          stopReason: plan.stop?.reason ?? null,
+          stopMessage: plan.stop?.message ?? null,
           generationUnconfirmed: false,
           startOperationId: input.startOperationId,
           startedAt,
@@ -237,6 +243,27 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         emit(written.run.id, { type: "target-planned", ...planned });
       }
 
+      // 開始時点で終端状態になった実行は、ここでオーケストレーターの終了を通知する
+      // （決定 16・`run/events.ts` の「開始・終了は target-planned と run-settled で表す」。
+      // レビュー対応 M-2）。target-planned の後に出す：対象の存在を先に伝えてから終了を伝える。
+      // ループが走る「running」では、終了は Task 7 のループ自身が出す。
+      if (written.run.status !== "running") {
+        if (plan.stop === null) {
+          // runStatus が "running" 以外なら plan.stop は必ず非 null（StartPlan の不変条件）。
+          throw new Error("到達しないはず：非 running な実行に stop 情報が無い");
+        }
+        emit(written.run.id, {
+          type: "run-settled",
+          status: written.run.status,
+          stop: {
+            reason: plan.stop.reason,
+            message: plan.stop.message,
+            failure: plan.stop.failure,
+            generationUnconfirmed: false,
+          },
+        });
+      }
+
       const result: StartRunResult = { run: written.run, done: Promise.resolve(written.run) };
       if (written.run.status === "running") {
         registry.set(written.run.id, result);
@@ -281,10 +308,23 @@ interface PlannedTarget {
   readonly tooLong: { readonly message: string; readonly required: number } | null;
 }
 
+/**
+ * 実行が開始時点で終端状態になる場合の記録。`runs.stop_reason` / `runs.stop_message` に
+ * 保存する値であると同時に、`run-settled` イベント（決定 42・M-2 レビュー対応）を組み立てる
+ * ための材料でもある。`failure` は「代表的な失敗」（`InputTooLongError` が複数対象で起きた
+ * 場合は最初に見つかった対象のもの）。設定値そのものの検証エラー（タイムアウト・
+ * `InvalidChunkSettingsError`）では null。
+ */
+interface StartStop {
+  readonly reason: RunStopReason;
+  readonly message: string;
+  readonly failure: UnitFailureRecord | null;
+}
+
 interface StartPlan {
   readonly runStatus: RunStatus;
-  readonly stopReason: RunStopReason | null;
-  readonly stopMessage: string | null;
+  /** `runStatus === "running"` のときだけ null。それ以外は必ず非 null（不変条件）。 */
+  readonly stop: StartStop | null;
   readonly allowedWords: readonly string[];
   readonly targets: readonly PlannedTarget[];
 }
@@ -340,8 +380,7 @@ function planStart(
   if (timeoutError !== null) {
     return {
       runStatus: "stopped",
-      stopReason: "settings",
-      stopMessage: timeoutError,
+      stop: { reason: "settings", message: timeoutError, failure: null },
       allowedWords,
       targets: [],
     };
@@ -358,40 +397,49 @@ function planStart(
     }
     return {
       runStatus: "stopped",
-      stopReason: "settings",
-      stopMessage: `分割設定が不正なため実行を開始できなかった: ${error.message}`,
+      stop: {
+        reason: "settings",
+        message: `分割設定が不正なため実行を開始できなかった: ${error.message}`,
+        failure: null,
+      },
       allowedWords,
       targets: [],
     };
   }
 
-  let hasTooLong = false;
-  const targets: PlannedTarget[] = targetRanges.map((target) => {
+  let firstTooLong: { readonly message: string; readonly required: number } | null = null;
+  const targets: PlannedTarget[] = [];
+  for (const target of targetRanges) {
     try {
       const checkInput = buildCheckInput(manuscript.body, paragraphs, target, input.chunkSettings);
-      return { target, input: checkInput, tooLong: null };
+      targets.push({ target, input: checkInput, tooLong: null });
     } catch (error) {
       if (!(error instanceof InputTooLongError)) {
         throw error;
       }
-      hasTooLong = true;
-      return {
-        target,
-        input: null,
-        tooLong: { message: error.message, required: error.required },
-      };
+      const tooLong = { message: error.message, required: error.required };
+      if (firstTooLong === null) {
+        firstTooLong = tooLong;
+      }
+      targets.push({ target, input: null, tooLong });
     }
-  });
+  }
 
-  if (hasTooLong) {
+  if (firstTooLong !== null) {
     return {
       runStatus: "stopped",
-      stopReason: "settings",
-      stopMessage: "検査対象の入力が上限を超えたため実行を停止した。設定を見直すこと。",
+      stop: {
+        reason: "settings",
+        message: "検査対象の入力が上限を超えたため実行を停止した。設定を見直すこと。",
+        // 代表として最初に見つかった対象の失敗を run-settled イベントに載せる（複数対象が
+        // 同時に超過することもあるため、どれか 1 つを選ぶ。DB 側は各対象の check_units に
+        // それぞれの failure を個別に保存済み。ここはイベント用の要約）。
+        failure: toInputTooLongFailure(firstTooLong.message),
+      },
       allowedWords,
       targets,
     };
   }
 
-  return { runStatus: "running", stopReason: null, stopMessage: null, allowedWords, targets };
+  return { runStatus: "running", stop: null, allowedWords, targets };
 }

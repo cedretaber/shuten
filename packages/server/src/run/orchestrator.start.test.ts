@@ -85,6 +85,26 @@ const CHUNK_SETTINGS_TOO_LONG: ChunkSettings = {
   maxInputGraphemes: 10,
 };
 
+/**
+ * 3 段落なし・30 書記素の本文。`CHUNK_SETTINGS_TOO_LONG_PARTIAL` と組み合わせると
+ * `[0,10)` `[10,20)` `[20,30)` の 3 対象に割れ、真ん中（対象 1）だけが前後両方に文脈を持つため
+ * 単独で上限超過になる（対象 0・2 は片側だけの文脈で収まる。実際に `buildCheckInput` を
+ * 動かして確認済み：対象 0 は `required=15`・対象 1 は `required=20`・対象 2 は `required=15`）。
+ */
+const TEXT_3_TARGETS = "0123456789ABCDEFGHIJKLMNOPQRST";
+
+/**
+ * `[0,10)` `[10,20)` `[20,30)` に割れる設定で、`maxInputGraphemes: 15` は片側文脈（required 15）
+ * ちょうど収まり、両側文脈（required 20）だけが超過するようにしたもの（I-1 用）。
+ */
+const CHUNK_SETTINGS_TOO_LONG_PARTIAL: ChunkSettings = {
+  targetGraphemes: 10,
+  contextGraphemes: 5,
+  recheckContextGraphemes: 0,
+  roundingTolerance: 0,
+  maxInputGraphemes: 15,
+};
+
 const PERSPECTIVES: readonly Perspective[] = ["typo", "naturalness"];
 
 function baseInput(overrides: Partial<StartRunInput> = {}): StartRunInput {
@@ -132,6 +152,71 @@ describe("run/orchestrator: startRun", () => {
     expect(rows.runs).toBe(1);
     expect(rows.runTargets).toBe(2); // [0,10) と [10,20)
     expect(rows.checkUnits).toBe(4); // 2 対象 × 2 観点
+
+    // I-2: 件数だけでなく、実際の状態が pending であることを検査する（claimUnitChecked が
+    // pending → running で拾う値そのもの。壊れると単位が永久に拾われなくなる）。
+    const unitRows = db.select().from(checkUnits).all();
+    expect(unitRows).toHaveLength(4);
+    for (const unit of unitRows) {
+      expect(unit.status).toBe("pending");
+      expect(unit.attempts).toBe(0);
+      expect(unit.failureReason).toBeNull();
+      expect(unit.startedAt).toBeNull();
+      expect(unit.finishedAt).toBeNull();
+    }
+  });
+
+  it("I-3: run_targets の contextBefore/contextAfter/input が実際に組み立てた CheckInput の値で保存され、target-planned にも同じ値が載る", () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
+    const events: RunEvent[] = [];
+    const orchestrator = createOrchestrator(
+      makeDeps(db, { onEvent: (event) => events.push(event) }),
+    );
+
+    orchestrator.startRun(baseInput());
+
+    // buildCheckInput を実際に動かして確認済みの値（対象 0：後方文脈のみ、対象 1：前方文脈のみ）。
+    const targetRows = db
+      .select()
+      .from(runTargets)
+      .all()
+      .sort((a, b) => a.targetIndex - b.targetIndex);
+    expect(targetRows).toHaveLength(2);
+
+    const target0 = targetRows[0];
+    expect(target0?.targetStart).toBe(0);
+    expect(target0?.targetEnd).toBe(10);
+    expect(target0?.contextBeforeStart).toBeNull();
+    expect(target0?.contextBeforeEnd).toBeNull();
+    expect(target0?.contextAfterStart).toBe(10);
+    expect(target0?.contextAfterEnd).toBe(15);
+    expect(target0?.inputStart).toBe(0);
+    expect(target0?.inputEnd).toBe(15);
+
+    const target1 = targetRows[1];
+    expect(target1?.targetStart).toBe(10);
+    expect(target1?.targetEnd).toBe(20);
+    expect(target1?.contextBeforeStart).toBe(5);
+    expect(target1?.contextBeforeEnd).toBe(10);
+    expect(target1?.contextAfterStart).toBeNull();
+    expect(target1?.contextAfterEnd).toBeNull();
+    expect(target1?.inputStart).toBe(5);
+    expect(target1?.inputEnd).toBe(20);
+
+    // target-planned イベントにも、target.range 固定ではなく実際の inputRange が載っている。
+    const planned = events.filter((e) => e.event.type === "target-planned");
+    expect(planned).toHaveLength(2);
+    for (const e of planned) {
+      if (e.event.type !== "target-planned") continue;
+      if (e.event.targetIndex === 0) {
+        expect(e.event.input).toEqual({ start: 0, end: 15 });
+      } else if (e.event.targetIndex === 1) {
+        expect(e.event.input).toEqual({ start: 5, end: 20 });
+      } else {
+        throw new Error(`想定外の targetIndex: ${e.event.targetIndex}`);
+      }
+    }
   });
 
   it("O10: 同じ startOperationId の 2 回目は新しい実行を作らず、既存の実行を返す", () => {
@@ -145,6 +230,20 @@ describe("run/orchestrator: startRun", () => {
     expect(second.run.id).toBe(first.run.id);
     expect(countRows(db).runs).toBe(1);
     expect(countRows(db).checkUnits).toBe(4); // 2 回目で増えていない
+  });
+
+  it("I-4: 同じ startOperationId の 2 回目は、レジストリに登録済みの done をそのまま返す（新しい done を作らない）", () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
+    const orchestrator = createOrchestrator(makeDeps(db));
+
+    const first = orchestrator.startRun(baseInput({ startOperationId: "dup-op-done" }));
+    const second = orchestrator.startRun(baseInput({ startOperationId: "dup-op-done" }));
+
+    // run オブジェクトの一致だけでなく、done が「同じ Promise インスタンス」であることを見る。
+    // レジストリを削除すると、2 回目は毎回新しい Promise.resolve(existing) を作ってしまい、
+    // 参照が一致しなくなる。
+    expect(second.done).toBe(first.done);
   });
 
   it("O10: start_operation_id 以外の一意制約違反は握りつぶさずに送出する", () => {
@@ -214,6 +313,50 @@ describe("run/orchestrator: startRun", () => {
     }
   });
 
+  it("I-1: 一部の対象だけが上限超過のとき、その対象だけ failed になり、他の対象は pending のまま残る", () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT_3_TARGETS });
+    const orchestrator = createOrchestrator(makeDeps(db));
+
+    const { run } = orchestrator.startRun(
+      baseInput({
+        startOperationId: "op-partial-too-long",
+        chunkSettings: CHUNK_SETTINGS_TOO_LONG_PARTIAL,
+      }),
+    );
+
+    // 実行全体としては、1 対象でも超過があれば stopped（settings）になる（決定 18）。
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("settings");
+
+    const targetRows = db.select().from(runTargets).all();
+    expect(targetRows).toHaveLength(3);
+    const targetIdByIndex = new Map(targetRows.map((t) => [t.targetIndex, t.id]));
+
+    const unitRows = db.select().from(checkUnits).all();
+    expect(unitRows).toHaveLength(6); // 3 対象 × 2 観点
+
+    // 超過した対象 1（[10,20)）の単位だけ failed（input-too-long）。
+    const targetId1 = targetIdByIndex.get(1);
+    const unitsForTarget1 = unitRows.filter((u) => u.targetId === targetId1);
+    expect(unitsForTarget1).toHaveLength(2);
+    for (const unit of unitsForTarget1) {
+      expect(unit.status).toBe("failed");
+      expect(unit.failureReason).toBe("input-too-long");
+    }
+
+    // 超過しなかった対象 0・2 の単位は pending のまま（生成要求を送っていない）。
+    for (const targetIndex of [0, 2]) {
+      const targetId = targetIdByIndex.get(targetIndex);
+      const unitsForTarget = unitRows.filter((u) => u.targetId === targetId);
+      expect(unitsForTarget, `targetIndex=${targetIndex}`).toHaveLength(2);
+      for (const unit of unitsForTarget) {
+        expect(unit.status, `targetIndex=${targetIndex}`).toBe("pending");
+        expect(unit.failureReason, `targetIndex=${targetIndex}`).toBeNull();
+      }
+    }
+  });
+
   it("C1: onEvent が例外を投げても実行が止まらず、以降のイベントも通知される", () => {
     const { db } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
@@ -260,7 +403,7 @@ describe("run/orchestrator: startRun", () => {
     expect(indices.sort()).toEqual([0, 1]);
   });
 
-  it("C2: 開始が失敗した場合（設定不正）は target-planned が 1 件も出ない", () => {
+  it("C2・M-2: 開始が失敗した場合（設定不正）は target-planned が 1 件も出ず、run-settled が 1 件だけ出る", () => {
     const { db } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
     const events: RunEvent[] = [];
@@ -282,9 +425,21 @@ describe("run/orchestrator: startRun", () => {
 
     expect(run.status).toBe("stopped");
     expect(run.stopReason).toBe("settings");
-    expect(events).toHaveLength(0);
     expect(countRows(db).runTargets).toBe(0);
     expect(countRows(db).checkUnits).toBe(0);
+
+    // target-planned は対象が 1 件も作られていないので 0 件。run-settled はちょうど 1 件。
+    expect(events.filter((e) => e.event.type === "target-planned")).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    const settled = events[0];
+    expect(settled?.runId).toBe(run.id);
+    expect(settled?.event.type).toBe("run-settled");
+    if (settled?.event.type === "run-settled") {
+      expect(settled.event.status).toBe("stopped");
+      expect(settled.event.stop?.reason).toBe("settings");
+      expect(settled.event.stop?.generationUnconfirmed).toBe(false);
+      expect(settled.event.stop?.failure).toBeNull(); // InvalidChunkSettingsError は failure を持たない
+    }
   });
 
   it("C4: checkMs + recoveryConfirmMs が 2^31-1 を超えると、生成要求を 1 件も送らずに stopped（settings）になる", () => {
@@ -307,7 +462,52 @@ describe("run/orchestrator: startRun", () => {
     expect(run.stopMessage).not.toBeNull();
     expect(countRows(db).runTargets).toBe(0);
     expect(countRows(db).checkUnits).toBe(0);
-    expect(events).toHaveLength(0);
+    // 対象が無いので target-planned は出ない。run-settled は出る（M-2）。
+    expect(events.filter((e) => e.event.type === "target-planned")).toHaveLength(0);
+    expect(events.filter((e) => e.event.type === "run-settled")).toHaveLength(1);
+  });
+
+  it("M-2: target-planned の後に run-settled が出る（対象を持つ stopped 実行）", () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
+    const events: RunEvent[] = [];
+    const orchestrator = createOrchestrator(
+      makeDeps(db, { onEvent: (event) => events.push(event) }),
+    );
+
+    const { run } = orchestrator.startRun(
+      baseInput({ startOperationId: "op-order", chunkSettings: CHUNK_SETTINGS_TOO_LONG }),
+    );
+
+    expect(run.status).toBe("stopped");
+    // 2 対象ぶんの target-planned のあとに、run-settled が 1 件だけ続く。
+    expect(events).toHaveLength(3);
+    expect(events[0]?.event.type).toBe("target-planned");
+    expect(events[1]?.event.type).toBe("target-planned");
+    expect(events[2]?.event.type).toBe("run-settled");
+    const settled = events[2];
+    expect(settled?.runId).toBe(run.id);
+    if (settled?.event.type === "run-settled") {
+      expect(settled.event.status).toBe("stopped");
+      expect(settled.event.stop?.reason).toBe("settings");
+      // InputTooLongError の代表失敗が乗っている。
+      expect(settled.event.stop?.failure?.reason).toBe("input-too-long");
+      expect(settled.event.stop?.generationUnconfirmed).toBe(false);
+    }
+  });
+
+  it("M-2: running で開始が完了した場合は run-settled を出さない", () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
+    const events: RunEvent[] = [];
+    const orchestrator = createOrchestrator(
+      makeDeps(db, { onEvent: (event) => events.push(event) }),
+    );
+
+    const { run } = orchestrator.startRun(baseInput());
+
+    expect(run.status).toBe("running");
+    expect(events.filter((e) => e.event.type === "run-settled")).toHaveLength(0);
   });
 
   it("C4: recheckMs + recoveryConfirmMs が 2^31-1 を超えても同じく stopped（settings）", () => {
@@ -355,6 +555,26 @@ describe("run/orchestrator: startRun", () => {
       orchestrator.startRun(baseInput({ manuscriptVersionId: "does-not-exist" })),
     ).toThrow();
     expect(countRows(db).runs).toBe(0);
+  });
+
+  it("M-3: perspectives が空配列なら実行を作らずに例外を投げる（呼び出し側の誤り）", () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
+    const events: RunEvent[] = [];
+    const orchestrator = createOrchestrator(
+      makeDeps(db, { onEvent: (event) => events.push(event) }),
+    );
+
+    // perspectives: [] を許すと「running かつ検査単位 0 件」の実行ができてしまい、
+    // 決定 18 が 1 トランザクションで防ごうとしている状態（再開が「やることなし」を返して
+    // 復旧できない実行）に、例外ではなく入力経由で到達する。manuscriptVersionId が
+    // 存在しないときと同じ扱い（実行を作らずに例外）にする。
+    expect(() => orchestrator.startRun(baseInput({ perspectives: [] }))).toThrow();
+
+    expect(countRows(db).runs).toBe(0);
+    expect(countRows(db).runTargets).toBe(0);
+    expect(countRows(db).checkUnits).toBe(0);
+    expect(events).toHaveLength(0);
   });
 
   it("O13: 完了済み（に相当する）実行があっても、新しい startOperationId は別の実行 ID になる", () => {
