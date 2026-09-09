@@ -1,9 +1,9 @@
 /**
  * オーケストレーターの入口（決定 24）。プロセス内に 1 つ作る。
  *
- * 本ファイル（PR9b Task 6）で実装するのは `startRun` のみ。単位駆動ループ本体は Task 7 で
- * `run/loop.ts` に置き、`stopRun` / `resumeRun` / `retryFailedUnits` / `reconcileOnStartup` は
- * Task 8・9 で足す。`Orchestrator` インターフェースは決定 24 の全メンバーを一度に生やさず、
+ * 本ファイルで実装するのは `startRun` のみ。単位駆動ループ本体は `run/loop.ts` にあり、
+ * ここからは `startLoop` 経由で起動する。`stopRun` / `resumeRun` / `retryFailedUnits` /
+ * `reconcileOnStartup` は Task 8・9 で足す。`Orchestrator` インターフェースは決定 24 の全メンバーを一度に生やさず、
  * 現時点で実装できる `startRun` だけを載せる（後続タスクが `interface Orchestrator` を拡張する）。
  * こうすることで、まだ存在しないメソッドへの「とりあえずの throw」を書かずに済み、
  * 呼び出し側が未実装メソッドを呼べば型検査の時点で弾かれる。
@@ -39,12 +39,19 @@ import type {
 } from "../db/records.ts";
 import { insertCheckUnit } from "../db/repositories/check-units.ts";
 import { findManuscriptVersion } from "../db/repositories/manuscripts.ts";
-import { findRunByStartOperationId, insertRun, insertRunTarget } from "../db/repositories/runs.ts";
+import {
+  findRun,
+  findRunByStartOperationId,
+  insertRun,
+  insertRunTarget,
+} from "../db/repositories/runs.ts";
 import type { LmStudioClient } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
 import { splitAllowedWords } from "./allowed-words.ts";
 import type { RunEvent } from "./events.ts";
+import { runLoop } from "./loop.ts";
 import type { RequestQueue } from "./queue.ts";
+import { createStopGate } from "./recovery.ts";
 import type { RecoveryGate } from "./recovery-gate.ts";
 import type { RunStatus } from "./status.ts";
 
@@ -90,8 +97,8 @@ export interface StartRunResult {
   readonly run: RunRecord;
   /**
    * ループの完了。**決して reject しない**（決定 33）。呼び出し元は待っても捨ててもよい。
-   * 本タスク（Task 6）の実装では、単位駆動ループがまだ無いため、開始直後の `RunRecord` を
-   * そのまま解決する Promise を返す（仮実装。Task 7 でループの完了に置き換える）。
+   * `running` で始まった実行では単位駆動ループ（`run/loop.ts`）が終端化した `RunRecord`、
+   * 開始時点で終端状態になった実行では開始直後の `RunRecord` に解決する。
    */
   readonly done: Promise<RunRecord>;
 }
@@ -125,6 +132,49 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // 進捗通知の失敗で実行を止めない（決定 42）。
     }
   };
+
+  /**
+   * 単位駆動ループ（`run/loop.ts`）を起動し、`done` になる Promise を返す（決定 24）。
+   *
+   * **決して reject しない**（決定 33）。想定外の例外の完全な処理（`running` の単位を `pending`
+   * に戻し、`internal-error` で終端化する）は Task 8 の仕事だが、ここでも最低限「例外を握って
+   * `done` を解決する」「`finally` でレジストリから外し `gate.dispose()` する」ことは行う。
+   * 例外で抜けた場合、`run-settled` は出ず、実行は `running` のまま残る（Task 8 で塞ぐ）。
+   *
+   * 停止ゲートはこの関数が作る。`stopRun`（Task 8）は同じゲートを実行 ID から引く必要があるため、
+   * Task 8 でレジストリにゲートを併せて持たせることになる。
+   */
+  function startLoop(run: RunRecord): Promise<RunRecord> {
+    const gate = createStopGate(deps.recoveryConfirmMs);
+    return (async (): Promise<RunRecord> => {
+      try {
+        // ループの最初の書き込み（`claimUnitChecked`）を `startRun` の呼び出しから切り離す。
+        // async 関数の本体は最初の `await` まで同期的に走るため、これが無いと `startRun` から
+        // 戻る前に 1 単位目が `running` になり、「開始直後の DB の状態」が観測できなくなる
+        // （開始トランザクションの結果とループの進行が同じ同期区間に混ざる）。
+        await Promise.resolve();
+        return await runLoop({
+          db: deps.db,
+          client: deps.client,
+          queue: deps.queue,
+          recoveryGate: deps.recoveryGate,
+          gate,
+          runId: run.id,
+          now,
+          createId,
+          emit: (event) => {
+            emit(run.id, event);
+          },
+        });
+      } catch {
+        // 決定 24：done は reject しない。DB の現在値（更新できていなければ開始直後の値）を返す。
+        return findRun(deps.db, run.id) ?? run;
+      } finally {
+        registry.delete(run.id);
+        gate.dispose();
+      }
+    })();
+  }
 
   function startRun(input: StartRunInput): StartRunResult {
     const manuscript = findManuscriptVersion(deps.db, input.manuscriptVersionId);
@@ -264,10 +314,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
       }
 
-      const result: StartRunResult = { run: written.run, done: Promise.resolve(written.run) };
-      if (written.run.status === "running") {
-        registry.set(written.run.id, result);
+      if (written.run.status !== "running") {
+        // ループを持たない実行（開始時点で終端化済み）。レジストリにも登録しない。
+        return { run: written.run, done: Promise.resolve(written.run) };
       }
+
+      const result: StartRunResult = { run: written.run, done: startLoop(written.run) };
+      registry.set(written.run.id, result);
       return result;
     } catch (error) {
       if (!isUniqueConstraintViolation(error, "start_operation_id")) {
