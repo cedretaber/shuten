@@ -38,20 +38,25 @@ export function localFailure(reason: UnitFailure["reason"], message: string): Un
  *   決定 5(b) のとおり当該単位は未完了のまま残す。
  * - `chat` 由来でも `model-not-loaded`（実行中のアンロード）と `aborted`（停止操作）は
  *   失敗ではない（仕様書 7 節・8.2 節）。
- * - `chat` 由来の `timeout` は、`recoveryConfirmMs > 0`（オーケストレーター経路）のときだけ
- *   `pending` にする（決定 20）。ハード上限（`budgetMs + recoveryConfirmMs`）に達しても
- *   「生成終了を確認できない」だけで、応答が実際に来ないと決まったわけではないため、
- *   停止からの打ち切り（`aborted`）と同じ扱いにする。`recoveryConfirmMs === 0`
- *   （CLI と `runPipeline` の経路）では従来どおり `failed`。
+ * - `chat` 由来の `timeout` は、`treatUnconfirmedAsPending` が true のときだけ `pending` にする
+ *   （決定 20）。ハード上限に達しても「生成終了を確認できない」だけで、応答が実際に来ないと
+ *   決まったわけではないため、停止からの打ち切り（`aborted`）と同じ扱いにする。
+ *
+ * `treatUnconfirmedAsPending` は**呼び出し元が経路を明示するフラグ**である（決定 45-3）。
+ * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない
+ * （既定 false で従来どおり `failed`）。待機時間（`recoveryConfirmMs`）を判別子に使ってはならない：
+ * 決定 43 は `SHUTEN_RECOVERY_CONFIRM_MS = 0` を正規の設定値として認めており、0 のときに
+ * タイムアウトすると実行は `recovery-waiting` になるのに単位は `failed` になって、
+ * 手動再開がその単位を拾えなくなる。
  */
-function isPendingFailure(failure: UnitFailure, recoveryConfirmMs: number): boolean {
+function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boolean): boolean {
   if (failure.origin !== "chat") {
     return true;
   }
   if (failure.reason === "model-not-loaded" || failure.reason === "aborted") {
     return true;
   }
-  return recoveryConfirmMs > 0 && failure.reason === "timeout";
+  return treatUnconfirmedAsPending && failure.reason === "timeout";
 }
 
 /**
@@ -65,11 +70,12 @@ function isPendingFailure(failure: UnitFailure, recoveryConfirmMs: number): bool
  *
  * どちらも `origin === "chat"`（実際に送った）に限る。送信前に止めた `origin: "local"` の
  * `aborted`（キュー待ち・`ensureLoaded` 中の停止、門で止めた単位）は生成終了が未確認では
- * ないので、従来どおり失敗メッセージそのものを使う。`recoveryConfirmMs > 0` を条件に含めるのは、
- * `runPipeline`（CLI）が `signal` を渡して中断したときの文言を変えないため（E1）。
+ * ないので、従来どおり失敗メッセージそのものを使う。`treatUnconfirmedAsPending` を条件に
+ * 含めるのは、`runPipeline`（CLI）が `signal` を渡して中断したときの文言を変えないため（E1）。
+ * `isPendingFailure` と同じく、判別子は待機時間ではなく呼び出し元が渡すフラグである（決定 45-3）。
  */
-function pendingNote(failure: UnitFailure, recoveryConfirmMs: number): string {
-  if (recoveryConfirmMs > 0 && failure.origin === "chat") {
+function pendingNote(failure: UnitFailure, treatUnconfirmedAsPending: boolean): string {
+  if (treatUnconfirmedAsPending && failure.origin === "chat") {
     if (failure.reason === "timeout") {
       return "応答が上限内に届かなかった。生成終了は未確認";
     }
@@ -155,8 +161,16 @@ export interface CheckUnitArgs {
   readonly generation: GenerationSettings;
   /** 遅延通知の閾値。ハード上限は checkMs + recoveryConfirmMs。 */
   readonly checkMs: number;
-  /** 既定 0。0 ならハード上限は checkMs そのもの（従来の挙動）。 */
+  /**
+   * 上限まで待つ時間。既定 0。0 ならハード上限は checkMs そのもの（決定 43 が認める正規の設定値）。
+   * **経路の判別には使わない**（決定 45-3。それは treatUnconfirmedAsPending の役目）。
+   */
   readonly recoveryConfirmMs?: number | undefined;
+  /**
+   * 打ち切られた単位を `pending` にするか（決定 20・45-3）。既定 false。
+   * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない。
+   */
+  readonly treatUnconfirmedAsPending?: boolean | undefined;
   readonly executor: Executor;
   readonly createCandidateId: () => string;
   /**
@@ -193,6 +207,7 @@ export interface CheckUnitOutcome {
  */
 export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOutcome> {
   const recoveryConfirmMs = args.recoveryConfirmMs ?? 0;
+  const treatUnconfirmedAsPending = args.treatUnconfirmedAsPending ?? false;
   const inputGraphemes = countGraphemes(sliceRange(args.text, args.input.inputRange));
   const request = buildCheckRequest({
     text: args.text,
@@ -258,13 +273,13 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
       generationUnconfirmed: false,
     };
   }
-  const unit: CheckUnitResult = isPendingFailure(outcome.failure, recoveryConfirmMs)
+  const unit: CheckUnitResult = isPendingFailure(outcome.failure, treatUnconfirmedAsPending)
     ? {
         status: "pending",
         targetIndex: args.targetIndex,
         perspective: args.perspective,
         attempts: outcome.attempts,
-        note: pendingNote(outcome.failure, recoveryConfirmMs),
+        note: pendingNote(outcome.failure, treatUnconfirmedAsPending),
       }
     : {
         status: "failed",
@@ -299,8 +314,16 @@ export interface RecheckUnitArgs {
   readonly generation: GenerationSettings;
   /** 遅延通知の閾値。ハード上限は recheckMs + recoveryConfirmMs。 */
   readonly recheckMs: number;
-  /** 既定 0。0 ならハード上限は recheckMs そのもの（従来の挙動）。 */
+  /**
+   * 上限まで待つ時間。既定 0。0 ならハード上限は recheckMs そのもの（決定 43 が認める正規の設定値）。
+   * **経路の判別には使わない**（決定 45-3。それは treatUnconfirmedAsPending の役目）。
+   */
   readonly recoveryConfirmMs?: number | undefined;
+  /**
+   * 打ち切られた単位を `pending` にするか（決定 20・45-3）。既定 false。
+   * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない。
+   */
+  readonly treatUnconfirmedAsPending?: boolean | undefined;
   readonly executor: Executor;
   /**
    * recheckMs を超えたときに呼ぶ。省略可。送信のたび（再試行を含め、1 回の execute で
@@ -345,6 +368,7 @@ export interface RecheckUnitOutcome {
  */
 export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<RecheckUnitOutcome> {
   const recoveryConfirmMs = args.recoveryConfirmMs ?? 0;
+  const treatUnconfirmedAsPending = args.treatUnconfirmedAsPending ?? false;
   if (args.suppressed) {
     return {
       result: { status: "suppressed" },
@@ -420,13 +444,13 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
 
   // LM Studio 由来の input-too-long（HTTP 400）も再確認では実行を止めない（決定 5(c)）。
   const halt = outcome.halt;
-  if (isPendingFailure(outcome.failure, recoveryConfirmMs)) {
+  if (isPendingFailure(outcome.failure, treatUnconfirmedAsPending)) {
     return {
       result: {
         status: "pending",
         attempts: outcome.attempts,
         inputRange: input.inputRange,
-        note: pendingNote(outcome.failure, recoveryConfirmMs),
+        note: pendingNote(outcome.failure, treatUnconfirmedAsPending),
       },
       failure: outcome.failure,
       halt,

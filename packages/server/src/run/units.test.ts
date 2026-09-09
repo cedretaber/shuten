@@ -554,7 +554,7 @@ describe("executeCheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("U6: chat 由来の timeout は recoveryConfirmMs === 0 なら unit.status が failed のまま（CLI・runPipeline の非退行）", async () => {
+  it("U6: treatUnconfirmedAsPending を渡さなければ chat 由来の timeout は failed のまま（CLI・runPipeline の非退行。決定 45-3）", async () => {
     const { executor } = createFakeExecutor(() =>
       Promise.resolve<ExecOutcome<{ findings: [] }>>({
         ok: false,
@@ -571,7 +571,10 @@ describe("executeCheckUnit", () => {
       }),
     );
 
-    const outcome = await executeCheckUnit(baseCheckArgs(executor, { recoveryConfirmMs: 0 }));
+    // 待機時間を設定していても、判別子（treatUnconfirmedAsPending）を渡さない限り failed。
+    const outcome = await executeCheckUnit(
+      baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500 }),
+    );
 
     expect(outcome.unit.status).toBe("failed");
     if (outcome.unit.status === "failed") {
@@ -583,7 +586,7 @@ describe("executeCheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("U7: chat 由来の timeout は recoveryConfirmMs > 0 なら unit.status が pending になり、失敗の事実は残る（決定 20）", async () => {
+  it("U7: treatUnconfirmedAsPending が true なら chat 由来の timeout は pending になり、失敗の事実は残る（決定 20・45-3）", async () => {
     const halt: RunStop = {
       reason: "recovery-needed",
       message: "生成要求がタイムアウトしたため実行を停止した",
@@ -601,8 +604,13 @@ describe("executeCheckUnit", () => {
       }),
     );
 
+    // 待機時間が 0 でも、判別子が true なら pending にする（決定 43 の 0 は正規の設定値）。
     const outcome = await executeCheckUnit(
-      baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500 }),
+      baseCheckArgs(executor, {
+        checkMs: 1000,
+        recoveryConfirmMs: 0,
+        treatUnconfirmedAsPending: true,
+      }),
     );
 
     expect(outcome.unit.status).toBe("pending");
@@ -864,7 +872,7 @@ describe("executeRecheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("chat 由来の timeout は recoveryConfirmMs === 0 なら result.status が failed のまま（CLI・runPipeline の非退行）", async () => {
+  it("treatUnconfirmedAsPending を渡さなければ chat 由来の timeout は failed のまま（CLI・runPipeline の非退行。決定 45-3）", async () => {
     const { executor } = createFakeExecutor(() =>
       Promise.resolve<
         ExecOutcome<{
@@ -888,7 +896,9 @@ describe("executeRecheckUnit", () => {
       }),
     );
 
-    const outcome = await executeRecheckUnit(baseRecheckArgs(executor, { recoveryConfirmMs: 0 }));
+    const outcome = await executeRecheckUnit(
+      baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 250 }),
+    );
 
     expect(outcome.result.status).toBe("failed");
     if (outcome.result.status === "failed") {
@@ -900,7 +910,7 @@ describe("executeRecheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("chat 由来の timeout は recoveryConfirmMs > 0 なら result.status が pending になり、失敗の事実は残る（決定 20）", async () => {
+  it("treatUnconfirmedAsPending が true なら chat 由来の timeout は pending になり、失敗の事実は残る（決定 20・45-3）", async () => {
     const halt: RunStop = {
       reason: "recovery-needed",
       message: "生成要求がタイムアウトしたため実行を停止した",
@@ -926,7 +936,11 @@ describe("executeRecheckUnit", () => {
     );
 
     const outcome = await executeRecheckUnit(
-      baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 250 }),
+      baseRecheckArgs(executor, {
+        recheckMs: 1000,
+        recoveryConfirmMs: 0,
+        treatUnconfirmedAsPending: true,
+      }),
     );
 
     expect(outcome.result.status).toBe("pending");

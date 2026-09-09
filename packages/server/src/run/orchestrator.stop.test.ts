@@ -825,6 +825,40 @@ describe("run/orchestrator: 停止要求が届いた場所で結果が変わる�
     expect(unit?.pendingNote).toBe("応答が上限内に届かなかった。生成終了は未確認");
   });
 
+  it("45-3: recoveryConfirmMs が 0 でも打ち切られた単位は pending で、手動再開が拾い直す（決定 20・43）", async () => {
+    const scripted = scriptedClient([
+      () => {
+        throw timedOut();
+      },
+      () => checkResponse([]),
+    ]);
+    // 決定 43 が認める正規の設定値。checkMs がそのままハード上限になるだけで、
+    // 「オーケストレーター経路か否か」の判別には使わない（決定 45-3）。
+    const harness = makeHarness(scripted.client, { recoveryConfirmMs: 0 });
+    const started = harness.orchestrator.startRun(
+      baseInput({ perspectives: ["typo"], timeouts: { checkMs: 1_000, recheckMs: 1_000 } }),
+    );
+    const run = await started.done;
+
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.stopReason).toBe("recovery-needed");
+    expect(scripted.requests).toHaveLength(1);
+
+    // 待機時間が 0 でも failed にはならない。failed になると手動再開が拾えない。
+    const stalled = unitsOf(harness.db, run.id)[0];
+    expect(stalled?.status).toBe("pending");
+    expect(stalled?.pendingNote).toBe("応答が上限内に届かなかった。生成終了は未確認");
+
+    // その単位を手動再開が拾って、生成要求を送り直す。
+    const resumed = harness.orchestrator.resumeRun(run.id);
+    const resumedRun = await resumed.done;
+
+    expect(resumed.accepted).toBe(true);
+    expect(scripted.requests).toHaveLength(2);
+    expect(resumedRun.status).toBe("completed");
+    expect(unitsOf(harness.db, run.id)[0]?.status).toBe("done");
+  });
+
   it("R3: recovery-waiting の実行があると、別の実行にも自動で生成要求を送らない（決定 39）", async () => {
     const scripted = scriptedClient([
       () => {

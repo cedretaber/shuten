@@ -186,10 +186,11 @@ export interface RunConditions {
   readonly model: ModelInfo | null;
   readonly chunkSettings: ChunkSettings;
   /**
-   * オーケストレーター経路（`runs.recovery_confirm_ms` > 0）では、`checkMs` / `recheckMs` は
+   * `recoveryConfirmMs`（`runs.recovery_confirm_ms`）が 0 より大きいときは、`checkMs` / `recheckMs` は
    * 打ち切りの上限ではなく、超えた時点で遅延として通知する閾値であり、実際のハード上限は
-   * これに `recoveryConfirmMs` を加えた値になる（決定 7）。`runPipeline`（CLI、
-   * `recoveryConfirmMs: 0`）では従来どおり `checkMs` / `recheckMs` がそのままハード上限になる。
+   * これに `recoveryConfirmMs` を加えた値になる（決定 7）。0 のとき（`runPipeline`（CLI）と、
+   * 決定 43 が正規の設定値として認める `SHUTEN_RECOVERY_CONFIRM_MS = 0`）は `checkMs` / `recheckMs`
+   * がそのままハード上限になる。これは待機時間の話で、経路の判別ではない（決定 45-3）。
    */
   readonly timeouts: { readonly checkMs: number; readonly recheckMs: number };
   readonly allowedWords: readonly string[];

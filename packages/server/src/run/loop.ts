@@ -297,6 +297,8 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
         generation,
         recheckMs,
         recoveryConfirmMs,
+        // 決定 45-3：オーケストレーター経路であることを待機時間ではなくこのフラグで示す。
+        treatUnconfirmedAsPending: true,
         executor,
         onSlow: (elapsedMs) => {
           // 1 回の生成要求で最大 2 回出る（executor が内部で 1 回だけ再試行し、そのたびに
@@ -370,6 +372,8 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
         generation,
         checkMs,
         recoveryConfirmMs,
+        // 決定 45-3：オーケストレーター経路であることを待機時間ではなくこのフラグで示す。
+        treatUnconfirmedAsPending: true,
         executor,
         createCandidateId: context.createId,
         onSlow: (elapsedMs) => {
