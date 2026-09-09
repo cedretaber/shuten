@@ -2121,7 +2121,14 @@ describe("run/orchestrator: activeRunIds（PR10 決定 7）", () => {
 describe("run/orchestrator: 復旧確認の永続化（PR10 決定 11）", () => {
   it("D1: confirmRecovery は確認時刻を書いてゲートを開け、status は変えない（冪等）", () => {
     const scripted = scriptedClient([]);
-    const harness = makeHarness(scripted.client);
+    // 呼ぶたびに進む時計。冪等の検査を「同じミリ秒に落ちたから一致した」で通さないため。
+    let tick = 0;
+    const harness = makeHarness(scripted.client, {
+      now: () => {
+        tick += 1000;
+        return new Date(tick);
+      },
+    });
     const seeded = seedRun(harness.db, {
       runId: "run-confirm",
       status: "recovery-waiting",
@@ -2135,7 +2142,7 @@ describe("run/orchestrator: 復旧確認の永続化（PR10 決定 11）", () =>
     expect(confirmed?.recoveryConfirmedAt).not.toBeNull();
     expect(harness.recoveryGate.blocked).toBe(false);
 
-    // 冪等：2 回目は時刻を書き直さない。
+    // 冪等：2 回目は時刻を書き直さない（時計は進んでいるので、書き直せば値が変わる）。
     const again = harness.orchestrator.confirmRecovery(seeded.run.id);
     expect(again?.recoveryConfirmedAt).toEqual(confirmed?.recoveryConfirmedAt);
 
