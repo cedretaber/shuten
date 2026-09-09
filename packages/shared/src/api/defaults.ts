@@ -16,29 +16,29 @@ export const MAX_TIMEOUT_MS = 2_147_483_647;
  * 実行設定の既定値。CLI（`args.ts` の `DEFAULTS`）と web（PR11 の開始フォーム）が共有する
  * 「実測で決める初期値」の表の暫定値（計画 2026-09-08-pr7-pipeline.md）。
  *
- * `recheckEnabled` は CLI に対応する既定値が無い（CLI の `--mode` は既定 `split` で、
- * `split-recheck` を明示しない限り再確認段階そのものを実行しない）。ここでは CLI の既定の
- * 実行内容に合わせ、追加の生成要求を送らない `false` を既定にした。
+ * `recheckEnabled` は仕様書 5.2 節の初期値表「再確認：有効。比較実験のため無効化可能」に従い
+ * `true` を既定にした（CLI の `--mode` 既定 `split` は再確認段階を持つパイプラインを選ぶかどうかの
+ * 別軸であり、この既定値の根拠にはならない）。
  */
 export const RUN_SETTINGS_DEFAULTS = {
   generation: {
-    maxTokens: 16000,
+    maxTokens: 16_000,
     temperature: 0,
     reasoningEffort: "none",
   },
   chunkSettings: {
-    targetGraphemes: 1500,
-    contextGraphemes: 1000,
-    recheckContextGraphemes: 3000,
+    targetGraphemes: 1_500,
+    contextGraphemes: 1_000,
+    recheckContextGraphemes: 3_000,
     roundingTolerance: 0.2,
-    maxInputGraphemes: 12000,
+    maxInputGraphemes: 12_000,
   },
   timeouts: {
-    checkMs: 300000,
-    recheckMs: 300000,
+    checkMs: 300_000,
+    recheckMs: 300_000,
   },
   perspectives: ["typo", "naturalness"],
-  recheckEnabled: false,
+  recheckEnabled: true,
 } as const satisfies {
   readonly generation: {
     readonly maxTokens: number;
