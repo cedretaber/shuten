@@ -65,6 +65,12 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
 /** 終了手順**全体**の上限（決定 18）。超えたら諦めて非ゼロ終了する。 */
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
+/**
+ * 手順⑤（LM Studio 接続を閉じる）**だけ**の上限（裁定 R19）。生成でない要求
+ * （`listModels` など）が流れ切るには十分で、生成の応答を待つには短い。
+ */
+const CLIENT_CLOSE_TIMEOUT_MS = 1_000;
+
 let shuttingDown = false;
 
 /**
@@ -82,16 +88,20 @@ let shuttingDown = false;
  *    これが 1 の `cb` を呼べるようにする当のもの。
  * 3. `server.closeAllConnections()`：残った keep-alive の接続を切る。
  * 4. ここで初めて `cb`（1 の完了）を待つ。
- * 5. `connection.current().client.close()`：undici の `Agent.close()`。進行中の要求は流す。
+ * 5. `connection.current().client.close()`：undici の `Agent.close()`。進行中の要求を流すが、
+ *    **`CLIENT_CLOSE_TIMEOUT_MS` までしか待たない**（裁定 R19）。`Agent.close()` は進行中の要求が
+ *    完了するまで解決せず、検査中の進行中の要求とは生成そのものである（分単位）。ここで無制限に
+ *    待つのは決定 18 の「走っている実行は待たない」に反する。流れ切らなかったら
+ *    `shutdown: client drain skipped` を出して 6 へ進む（応答はどのみち捨てるし、次回起動の
+ *    `reconcileOnStartup` が `backend-restarted` として照合する）。
+ *    なお `ConnectionManager.update` 側の `close()` は無制限のままでよい（決定 19。接続設定の
+ *    更新では進行中の `listModels` を流し切ってから古いクライアントを捨てるのが正しい）。
  * 6. DB を閉じて `process.exit(0)`。
  *
- * 全体に `SHUTDOWN_TIMEOUT_MS` の上限を置き、超えたら `process.exit(1)`（タイマーは `unref()` する
- * ので、手順が先に終われば残らない）。2 回目のシグナルは即 `process.exit(1)`。
- *
- * **上限に達しうるのは実質 5 である。** undici の `Agent.close()` は進行中の要求が完了するまで
- * 解決しないので、LM Studio が応答を返す前に終了すると（生成中の Ctrl+C）この段で待たされ、
- * `shutdown: timeout` で非ゼロ終了する。生成そのものはどのみち止められないので、実害は
- * 「5 秒待って終了コードが 1 になる」ことだけ（DB は WAL なので次回起動時に復旧する）。
+ * **手順を最後まで進めた終了は必ず 0 で終わる**（裁定 R19）。流し切れなかった接続は終了コードを
+ * 変えない。全体の `SHUTDOWN_TIMEOUT_MS` は、どこかが本当に固まったときの最後の砦として残す
+ * （超えたら `process.exit(1)`。タイマーは `unref()` するので、手順が先に終われば残らない）。
+ * 2 回目のシグナルは即 `process.exit(1)`。
  *
  * Windows には `SIGTERM` が届かない。対象はコンソールの Ctrl+C（`SIGINT`）だけになる。
  */
@@ -127,8 +137,20 @@ function shutdown(signal: NodeJS.Signals): void {
       // 4：ここで待つ。
       await closedServer;
 
-      // 5：進行中の要求を流してから接続を捨てる。
-      await connection.current().client.close();
+      // 5：進行中の要求を流してから接続を捨てる。ただし待つのは短い上限まで（裁定 R19）。
+      const drained = await Promise.race([
+        connection
+          .current()
+          .client.close()
+          .then(() => true),
+        new Promise<boolean>((resolve) => {
+          setTimeout(() => resolve(false), CLIENT_CLOSE_TIMEOUT_MS).unref();
+        }),
+      ]);
+      if (!drained) {
+        // 進行中の要求（＝生成）を捨てて先へ進んだ印。URL も API キーも例外の中身も出さない。
+        console.log("shutdown: client drain skipped");
+      }
     } catch (error) {
       // 接続先 URL・API キーを出さない（例外の `message` は含みうる）。クラス名だけ出す。
       console.error(`shutdown: error ${error instanceof Error ? error.name : typeof error}`);
