@@ -34,8 +34,12 @@ export interface ChatRequest {
     | undefined;
 }
 
-/** `state` がこの値のときだけ生成を許す。 */
-export const LOADED_STATE = "loaded";
+/**
+ * `state` がこの値のときだけ生成を許す。実体は `@shuten/shared` の `run/model-capability.ts` に
+ * 移した（PR11 決定 9）。ここでは再エクスポートだけ行う（`client.ts`・`api/settings.ts` の
+ * import 元はこのファイルのまま変えない）。
+ */
+export { LOADED_STATE } from "@shuten/shared";
 
 /**
  * `/api/v0/models` の 1 要素。応答本文は実験で記録していないため、`id` 以外はすべて欠けうる（決定 4）。
