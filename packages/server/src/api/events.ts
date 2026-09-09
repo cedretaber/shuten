@@ -222,7 +222,7 @@ export function registerEventRoutes(router: Hono, deps: ApiDeps): void {
 
         await closed;
       } catch (error) {
-        // 値もメッセージも出さない。クラス名だけ（他の 500 ログと同じ規則。`api/errors.ts` 参照）。
+        // 値もメッセージも出さない。クラス名だけを出す（接続先・原稿の断片が混ざりうる値は載せない）。
         console.error(
           "SSE ストリームの購読中に例外が発生しました",
           error instanceof Error ? error.constructor.name : typeof error,
