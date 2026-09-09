@@ -681,7 +681,7 @@ PR9 計画書のテスト一覧（Q・S・O・T・R・P・M・D・E）をその�
 ## 実装タスク
 
 いずれも Subagent Driven で実行し、各タスクの終わりに `pnpm check` を通す。
-PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書、24〜38 は本書）。
+PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書、24〜44 は本書）。
 
 ### Task 1：停止理由の追加とイベント型
 
@@ -773,7 +773,7 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
    「`ExecOutcome` を返す Promise が解決する前に呼ばれていること」を確認する
    （`onRecoveryRequired` の中で記録した順序と、`execute` の `await` 後の順序を比べる）。
 
-**完了条件**：停止ゲートの 6 件と復旧ゲートのテストが緑。`pnpm check` が緑。E1 が緑。
+**完了条件**：停止ゲートの 7 件と復旧ゲートのテストが緑。`pnpm check` が緑。E1 が緑。
 
 ### Task 4：リポジトリの追加と遷移ラッパー（決定 29・30・36・38）
 
@@ -810,7 +810,7 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 
 **Files**
 - Create: `packages/server/src/run/save.ts`
-- Test: `packages/server/src/run/save.test.ts`（T1〜T7、P1〜P5 の DB 側、決定 11 の優先順位）
+- Test: `packages/server/src/run/save.test.ts`（T1〜T8、P1〜P5 の DB 側、決定 11 の優先順位）
 
 **Interfaces（後続タスクが使う）**：決定 28 の `saveCheckUnitOutcome` / `saveRecheckOutcome`。
 
