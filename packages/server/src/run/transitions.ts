@@ -7,10 +7,10 @@
  * リポジトリへそのまま委譲し、戻り値（条件付き更新の成否 boolean）をそのまま返す。
  *
  * 表にない遷移では **DB を 1 行も触らない**（リポジトリの呼び出し自体を行わない）。
-`not-applicable → pending`（決定 45-4）だけは「表には有るが専用の入口
-（`reopenSuppressedRecheckUnitChecked`）からしか通せない」遷移で、汎用の
-`claimRecheckUnitChecked` / `finishRecheckUnitChecked` からは同じ例外で弾く。
-表は状態しか見ないため、理由列（`suppressed` か否か）の判断をここで補う必要があるためである。
+ * `not-applicable → pending`（決定 45-4）だけは「表には有るが専用の入口
+ * （`reopenSuppressedRecheckUnitChecked`）からしか通せない」遷移で、汎用の
+ * `claimRecheckUnitChecked` / `finishRecheckUnitChecked` からは同じ例外で弾く。
+ * 表は状態しか見ないため、理由列（`suppressed` か否か）の判断をここで補う必要があるためである。
  * オーケストレーター・ループ・`save.ts`・起動時照合は、リポジトリの `claim*` / `finish*` を
  * 直接呼ばず、必ずこの 7 関数を経由する（レビューの検査項目。W3 は Task 7 でテスト化する）。
  *

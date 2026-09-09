@@ -656,9 +656,30 @@ describe("run/orchestrator: 停止要求が届いた場所で結果が変わる�
 
       expect(harness.orchestrator.stopRun(startedB.run.id).accepted).toBe(true);
 
-      first.resolve(checkResponse([]));
-      // タイマーを 1 ミリ秒も進めずに B が決着すること（上限まで待っていない）。
+      // 決定 45-2：B は**先行実行 A の生成が終わるのを待たずに**その場で決着する。
+      // `await startedB.done` で待つ形にすると、A を解決させてから判定することになり、
+      // 「順番が来るまで running のまま止まらない」退行を見逃す（このテストは 45-2 が
+      // 入る前も通っていた）。`queue.test.ts` の watch() と同じく、A を未解決に保ったまま
+      // 「もう決着したか」を同期的に観測する。
+      let settledB = false;
+      void startedB.done.then(
+        () => {
+          settledB = true;
+        },
+        () => {
+          settledB = true;
+        },
+      );
+      // タイマーを 1 ミリ秒も進めずに（上限まで待たずに）決着していること。
+      for (let index = 0; index < 5; index += 1) {
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(settledB).toBe(true);
+      // この時点で A はまだ 1 件目の生成要求の応答を待っている。
+      expect(scripted.requests).toHaveLength(1);
+
       const runB = await startedB.done;
+      first.resolve(checkResponse([]));
       const runA = await startedA.done;
 
       expect(runA.status).toBe("completed");

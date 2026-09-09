@@ -884,6 +884,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // 実行の状態も単位も 1 行も変わらない。
       return rejected(existing);
     }
+    // `resumeRun` にある `stopReason === "settings"` のガードが、ここには**無い**。現状これで
+    // 安全なのは、設定エラーで止まった実行が `collectRetryTargets` を通れないためである：
+    // 入力が上限を超えた単位は `!isInputTooLong(unit)` で対象から除かれ、他に `failed` が
+    // 無ければ対象 0 件で `RetryTargetError` が投げられ、下のトランザクションごと
+    // ロールバックされる（実行の状態も単位も 1 行も変わらない）。単位を 1 つも作らずに
+    // 止まった実行も同じく対象 0 件で弾かれる。
+    // **`collectRetryTargets` のこのフィルタを緩めるときは、ここに
+    // `stopReason === "settings"` のガードを足すこと。** 緩めたままだと `clearStopState` が
+    // 停止理由を消したうえで「1 度も検査していない実行が completed・指摘 0 件」に見える経路が
+    // 開き、`resumeRun` が明示的に塞いだ穴（`docs/reference/invariants.md`
+    // 「失敗を指摘ゼロと誤表示しない」）がこちら側から復活する。
     const from = existing.status;
     const unitIds = options?.unitIds;
 
