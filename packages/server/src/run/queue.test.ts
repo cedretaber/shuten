@@ -119,6 +119,7 @@ function createTrackingClient(
       timeline.push(`${label}:chat${chatCalls}-end`);
       return chatResult("ok");
     },
+    close: async () => {},
   };
 }
 
@@ -350,6 +351,7 @@ describe("createRequestQueue", () => {
         active -= 1;
         return chatResult("ok");
       },
+      close: async () => {},
     };
     const executor = createExecutor(client, {});
 
@@ -581,6 +583,7 @@ describe("createRequestQueue", () => {
         chatCalls += 1;
         return chatResult("ok");
       },
+      close: async () => {},
     };
     const executor = createExecutor(client, { queue, signal: controller.signal });
 

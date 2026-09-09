@@ -1164,24 +1164,29 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 
 ## PR10 以降への持ち越し
 
-- HTTP API・SSE の口（PR10）。本 PR の成果物は関数として呼べる形にとどめる。
+- HTTP API・SSE の口（PR10）。本 PR の成果物は関数として呼べる形にとどめる。**PR10 で解消。**
 - **`RunRecord` から接続先 URL を除いた公開 DTO への射影（PR10）。** 本 PR の `startRun` などは
   `endpointUrl` を持つ `RunRecord` をそのまま返す内部 API である（決定 24）。PR10 は HTTP 応答に
-  そのまま流してはならない。
+  そのまま流してはならない。**PR10 で解消**（射影は `server/src/api/dto.ts` の 1 か所。
+  漏えい検査は `api/leak.test.ts`）。
 - **生成中に応答を受け取れずに接続が切れた検査単位は `failed` のまま残る。** その実行は
   `recovery-waiting`（生成終了が未確認）になるが、単位の側は `pending` にならないため、復旧には
   「再開」に加えて「失敗単位の個別再試行」の 2 段の操作が要る。単位も `pending` にするには
   `UnitFailure` に「応答を受け取ったか否か」を持たせる必要があり、決定 20（打ち切りの経路を
   停止とタイムアウトの 2 つだけとしている）の文言の改訂も要るため、本 PR では広げなかった。
+  **PR10 でも解消せず、PR11b に切り出した**（PR10 決定 17）。
 - **「復旧を確認した」操作（PR10）。** 決定 39 のゲートを開ける口は現在 `resumeRun` しかない。
   版が変わった `recovery-waiting` の実行（決定 45-1）は再開できないので、プロセスを再起動する
   たびに `reconcileOnStartup` がゲートを閉じ直し、利用者は「拒否されるだけの再開」を 1 度
   試してゲートを開ける必要がある。再開とは別に、ゲートだけ開ける操作を用意して解消する。
+  **PR10 で解消**（`POST /api/recovery/confirm` と `runs.recovery_confirmed_at`。PR10 決定 11）。
 - **再開・再試行の拒否理由の判別子（PR10）。** `RunLaunchResult` は「受け付けたか」しか持たない。
   PR10 が HTTP のエラー表現を作るとき、拒否理由を自前で再導出せず（`settings` 判定や
   `hasStaleVersions` を orchestrator の外に書き写さず）、必要なら判別子を足してから使うこと。
-- `settings` 表と接続先の UI 上書き（PR10）。
-- `LmStudioClient` の `close()` / `dispose()` と graceful shutdown（PR10）。
+  **PR10 で解消**（`RunLaunchResult.rejectReason` を足し、409 `run-rejected-<reason>` に写す。PR10 決定 10）。
+- `settings` 表と接続先の UI 上書き（PR10）。**PR10 で解消**（`ConnectionManager`。PR10 決定 5・6）。
+- `LmStudioClient` の `close()` / `dispose()` と graceful shutdown（PR10）。**PR10 で解消**
+  （PR10 決定 18・19。走っている検査は待たず、5 秒の上限を置く）。
 - `listFindings` の N+1（PR12）。
 - 一括エクスポート（PR13）。
 - `recoveryConfirmMs = 120000` は暫定値。PR13 の実原稿評価で実測して見直す（決定 8）。

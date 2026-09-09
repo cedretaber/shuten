@@ -21,12 +21,21 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 ## 現在の状態
 
 scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は完了。仕様は確定（v0.9）。
-実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、PR9（実行キューと
-オーケストレーション、PR9a・PR9b の 2 本）まで完了。DB を正本として、検査の開始・停止・再開・失敗単位の
-個別再試行・起動時照合（バックエンド再起動後の状態整合）が関数として呼べる形で動く。受け入れ条件のうち
-11 節 3・4・5・11・14・15・16・18 項をサーバー側で満たした（画面がまだ無いため、利用者が実際に触って
-確認できるのは PR11・PR12 の完了後）。詳細計画は `docs/plans/2026-09-09-pr9-orchestration.md`（決定 1〜23）
-と `docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）。次は PR10（HTTP API と SSE）。
+実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、**PR10（HTTP API と SSE）
+まで完了**。DB を正本として、検査の開始・停止・再開・失敗単位の個別再試行・起動時照合（バックエンド再起動後の
+状態整合）が動き、それらを `/api` 配下の HTTP エンドポイントと SSE から操作・観測できる。接続先 URL は
+`settings` 表に保存して API（`PUT /api/settings/connection`）から上書きでき、API キーは
+プロセスのメモリにだけ置く（応答・ログ・SSE・エラーには接続先 URL も API キーも出さない。
+`packages/server/src/api/leak.test.ts` が全エンドポイントで検査している）。
+受け入れ条件のうち 11 節 3・4・5・11・14・15・16・18 項をサーバー側で満たした（画面がまだ無いため、利用者が
+実際に触って確認できるのは PR11・PR12 の完了後）。詳細計画は `docs/plans/2026-09-09-pr9-orchestration.md`
+（決定 1〜23）、`docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）、
+`docs/plans/2026-09-09-pr10-http-api.md`（HTTP API と SSE）。次は Windows でのローカル確認（チェックポイント）と
+PR11（接続・入力・設定画面）。2026-09-09 に残りの工程を見直し、PR11b・PR12a/12b・PR13a/13b に
+分け直した（ロードマップの「2026-09-09 の見直し」節）。評価原稿と正解データの準備は並行して進める。
+
+一括エクスポート（`GET /api/runs/:id/export`）は形式を評価ツールと揃えるため PR13a に回した。
+保存済み結果の再閲覧は `GET /api/runs/:id` と `GET /api/runs/:id/findings` で行う。
 
 ## 技術スタック
 
@@ -81,6 +90,20 @@ DB マイグレーションを適用し、失敗したら API を受け付けず
 実 LM Studio を使う統合テストは通常のテストから分離してある。`SHUTEN_LM_STUDIO_URL` を設定して `pnpm test:llm`
 を実行する（未設定なら全件 skip）。モデルは `SHUTEN_LM_STUDIO_MODEL` で指定でき、未指定ならロード済みの
 `llm` / `vlm` の最初のものを使う。
+
+### 終了
+
+`SIGINT`（コンソールの Ctrl+C）または `SIGTERM` を受けると、新規の接続を止め、SSE を閉じ、残った接続を切り、
+LM Studio への接続を閉じ、DB を閉じてから終了する（`shutdown: done` を出して終了コード 0）。
+**走っている検査は待たない**——LM Studio 側の生成は止められないので、次回起動時の照合が
+「バックエンド再起動で中断」として扱う。生成の応答を待っている最中に終了した場合は、接続を閉じる段を
+1 秒で切り上げて `shutdown: client drain skipped` を出す（終了コードは 0 のまま）。
+手順のどこかが本当に固まったときのために全体に 5 秒の上限があり、超えると `shutdown: timeout` を出して
+終了コード 1 で落ちる。2 回目のシグナルは待たずに終了する。
+
+**Windows では `SIGTERM` が届かない。** 対象はコンソールの Ctrl+C（`SIGINT`）だけになる。
+なお Windows での動作確認は CI（`windows-latest` の `pnpm check`）でのみ行っており、**ローカルの
+Windows 環境では未確認**（`docs/guides/windows-verification.md` のチェックポイントで確認する）。
 
 ## 評価ハーネス（`packages/cli`）
 

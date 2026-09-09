@@ -16,6 +16,7 @@ function stubClient(): LmStudioClient {
     listModels: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     ensureLoaded: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     chat: () => Promise.reject(new Error("テストでは呼ばれない想定")),
+    close: () => Promise.resolve(),
   };
 }
 

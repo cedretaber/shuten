@@ -7,7 +7,7 @@ import { createDatabase } from "./client.ts";
 import { applyMigrations, resolveMigrationsFolder } from "./migrate.ts";
 import { findRun } from "./repositories/runs.ts";
 
-/** 仕様書 8.1 節で定義する 9 表。 */
+/** 仕様書 8.1 節で定義する 9 表 + PR10 決定 5 の `settings` 表。 */
 const EXPECTED_TABLES = [
   "manuscript_versions",
   "runs",
@@ -18,6 +18,7 @@ const EXPECTED_TABLES = [
   "recheck_units",
   "diagnostics",
   "judgments",
+  "settings",
 ] as const;
 
 /** `meta/_journal.json` の最小限の形（本テストで使う部分だけ）。 */
@@ -35,38 +36,41 @@ interface Journal {
 }
 
 /**
- * 本物の `drizzle/` フォルダから `0000` のマイグレーションだけを一時ディレクトリへコピーする
- * （決定 21 の「既存データが入った DB に適用できること」の検証用）。
+ * 本物の `drizzle/` フォルダから、先頭 `entryCount` 件のマイグレーションだけを一時ディレクトリへ
+ * コピーする（決定 21 の「既存データが入った DB に適用できること」の検証用）。既定は 1 件（`0000`
+ * だけ。Mig1・Mig2 が使う）。Mig3 は 2 件（`0000` + `0001`）を切り出す。
  *
  * `.sql` ファイルは本物をそのままコピーする（ハッシュ・内容を変えない）。`_journal.json` は
- * entries を idx 0 の 1 件だけにする。`when`（タイムスタンプ）は本物の journal からそのまま
+ * entries を先頭 `entryCount` 件だけにする。`when`（タイムスタンプ）は本物の journal からそのまま
  * 引き継ぐ。drizzle の migrator は「最後に適用したマイグレーションの `created_at` より
  * `folderMillis`（journal の `when`）が大きいものだけ」を適用対象にする（ハッシュの一致では
  * 判定しない。`drizzle-orm/sqlite-core/dialect.js` の `migrate()` で確認済み）ため、`when` を
- * 本物と合わせておかないと、後で本物のフォルダを当てたときに `0000` が二重適用されてしまう。
+ * 本物と合わせておかないと、後で本物のフォルダを当てたときに既に適用済みの版が二重適用されてしまう。
  *
  * 呼び出し側は返されたディレクトリを使い終わったら `rmSync` で消すこと。
  */
-function createPartialMigrationsFolder(): string {
+function createPartialMigrationsFolder(entryCount = 1): string {
   const realFolder = resolveMigrationsFolder();
   const journal = JSON.parse(
     readFileSync(path.join(realFolder, "meta", "_journal.json"), "utf-8"),
   ) as Journal;
-  const firstEntry = journal.entries[0];
-  if (!firstEntry) {
-    throw new Error("実物の meta/_journal.json に entries がありません");
+  const entries = journal.entries.slice(0, entryCount);
+  if (entries.length < entryCount) {
+    throw new Error(`実物の meta/_journal.json に entries が ${String(entryCount)} 件ありません`);
   }
 
   const partialFolder = mkdtempSync(path.join(os.tmpdir(), "shuten-migrate-partial-"));
   mkdirSync(path.join(partialFolder, "meta"), { recursive: true });
-  copyFileSync(
-    path.join(realFolder, `${firstEntry.tag}.sql`),
-    path.join(partialFolder, `${firstEntry.tag}.sql`),
-  );
+  for (const entry of entries) {
+    copyFileSync(
+      path.join(realFolder, `${entry.tag}.sql`),
+      path.join(partialFolder, `${entry.tag}.sql`),
+    );
+  }
   const partialJournal: Journal = {
     version: journal.version,
     dialect: journal.dialect,
-    entries: [firstEntry],
+    entries,
   };
   writeFileSync(
     path.join(partialFolder, "meta", "_journal.json"),
@@ -85,6 +89,21 @@ describe("applyMigrations", () => {
     for (const table of EXPECTED_TABLES) {
       expect(names.has(table)).toBe(true);
     }
+
+    close();
+  });
+
+  it("M1b: settings 表が key・value・updated_at 列を持ち、runs に recovery_confirmed_at 列がある（PR10 決定 5・マイグレーション 0002）", () => {
+    const { db, close } = createDatabase(":memory:");
+    applyMigrations(db);
+
+    const settingsColumns = db
+      .all<{ name: string }>(sql`pragma table_info(settings)`)
+      .map((c) => c.name);
+    expect(new Set(settingsColumns)).toEqual(new Set(["key", "value", "updated_at"]));
+
+    const runsColumns = db.all<{ name: string }>(sql`pragma table_info(runs)`).map((c) => c.name);
+    expect(runsColumns).toContain("recovery_confirmed_at");
 
     close();
   });
@@ -194,6 +213,74 @@ describe("applyMigrations", () => {
       for (const table of EXPECTED_TABLES) {
         expect(names.has(table)).toBe(true);
       }
+
+      close();
+    } finally {
+      rmSync(partialFolder, { recursive: true, force: true });
+    }
+  });
+
+  it("Mig3: 0000 + 0001 を適用した DB に runs の行を作り、そこへ 0002 を適用できる。既存行は recoveryConfirmedAt: null になる（決定 21・PR10 決定 5）", () => {
+    const partialFolder = createPartialMigrationsFolder(2);
+    const { db, close } = createDatabase(":memory:");
+    try {
+      // 0000 + 0001 まで適用する（0002 の settings 表・recovery_confirmed_at 列はまだ無い状態）。
+      applyMigrations(db, partialFolder);
+      const columnsBeforeUpgrade = db.all<{ name: string }>(sql`pragma table_info(runs)`);
+      expect(columnsBeforeUpgrade.some((c) => c.name === "recovery_confirmed_at")).toBe(false);
+      const tablesBeforeUpgrade = db.all<{ name: string }>(
+        sql`select name from sqlite_master where type = 'table'`,
+      );
+      expect(new Set(tablesBeforeUpgrade.map((t) => t.name)).has("settings")).toBe(false);
+
+      // 0000 + 0001 の形の runs 行を作る（Mig1 と同じ理由で drizzle の insert には頼らず、
+      // 生 SQL で列を明示して書き込む）。
+      db.run(sql`
+        INSERT INTO manuscript_versions (id, name, body, body_hash, created_at)
+        VALUES ('mv1', '原稿', '本文', 'hash', ${Date.now()})
+      `);
+      db.run(sql`
+        INSERT INTO runs (
+          id, manuscript_version_id, model_id, endpoint_url,
+          generation_settings, chunk_settings, timeouts, perspectives,
+          recheck_enabled, allowed_words, allowed_word_rule_version,
+          prompt_version, diagnostic_transform_version, status,
+          generation_unconfirmed, started_at, recovery_confirm_ms, stop_requested_at
+        ) VALUES (
+          'r1', 'mv1', 'model-a', 'http://127.0.0.1:1234',
+          ${JSON.stringify({ maxTokens: 512, temperature: 0.2 })},
+          ${JSON.stringify({
+            targetGraphemes: 1500,
+            contextGraphemes: 1000,
+            recheckContextGraphemes: 3000,
+            roundingTolerance: 0.2,
+            maxInputGraphemes: 8000,
+          })},
+          ${JSON.stringify({ checkMs: 60_000, recheckMs: 60_000 })},
+          ${JSON.stringify(["typo"])},
+          0, ${JSON.stringify([])}, '1',
+          '1', '1', 'running',
+          0, ${Date.now()}, 0, NULL
+        )
+      `);
+
+      // 本物のフォルダで 0002 まで適用する。
+      applyMigrations(db);
+
+      const columnsAfterUpgrade = db.all<{ name: string }>(sql`pragma table_info(runs)`);
+      expect(columnsAfterUpgrade.some((c) => c.name === "recovery_confirmed_at")).toBe(true);
+
+      const settingsColumns = db
+        .all<{ name: string }>(sql`pragma table_info(settings)`)
+        .map((c) => c.name);
+      expect(new Set(settingsColumns)).toEqual(new Set(["key", "value", "updated_at"]));
+      // settings 表が実際に問い合わせられる（作られただけで壊れていないこと）。
+      expect(db.all(sql`select * from settings`)).toEqual([]);
+
+      // 適用前から存在した行が recoveryConfirmedAt: null（＝復旧未確認のまま）で読める。
+      const found = findRun(db, "r1");
+      expect(found).not.toBeNull();
+      expect(found?.recoveryConfirmedAt).toBeNull();
 
       close();
     } finally {

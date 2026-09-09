@@ -861,6 +861,27 @@ describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
     }
   }, 10_000);
 
+  it("C52 実 HTTP 経路の connection でも message に接続先 URL・API キーを入れない（PR10 裁定 R12）", async () => {
+    // 接続先 URL が漏れうる最も現実的な経路。undici が投げる例外の message・cause は
+    // host:port を含みうるが、LmStudioError.message は定型文でなければならない
+    // （この message は executor が UnitFailure に逐語で写し、DB と API 応答まで流れる）。
+    // API キーは今日はヘッダーにしか乗らないので構造上は保証されるが、その前提を検証もせず
+    // 仮定しないよう、ここでも非空のキーを渡して同じ形で確かめる。
+    const dispatcher = new Agent({ headersTimeout: 200, bodyTimeout: 200 });
+    try {
+      const client = createLmStudioClient({ baseUrl, apiKey: SECRET_API_KEY, dispatcher });
+      const error = await catchLmStudioError(client.listModels({ timeoutMs: 5000 }));
+      expect(error.kind).toBe("connection");
+      expect(error.message).not.toContain(baseUrl);
+      expect(error.message).not.toContain("127.0.0.1");
+      expect(String(error.stack)).not.toContain("127.0.0.1:");
+      expect(error.message).not.toContain(SECRET_API_KEY);
+      expect(String(error.stack)).not.toContain(SECRET_API_KEY);
+    } finally {
+      await dispatcher.close();
+    }
+  }, 10_000);
+
   it("C48 既定のクライアントは timeoutMs より前に打ち切られず成功する", async () => {
     // この遅延（2000ms）は修正前の既定値（undici の headersTimeout 300 秒）でも打ち切られないため、
     // このテスト単体では dispatcher が効いていることの証明にはならない（判別しているのは C47）。
@@ -881,4 +902,153 @@ describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
     expect(error.kind).toBe("timeout");
     expect(elapsed).toBeLessThan(HEADER_DELAY_MS);
   }, 10_000);
+});
+
+describe("close()（決定 19）", () => {
+  it("C50 clientOptions.dispatcher を渡した場合、close() してもその dispatcher 自体の close は呼ばれない（所有者が閉じる）", async () => {
+    const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+    const closeSpy = vi.spyOn(dispatcher, "close");
+    try {
+      const client = createLmStudioClient({ baseUrl: BASE_URL, dispatcher });
+      await client.close();
+      expect(closeSpy).not.toHaveBeenCalled();
+    } finally {
+      await dispatcher.close();
+    }
+  });
+
+  it("C51 dispatcher を渡さない場合、close() が自前の Agent を閉じ、以後の listModels が失敗する（実 HTTP サーバーを使う C47 と同じ道具立て）", async () => {
+    const created = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m1", state: LOADED_STATE }] }));
+    });
+    await new Promise<void>((resolve) => {
+      created.listen(0, "127.0.0.1", resolve);
+    });
+    const address = created.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("待ち受けポートを取得できなかった");
+    }
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
+    try {
+      const client = createLmStudioClient({ baseUrl });
+      // close する前は普通に成功する（自前の Agent がまだ生きている）。
+      const before = await client.listModels({ timeoutMs: 5000 });
+      expect(before.map((model) => model.id)).toEqual(["m1"]);
+
+      await client.close();
+
+      const error = await catchLmStudioError(client.listModels({ timeoutMs: 5000 }));
+      expect(error.kind).toBe("connection");
+    } finally {
+      created.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        created.close(() => resolve());
+      });
+    }
+  }, 10_000);
+});
+
+/**
+ * 接続先 URL・API キーは「接続設定の応答」（URL は正常応答の `endpointUrl` のみ、キーは常に不可）
+ * 以外に出さない（不変条件）。`LmStudioError.message` は `executor.ts` の `toFailure` が
+ * `UnitFailure.message` に**逐語で**写し、DB（検査履歴）にも API 応答にも流れるので、
+ * 出さない保証はここ（作る場所）で持つ。マスクを DTO の境界に置いても DB は守れない。
+ * URL が現れてよいのは `cause` だけで、`cause` は写されない。API キーは今日はヘッダーにしか
+ * 乗らないので構造上は漏れないはずだが、その前提を検証もせず仮定しないよう、ここでも
+ * 非空のキーを持つクライアントで確かめる（PR10 裁定 R12。この保証を確かめる形の一部）。
+ */
+describe("C53 LmStudioError.message に接続先 URL・API キーを入れない（PR10 裁定 R12）", () => {
+  const HOST = "lmstudio.test";
+
+  /** undici のように、下位の例外の message に接続先を含める `fetch`。 */
+  const rejectingFetchWithUrl = (() =>
+    Promise.reject(
+      new TypeError(`fetch failed: connect ECONNREFUSED ${BASE_URL}`),
+    )) as unknown as typeof globalThis.fetch;
+
+  function expectNoSecrets(error: LmStudioError): void {
+    expect(error.message).not.toContain(HOST);
+    expect(error.message).not.toContain(BASE_URL);
+    expect(error.message).not.toContain(SECRET_API_KEY);
+    // stack の先頭行は `name: message` なので、message が汚れていればここにも出る。
+    expect(String(error.stack)).not.toContain(HOST);
+    expect(String(error.stack)).not.toContain(SECRET_API_KEY);
+  }
+
+  it("chat: connection（fetch の reject）・connection（HTTP 500）・malformed・truncated", async () => {
+    const cases: Array<{ readonly kind: string; readonly fetchImpl: typeof globalThis.fetch }> = [
+      { kind: "connection", fetchImpl: rejectingFetchWithUrl },
+      { kind: "connection", fetchImpl: makeFetch(() => textResponse(500, "internal")).fetchImpl },
+      { kind: "malformed", fetchImpl: makeFetch(() => textResponse(200, "not json")).fetchImpl },
+      {
+        kind: "truncated",
+        fetchImpl: makeFetch(() => jsonResponse(200, successBody({ finishReason: "length" })))
+          .fetchImpl,
+      },
+    ];
+
+    for (const { kind, fetchImpl } of cases) {
+      const client = createLmStudioClient({
+        baseUrl: BASE_URL,
+        apiKey: SECRET_API_KEY,
+        fetch: fetchImpl,
+      });
+      const error = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1000 }));
+      expect(error.kind).toBe(kind);
+      expectNoSecrets(error);
+    }
+  });
+
+  it("chat: timeout と aborted", async () => {
+    const client = createLmStudioClient({
+      baseUrl: BASE_URL,
+      apiKey: SECRET_API_KEY,
+      fetch: hangingFetch,
+    });
+
+    const timedOut = await catchLmStudioError(client.chat(baseChatRequest, { timeoutMs: 1 }));
+    expect(timedOut.kind).toBe("timeout");
+    expectNoSecrets(timedOut);
+
+    const aborted = await catchLmStudioError(
+      client.chat(baseChatRequest, { timeoutMs: 1000, signal: AbortSignal.abort() }),
+    );
+    expect(aborted.kind).toBe("aborted");
+    expectNoSecrets(aborted);
+  });
+
+  it("listModels: connection（HTTP 500）と malformed", async () => {
+    const cases: Array<{ readonly kind: string; readonly fetchImpl: typeof globalThis.fetch }> = [
+      { kind: "connection", fetchImpl: rejectingFetchWithUrl },
+      { kind: "connection", fetchImpl: makeFetch(() => textResponse(500, "internal")).fetchImpl },
+      { kind: "malformed", fetchImpl: makeFetch(() => textResponse(200, "not json")).fetchImpl },
+    ];
+
+    for (const { kind, fetchImpl } of cases) {
+      const client = createLmStudioClient({
+        baseUrl: BASE_URL,
+        apiKey: SECRET_API_KEY,
+        fetch: fetchImpl,
+      });
+      const error = await catchLmStudioError(client.listModels({ timeoutMs: 1000 }));
+      expect(error.kind).toBe(kind);
+      expectNoSecrets(error);
+    }
+  });
+
+  it("ensureLoaded: model-not-loaded（モデル ID は入るが接続先・API キーは入らない）", async () => {
+    const { fetchImpl } = makeFetch(() =>
+      jsonResponse(200, modelListBody([{ id: "other", state: LOADED_STATE }])),
+    );
+    const client = createLmStudioClient({
+      baseUrl: BASE_URL,
+      apiKey: SECRET_API_KEY,
+      fetch: fetchImpl,
+    });
+    const error = await catchLmStudioError(client.ensureLoaded("m1"));
+    expect(error.kind).toBe("model-not-loaded");
+    expect(error.message).toContain("m1");
+    expectNoSecrets(error);
+  });
 });

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-
+import { fixedConnection } from "../connection.ts";
 import type { LmStudioClient } from "../lmstudio/types.ts";
 import { createOrchestrator } from "../run/orchestrator.ts";
 import { createRequestQueue } from "../run/queue.ts";
@@ -73,6 +73,20 @@ function createTempDbContext(): {
 }
 
 /** `insertRun` に渡す最小限の入力。 */
+/** 復旧確認のテストは生成要求を 1 件も送らない（ループを起こさない）。呼ばれたら落とす。 */
+const UNUSED_CLIENT: LmStudioClient = {
+  listModels: () => {
+    throw new Error("listModels は呼ばれない想定");
+  },
+  ensureLoaded: () => {
+    throw new Error("ensureLoaded は呼ばれない想定");
+  },
+  chat: () => {
+    throw new Error("chat は呼ばれない想定");
+  },
+  close: () => Promise.resolve(),
+};
+
 function baseRunInput(id: string) {
   return {
     id,
@@ -436,15 +450,15 @@ describe("db/persistence", () => {
             raw: {},
           });
         },
+        close: () => Promise.resolve(),
       };
 
       const recoveryGate = createRecoveryGate();
       const orchestrator = createOrchestrator({
         db: reopened.db,
-        client,
+        connection: fixedConnection(client, "http://127.0.0.1:1234"),
         queue: createRequestQueue(),
         recoveryGate,
-        endpointUrl: "http://127.0.0.1:1234",
         recoveryConfirmMs: 60_000,
       });
 
@@ -473,6 +487,61 @@ describe("db/persistence", () => {
       expect(findCheckUnit(reopened.db, "run-d1-cu-naturalness")?.status).toBe("done");
       // 完了済みだった単位の attempts は再開の影響を受けない。
       expect(findCheckUnit(reopened.db, "run-d1-cu-typo")?.attempts).toBe(1);
+
+      reopened.close();
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  /**
+   * PR10 決定 11：復旧の確認（`recovery_confirmed_at`）が再起動をまたいで残り、
+   * 起動時照合が確認済みの `recovery-waiting` のゲートを閉じ直さないこと。
+   * 版違い・接続先違いで再開も終端化もできない実行が、起動のたびに確認をやり直させないための要件。
+   */
+  it("復旧確認の永続化：確認済みの recovery-waiting は開き直した後の reconcileOnStartup でゲートを閉じられない（PR10 決定 11）", () => {
+    const ctx = createTempDbContext();
+    try {
+      const opened = ctx.track(createDatabase(ctx.file));
+      applyMigrations(opened.db);
+      insertManuscriptVersion(opened.db, { id: "mv1", name: "原稿", body: "あいうえお" });
+      for (const id of ["run-confirmed", "run-unconfirmed"]) {
+        insertRun(opened.db, {
+          ...baseRunInput(id),
+          status: "recovery-waiting",
+          generationUnconfirmed: true,
+          finishedAt: new Date(2000),
+        });
+      }
+
+      // 落ちる前のプロセスで、利用者が片方の復旧を確認した。
+      const before = createOrchestrator({
+        db: opened.db,
+        connection: fixedConnection(UNUSED_CLIENT, "http://127.0.0.1:1234"),
+        queue: createRequestQueue(),
+        recoveryGate: createRecoveryGate(),
+        recoveryConfirmMs: 60_000,
+      });
+      expect(before.confirmRecovery("run-confirmed")?.recoveryConfirmedAt).not.toBeNull();
+
+      opened.close();
+
+      // ハンドルを閉じて開き直す（バックエンドの再起動を模す）。復旧ゲートはプロセス内の
+      // 状態なので、新しいプロセスでは何も閉じていない状態から始まる。
+      const reopened = ctx.track(createDatabase(ctx.file));
+      applyMigrations(reopened.db);
+      const recoveryGate = createRecoveryGate();
+      createOrchestrator({
+        db: reopened.db,
+        connection: fixedConnection(UNUSED_CLIENT, "http://127.0.0.1:1234"),
+        queue: createRequestQueue(),
+        recoveryGate,
+        recoveryConfirmMs: 60_000,
+      }).reconcileOnStartup();
+
+      // 確認済みは閉じない。未確認は閉じる（決定 39 は保ったまま）。
+      expect([...recoveryGate.blockedRunIds]).toEqual(["run-unconfirmed"]);
+      expect(findRun(reopened.db, "run-confirmed")?.status).toBe("recovery-waiting");
 
       reopened.close();
     } finally {

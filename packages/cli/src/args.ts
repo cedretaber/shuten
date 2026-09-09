@@ -1,6 +1,11 @@
-import type { ReasoningEffort } from "@shuten/server/lmstudio/types.ts";
 import type { PipelineMode } from "@shuten/server/run/result.ts";
-import type { ChunkSettings, Perspective } from "@shuten/shared";
+import {
+  type ChunkSettings,
+  MAX_TIMEOUT_MS,
+  type Perspective,
+  type ReasoningEffort,
+  RUN_SETTINGS_DEFAULTS,
+} from "@shuten/shared";
 
 /**
  * CLI が受け付ける引数（決定 12）。接続先 URL と API キーはここに含めない
@@ -30,25 +35,33 @@ const MODES: readonly PipelineMode[] = ["split", "split-recheck", "full-text"];
 const PERSPECTIVES: readonly Perspective[] = ["typo", "naturalness"];
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high"];
 
-/** タイムアウトの整数範囲（`packages/server/src/lmstudio/client.ts` の `validateTimeoutMs` と合わせる）。 */
-const TIMEOUT_MS_MAX = 2 ** 31 - 1;
+/**
+ * タイムアウトの整数範囲の上限。`packages/server/src/lmstudio/client.ts` の `validateTimeoutMs` と
+ * 同じ値で、どちらも `@shuten/shared` の `MAX_TIMEOUT_MS` を正本にする（2 か所に書くと片方だけ
+ * 直す事故が起きるため）。
+ */
+const TIMEOUT_MS_MAX = MAX_TIMEOUT_MS;
 
-/** 「実測で決める初期値」の表の暫定値（計画 2026-09-08-pr7-pipeline.md）。 */
+/**
+ * 「実測で決める初期値」の表の暫定値（計画 2026-09-08-pr7-pipeline.md）。CLI に無い設定
+ * （`mode` / `outPath` / `allowedWordsPath`）を除き、`RUN_SETTINGS_DEFAULTS`（`@shuten/shared`。
+ * web と共有する既定値）から取る（PR10 決定 2・9）。
+ */
 const DEFAULTS = {
   outPath: null as string | null,
   allowedWordsPath: null as string | null,
   mode: "split" as PipelineMode,
-  perspectives: ["typo", "naturalness"] as readonly Perspective[],
-  maxTokens: 16000,
-  temperature: 0,
-  reasoningEffort: "none" as ReasoningEffort,
-  targetGraphemes: 1500,
-  contextGraphemes: 1000,
-  recheckContextGraphemes: 3000,
-  roundingTolerance: 0.2,
-  maxInputGraphemes: 12000,
-  checkTimeoutMs: 300000,
-  recheckTimeoutMs: 300000,
+  perspectives: RUN_SETTINGS_DEFAULTS.perspectives as readonly Perspective[],
+  maxTokens: RUN_SETTINGS_DEFAULTS.generation.maxTokens,
+  temperature: RUN_SETTINGS_DEFAULTS.generation.temperature,
+  reasoningEffort: RUN_SETTINGS_DEFAULTS.generation.reasoningEffort as ReasoningEffort,
+  targetGraphemes: RUN_SETTINGS_DEFAULTS.chunkSettings.targetGraphemes,
+  contextGraphemes: RUN_SETTINGS_DEFAULTS.chunkSettings.contextGraphemes,
+  recheckContextGraphemes: RUN_SETTINGS_DEFAULTS.chunkSettings.recheckContextGraphemes,
+  roundingTolerance: RUN_SETTINGS_DEFAULTS.chunkSettings.roundingTolerance,
+  maxInputGraphemes: RUN_SETTINGS_DEFAULTS.chunkSettings.maxInputGraphemes,
+  checkTimeoutMs: RUN_SETTINGS_DEFAULTS.timeouts.checkMs,
+  recheckTimeoutMs: RUN_SETTINGS_DEFAULTS.timeouts.recheckMs,
 } as const;
 
 type Result<T> =

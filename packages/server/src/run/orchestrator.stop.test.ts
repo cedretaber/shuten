@@ -14,7 +14,8 @@ import {
 } from "@shuten/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
-
+import type { ConnectionSource } from "../connection.ts";
+import { fixedConnection } from "../connection.ts";
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
 import type { CheckUnitRecord, RunRecord } from "../db/records.ts";
@@ -87,6 +88,9 @@ const CHUNK_TOO_LONG: ChunkSettings = {
 
 /** 停止ゲートの上限。これを超えると打ち切る（決定 6）。 */
 const RECOVERY_CONFIRM_MS = 60_000;
+
+/** 検査実行に保存される接続先（`seedRun` / `makeHarness` と同じ値）。ループバックのみ。 */
+const ENDPOINT_URL = "http://127.0.0.1:1234";
 
 const USAGE: Usage = {
   promptTokens: 10,
@@ -240,6 +244,7 @@ function scriptedClient(
       }
       return await step({ request, index, signal: chatOptions.signal });
     },
+    close: () => Promise.resolve(),
   };
   return { client, requests, ensureLoadedCalls };
 }
@@ -267,10 +272,9 @@ function makeHarness(client: LmStudioClient, overrides: Partial<OrchestratorDeps
   const recoveryGate = overrides.recoveryGate ?? createRecoveryGate();
   const deps: OrchestratorDeps = {
     db,
-    client,
+    connection: fixedConnection(client, "http://127.0.0.1:1234"),
     queue: createRequestQueue(),
     recoveryGate,
-    endpointUrl: "http://127.0.0.1:1234",
     recoveryConfirmMs: RECOVERY_CONFIRM_MS,
     createId: idSequence(),
     onEvent: (event) => events.push(event),
@@ -1117,6 +1121,7 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
     const run = await resumed.done;
 
     expect(resumed.accepted).toBe(true);
+    expect(resumed.rejectReason).toBeNull();
     expect(scripted.requests).toHaveLength(1);
     expect(run.status).toBe("completed");
     const units = unitsOf(harness.db, run.id);
@@ -1219,9 +1224,11 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
 
     const resumed = harness.orchestrator.resumeRun(started.run.id);
     expect(resumed.accepted).toBe(false);
+    expect(resumed.rejectReason).toBe("running");
     expect(resumed.done).toBe(started.done);
     const retried = harness.orchestrator.retryFailedUnits(started.run.id);
     expect(retried.accepted).toBe(false);
+    expect(retried.rejectReason).toBe("running");
     expect(retried.done).toBe(started.done);
 
     pending.resolve(checkResponse([]));
@@ -1247,12 +1254,14 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
 
     const rejectedCompleted = harness.orchestrator.resumeRun(completed.run.id);
     expect(rejectedCompleted.accepted).toBe(false);
+    expect(rejectedCompleted.rejectReason).toBe("status");
     expect(rejectedCompleted.run.status).toBe("completed");
     expect(await rejectedCompleted.done).toMatchObject({ status: "completed" });
     expect(readRun(harness.db, completed.run.id).status).toBe("completed");
 
     const rejectedPartial = harness.orchestrator.resumeRun(partial.run.id);
     expect(rejectedPartial.accepted).toBe(false);
+    expect(rejectedPartial.rejectReason).toBe("status");
     expect(readRun(harness.db, partial.run.id).status).toBe("partially-failed");
     // 停止の記録も消えていない（claimRunChecked を呼んでいない）。
     expect(readRun(harness.db, partial.run.id).stopReason).toBe("aborted");
@@ -1275,6 +1284,7 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
 
     const resumed = harness.orchestrator.resumeRun(started.run.id);
     expect(resumed.accepted).toBe(false);
+    expect(resumed.rejectReason).toBe("settings");
     expect(resumed.run.status).toBe("stopped");
     expect(await resumed.done).toMatchObject({ status: "stopped", stopReason: "settings" });
     await flush();
@@ -1311,6 +1321,7 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
 
     const resumed = harness.orchestrator.resumeRun(started.run.id);
     expect(resumed.accepted).toBe(false);
+    expect(resumed.rejectReason).toBe("settings");
     expect(resumed.run.status).toBe("stopped");
     expect(await resumed.done).toMatchObject({ status: "stopped", stopReason: "settings" });
     await flush();
@@ -1344,6 +1355,7 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
       const resumed = harness.orchestrator.resumeRun(seeded.run.id);
 
       expect(resumed.accepted).toBe(false);
+      expect(resumed.rejectReason).toBe("stale-version");
       expect(await resumed.done).toMatchObject({ status: "stopped" });
       await flush();
 
@@ -1373,12 +1385,17 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
     const resumed = harness.orchestrator.resumeRun(seeded.run.id);
 
     expect(resumed.accepted).toBe(false);
+    expect(resumed.rejectReason).toBe("stale-version");
     await flush();
     // ゲートは開く（「利用者が生成終了を確認した」ことの記録であって、実行を続ける許可ではない）。
     expect(harness.recoveryGate.blocked).toBe(false);
-    // それでも DB は 1 行も変わらず、生成要求も送らない。
+    // 生成要求は送らない。
     expect(scripted.requests).toHaveLength(0);
-    expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+    // DB で変わるのは復旧確認の時刻の 1 列だけ（PR10 決定 11。これが無いと
+    // `reconcileOnStartup` が起動のたびにゲートを閉じ直す）。`status` も停止の記録も単位も同じ。
+    const after = readRun(harness.db, seeded.run.id);
+    expect(after.recoveryConfirmedAt).not.toBeNull();
+    expect({ ...after, recoveryConfirmedAt: null }).toEqual(runBefore);
     expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
   });
 
@@ -1447,6 +1464,7 @@ describe("run/orchestrator: retryFailedUnits（決定 36）", () => {
 
     const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
     expect(retried.accepted).toBe(true);
+    expect(retried.rejectReason).toBeNull();
     expect(retried.run.status).toBe("running");
     expect(retried.run.stopReason).toBeNull();
 
@@ -1628,9 +1646,15 @@ describe("run/orchestrator: retryFailedUnits（決定 36）", () => {
       unitStatuses: ["failed"],
     });
 
-    expect(harness.orchestrator.retryFailedUnits(completed.run.id).accepted).toBe(false);
+    expect(harness.orchestrator.retryFailedUnits(completed.run.id)).toMatchObject({
+      accepted: false,
+      rejectReason: "status",
+    });
     // recovery-waiting は再試行では受け付けない（ゲートを開けられるのは resumeRun だけ）。
-    expect(harness.orchestrator.retryFailedUnits(waiting.run.id).accepted).toBe(false);
+    expect(harness.orchestrator.retryFailedUnits(waiting.run.id)).toMatchObject({
+      accepted: false,
+      rejectReason: "status",
+    });
     expect(readRun(harness.db, waiting.run.id).status).toBe("recovery-waiting");
     expect(unitsOf(harness.db, waiting.run.id)[0]?.status).toBe("failed");
   });
@@ -1656,6 +1680,7 @@ describe("run/orchestrator: retryFailedUnits（決定 36）", () => {
         const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
 
         expect(retried.accepted).toBe(false);
+        expect(retried.rejectReason).toBe("stale-version");
         expect(await retried.done).toMatchObject({ status });
         await flush();
 
@@ -1925,5 +1950,370 @@ describe("run/orchestrator: 想定外の例外（決定 33）", () => {
     await expect(started.done).resolves.toMatchObject({ id: started.run.id });
     // 読み直せなかったので、ループに入る前に読めた値（開始直後のレコード）で解決する。
     expect((await started.done).status).toBe("running");
+  });
+});
+
+/** ---------------------------------------------------------------------- */
+/** PR10 決定 6・7・11（接続の供給元・実行中判定・復旧確認の永続化） */
+/** ---------------------------------------------------------------------- */
+
+/** 接続先を後から差し替えられる `ConnectionSource`（決定 6 のテスト用）。 */
+function mutableConnection(
+  client: LmStudioClient,
+  initialUrl: string = ENDPOINT_URL,
+): { readonly source: ConnectionSource; set(url: string): void } {
+  let endpointUrl = initialUrl;
+  return {
+    source: { current: () => ({ client, endpointUrl }) },
+    set(url: string): void {
+      endpointUrl = url;
+    },
+  };
+}
+
+/**
+ * 再起動を模す：**同じ DB** に新しい復旧ゲートと新しいオーケストレーターを作る。
+ * 復旧ゲートはプロセス内のメモリだけの状態なので、これで「起動時に何を読んで閉じるか」を見られる
+ * （列がファイルに残ること自体は `db/repositories/runs.test.ts` の RC1 と
+ * `db/persistence.test.ts` が見ている）。
+ */
+function restart(
+  db: Db,
+  client: LmStudioClient,
+): { readonly orchestrator: Orchestrator; readonly recoveryGate: RecoveryGate } {
+  const recoveryGate = createRecoveryGate();
+  const orchestrator = createOrchestrator({
+    db,
+    connection: fixedConnection(client, ENDPOINT_URL),
+    queue: createRequestQueue(),
+    recoveryGate,
+    recoveryConfirmMs: RECOVERY_CONFIRM_MS,
+  });
+  return { orchestrator, recoveryGate };
+}
+
+describe("run/orchestrator: 接続先の供給元（PR10 決定 6）", () => {
+  it("C1: 接続先が保存済みと違えば再開を拒否し、戻せば受け付ける（endpoint_url は書き換えない）", async () => {
+    const scripted = scriptedClient([() => checkResponse([])]);
+    const connection = mutableConnection(scripted.client);
+    const harness = makeHarness(scripted.client, { connection: connection.source });
+    const seeded = seedRun(harness.db, {
+      runId: "run-conn-resume",
+      status: "stopped",
+      unitStatuses: ["pending"],
+    });
+    const runBefore = readRun(harness.db, seeded.run.id);
+    const unitsBefore = unitsOf(harness.db, seeded.run.id);
+
+    connection.set("http://127.0.0.1:4321");
+    const rejected = harness.orchestrator.resumeRun(seeded.run.id);
+    await flush();
+
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.rejectReason).toBe("connection");
+    // 実行の行も単位の行も 1 つも変わらない（保存済みの endpoint_url も上書きしない）。
+    expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+    expect(readRun(harness.db, seeded.run.id).endpointUrl).toBe(ENDPOINT_URL);
+    expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
+    // 生成要求も ensureLoaded も 1 件も送らない。
+    expect(scripted.requests).toHaveLength(0);
+    expect(scripted.ensureLoadedCalls).toHaveLength(0);
+
+    // 接続先を戻せば受け付ける。
+    connection.set(ENDPOINT_URL);
+    const resumed = harness.orchestrator.resumeRun(seeded.run.id);
+    expect(resumed.accepted).toBe(true);
+    expect(resumed.rejectReason).toBeNull();
+    const run = await resumed.done;
+    expect(run.status).toBe("completed");
+    expect(run.endpointUrl).toBe(ENDPOINT_URL);
+    expect(scripted.requests).toHaveLength(1);
+  });
+
+  it("C2: 接続先が保存済みと違えば再試行を拒否し、戻せば受け付ける（単位は failed のまま）", async () => {
+    const scripted = scriptedClient([() => checkResponse([])]);
+    const connection = mutableConnection(scripted.client);
+    const harness = makeHarness(scripted.client, { connection: connection.source });
+    const seeded = seedRun(harness.db, {
+      runId: "run-conn-retry",
+      status: "partially-failed",
+      unitStatuses: ["failed"],
+    });
+    const runBefore = readRun(harness.db, seeded.run.id);
+    const unitsBefore = unitsOf(harness.db, seeded.run.id);
+
+    connection.set("http://127.0.0.1:4321");
+    const rejected = harness.orchestrator.retryFailedUnits(seeded.run.id);
+    await flush();
+
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.rejectReason).toBe("connection");
+    expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+    expect(readRun(harness.db, seeded.run.id).endpointUrl).toBe(ENDPOINT_URL);
+    expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
+    expect(unitsOf(harness.db, seeded.run.id)[0]?.status).toBe("failed");
+    expect(scripted.requests).toHaveLength(0);
+
+    connection.set(ENDPOINT_URL);
+    const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
+    expect(retried.accepted).toBe(true);
+    expect(retried.rejectReason).toBeNull();
+    const run = await retried.done;
+    expect(run.status).toBe("completed");
+    expect(run.endpointUrl).toBe(ENDPOINT_URL);
+  });
+
+  it("C3: 接続先違いで recovery-waiting の実行を拒否しても、復旧ゲートは開く（実行は recovery-waiting のまま）", async () => {
+    const scripted = scriptedClient([]);
+    const connection = mutableConnection(scripted.client);
+    const harness = makeHarness(scripted.client, { connection: connection.source });
+    const seeded = seedRun(harness.db, {
+      runId: "run-conn-waiting",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+    });
+    // 起動時照合が閉じた状態を模す。
+    harness.recoveryGate.block(seeded.run.id);
+
+    connection.set("http://127.0.0.1:4321");
+    const rejected = harness.orchestrator.resumeRun(seeded.run.id);
+    await flush();
+
+    expect(rejected.accepted).toBe(false);
+    expect(rejected.rejectReason).toBe("connection");
+    // ゲートは開く（意味は「利用者が生成終了を確認した」であって「この実行を続ける」ではない）。
+    expect(harness.recoveryGate.blocked).toBe(false);
+    // 実行は recovery-waiting のまま。書かれるのは復旧確認の時刻だけ（決定 11）。
+    const after = readRun(harness.db, seeded.run.id);
+    expect(after.status).toBe("recovery-waiting");
+    expect(after.endpointUrl).toBe(ENDPOINT_URL);
+    expect(after.recoveryConfirmedAt).not.toBeNull();
+    expect(scripted.requests).toHaveLength(0);
+  });
+});
+
+describe("run/orchestrator: activeRunIds（PR10 決定 7）", () => {
+  it("C4: 開始で増え、終わると減る（正本はレジストリ）", async () => {
+    const scripted = scriptedClient([() => checkResponse([])]);
+    const harness = makeHarness(scripted.client);
+    expect(harness.orchestrator.activeRunIds()).toEqual([]);
+
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    expect(harness.orchestrator.activeRunIds()).toEqual([started.run.id]);
+
+    await started.done;
+    expect(harness.orchestrator.activeRunIds()).toEqual([]);
+  });
+
+  it("C5: 開始時点で終端化した実行はレジストリに載らない", async () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+    const started = harness.orchestrator.startRun(
+      baseInput({ perspectives: ["typo"], chunkSettings: CHUNK_INVALID_SETTINGS }),
+    );
+    await started.done;
+
+    expect(started.run.status).toBe("stopped");
+    expect(harness.orchestrator.activeRunIds()).toEqual([]);
+  });
+});
+
+describe("run/orchestrator: 復旧確認の永続化（PR10 決定 11）", () => {
+  it("D1: confirmRecovery は確認時刻を書いてゲートを開け、status は変えない（冪等）", () => {
+    const scripted = scriptedClient([]);
+    // 呼ぶたびに進む時計。冪等の検査を「同じミリ秒に落ちたから一致した」で通さないため。
+    let tick = 0;
+    const harness = makeHarness(scripted.client, {
+      now: () => {
+        tick += 1000;
+        return new Date(tick);
+      },
+    });
+    const seeded = seedRun(harness.db, {
+      runId: "run-confirm",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+    });
+    harness.recoveryGate.block(seeded.run.id);
+
+    const confirmed = harness.orchestrator.confirmRecovery(seeded.run.id);
+
+    expect(confirmed?.status).toBe("recovery-waiting");
+    expect(confirmed?.recoveryConfirmedAt).not.toBeNull();
+    expect(harness.recoveryGate.blocked).toBe(false);
+
+    // 冪等：2 回目は時刻を書き直さない（時計は進んでいるので、書き直せば値が変わる）。
+    const again = harness.orchestrator.confirmRecovery(seeded.run.id);
+    expect(again?.recoveryConfirmedAt).toEqual(confirmed?.recoveryConfirmedAt);
+
+    // 存在しない実行は null（HTTP は 404 にする）。
+    expect(harness.orchestrator.confirmRecovery("存在しない実行")).toBeNull();
+  });
+
+  it("D2: 確認済みの recovery-waiting は再起動でゲートを閉じ直されず、未確認のものは閉じられる", () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+    const confirmedRun = seedRun(harness.db, {
+      runId: "run-confirmed",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+    });
+    const unconfirmedRun = seedRun(harness.db, {
+      runId: "run-unconfirmed",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+    });
+    harness.orchestrator.confirmRecovery(confirmedRun.run.id);
+
+    const restarted = restart(harness.db, scripted.client);
+    restarted.orchestrator.reconcileOnStartup();
+
+    expect([...restarted.recoveryGate.blockedRunIds]).toEqual([unconfirmedRun.run.id]);
+  });
+
+  it("D3: 版違いで拒否された recovery-waiting は、再起動でもゲートを閉じ直されない", () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+    const seeded = seedRun(harness.db, {
+      runId: "run-stale-persisted",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+      promptVersion: "0",
+    });
+    harness.recoveryGate.block(seeded.run.id);
+
+    expect(harness.orchestrator.resumeRun(seeded.run.id).rejectReason).toBe("stale-version");
+    expect(harness.recoveryGate.blocked).toBe(false);
+
+    const restarted = restart(harness.db, scripted.client);
+    restarted.orchestrator.reconcileOnStartup();
+
+    // ここが決定 11 の本体：これが無いと利用者は起動のたびに確認をやり直すことになる。
+    expect(restarted.recoveryGate.blocked).toBe(false);
+  });
+
+  it("D4: 接続先違いで拒否された recovery-waiting も、再起動でゲートを閉じ直されない", () => {
+    const scripted = scriptedClient([]);
+    const connection = mutableConnection(scripted.client);
+    const harness = makeHarness(scripted.client, { connection: connection.source });
+    const seeded = seedRun(harness.db, {
+      runId: "run-conn-persisted",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+    });
+    harness.recoveryGate.block(seeded.run.id);
+
+    connection.set("http://127.0.0.1:4321");
+    expect(harness.orchestrator.resumeRun(seeded.run.id).rejectReason).toBe("connection");
+    expect(harness.recoveryGate.blocked).toBe(false);
+
+    const restarted = restart(harness.db, scripted.client);
+    restarted.orchestrator.reconcileOnStartup();
+
+    expect(restarted.recoveryGate.blocked).toBe(false);
+  });
+
+  it("D5: 確認時刻の書き込みが失敗したらゲートを開けず、例外がそのまま伝わる（順序の防御）", () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+    const seeded = seedRun(harness.db, {
+      runId: "run-confirm-fails",
+      status: "recovery-waiting",
+      unitStatuses: ["pending"],
+    });
+
+    // UPDATE だけを失敗させる DB。読み出し（findRun）は通る。
+    const failingDb = new Proxy(harness.db, {
+      get(target, prop) {
+        if (prop === "update") {
+          throw new Error("UPDATE に失敗した（テスト）");
+        }
+        const value = Reflect.get(target, prop) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const recoveryGate = createRecoveryGate();
+    recoveryGate.block(seeded.run.id);
+    const orchestrator = createOrchestrator({
+      db: failingDb,
+      connection: fixedConnection(scripted.client, ENDPOINT_URL),
+      queue: createRequestQueue(),
+      recoveryGate,
+      recoveryConfirmMs: RECOVERY_CONFIRM_MS,
+    });
+
+    expect(() => orchestrator.confirmRecovery(seeded.run.id)).toThrow(/UPDATE に失敗した/);
+    // 書き込みが失敗した以上、プロセス内の送信ゲートも開けない（API は失敗を返すのに
+    // 後続の生成要求が送れる、という食い違いを作らない）。
+    expect(recoveryGate.blockedRunIds.has(seeded.run.id)).toBe(true);
+    expect(readRun(harness.db, seeded.run.id).recoveryConfirmedAt).toBeNull();
+  });
+
+  it("D7: 走っているループがある実行の確認はゲートを開けず、確認時刻も書かない（裁定 R11）", async () => {
+    const pending = deferred<ChatResult>();
+    const scripted = scriptedClient([() => pending.promise]);
+    const harness = makeHarness(scripted.client);
+
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    await flush();
+    // ループは生きている（生成要求の応答待ち）。
+    expect(harness.orchestrator.activeRunIds()).toEqual([started.run.id]);
+    expect(readRun(harness.db, started.run.id).status).toBe("running");
+
+    // `run/loop.ts` の onRecoveryRequired と同じ副作用。executor が生成の終了を確認できなく
+    // なった時点で閉じるので、実行が recovery-waiting になる前から blockedRunIds に入る。
+    harness.recoveryGate.block(started.run.id);
+
+    const confirmed = harness.orchestrator.confirmRecovery(started.run.id);
+
+    // 現在のレコードは返すが、ゲートは開けず、確認時刻も書かない
+    // （終了未確認の生成が走っている最中に別の実行が生成要求を送れてしまうため）。
+    expect(confirmed?.status).toBe("running");
+    expect(confirmed?.recoveryConfirmedAt).toBeNull();
+    expect(harness.recoveryGate.blockedRunIds.has(started.run.id)).toBe(true);
+    expect(readRun(harness.db, started.run.id).recoveryConfirmedAt).toBeNull();
+
+    // ループが終わって recovery-waiting になれば、同じ確認操作が通る。
+    pending.reject(connectionLost());
+    const run = await started.done;
+    expect(run.status).toBe("recovery-waiting");
+
+    const after = harness.orchestrator.confirmRecovery(started.run.id);
+    expect(after?.recoveryConfirmedAt).not.toBeNull();
+    expect(harness.recoveryGate.blocked).toBe(false);
+  });
+
+  it("D6: 再開すると確認は無効になり、また recovery-waiting になっても確認済みにはならない", async () => {
+    vi.useFakeTimers();
+    try {
+      const scripted = scriptedClient([({ signal }) => rejectOnAbort(signal)]);
+      const harness = makeHarness(scripted.client);
+      const seeded = seedRun(harness.db, {
+        runId: "run-confirm-cleared",
+        status: "recovery-waiting",
+        unitStatuses: ["pending"],
+      });
+      harness.recoveryGate.block(seeded.run.id);
+      harness.orchestrator.confirmRecovery(seeded.run.id);
+      expect(readRun(harness.db, seeded.run.id).recoveryConfirmedAt).not.toBeNull();
+
+      // 再開：clearStopState が確認を消す（古い確認を再開後まで持ち越さない）。
+      const resumed = harness.orchestrator.resumeRun(seeded.run.id);
+      expect(resumed.accepted).toBe(true);
+      expect(readRun(harness.db, seeded.run.id).recoveryConfirmedAt).toBeNull();
+
+      // もう一度 recovery-waiting に落ちても、確認は付いていない（起動時照合が閉じ直す）。
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.orchestrator.stopRun(seeded.run.id).accepted).toBe(true);
+      // 停止ゲートの上限は実行ごとの値（`runs.recovery_confirm_ms`）。
+      await vi.advanceTimersByTimeAsync(RECOVERY_CONFIRM_MS);
+      const run = await resumed.done;
+
+      expect(run.status).toBe("recovery-waiting");
+      expect(readRun(harness.db, seeded.run.id).recoveryConfirmedAt).toBeNull();
+      expect(harness.recoveryGate.blocked).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

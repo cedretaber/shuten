@@ -1,3 +1,4 @@
+import { MAX_TIMEOUT_MS } from "@shuten/shared";
 import { Agent, type Dispatcher } from "undici";
 
 import { LmStudioError } from "./errors.ts";
@@ -35,11 +36,14 @@ function truncateRaw(text: string): string {
   return text.length > RAW_TEXT_LIMIT ? text.slice(0, RAW_TEXT_LIMIT) : text;
 }
 
-/** `timeoutMs` が有限で 1 以上 `2**31 - 1` 以下の整数であることを検証する（決定 8）。 */
+/**
+ * `timeoutMs` が有限で 1 以上 `MAX_TIMEOUT_MS`（`@shuten/shared`。`2**31 - 1`）以下の整数で
+ * あることを検証する（決定 8）。
+ */
 function validateTimeoutMs(timeoutMs: number): void {
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2 ** 31 - 1) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new TypeError(
-      `timeoutMs は 1 以上 2**31-1 以下の整数でなければならない（実際: ${String(timeoutMs)}）`,
+      `timeoutMs は 1 以上 ${String(MAX_TIMEOUT_MS)} 以下の整数でなければならない（実際: ${String(timeoutMs)}）`,
     );
   }
 }
@@ -190,8 +194,18 @@ export function createLmStudioClient(clientOptions: LmStudioClientOptions): LmSt
    * 分類してしまい、仕様書 7 節が求める「接続失敗とタイムアウトの区別」が壊れる（実測 301,289ms）。
    * そこで両方 0 にして無効化し、打ち切りの責任を `sendRequest` のタイマーだけに一本化する。
    */
-  const dispatcher: Dispatcher =
-    clientOptions.dispatcher ?? new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+  /**
+   * `clientOptions.dispatcher` を渡された場合は呼び出し元の所有物なので `close()` で閉じない
+   * （所有者が閉じる。決定 19）。自前で作った場合だけ `ownDispatcher` に持ち、`close()` の対象にする。
+   */
+  let ownDispatcher: Agent | undefined;
+  let dispatcher: Dispatcher;
+  if (clientOptions.dispatcher !== undefined) {
+    dispatcher = clientOptions.dispatcher;
+  } else {
+    ownDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+    dispatcher = ownDispatcher;
+  }
 
   async function listModels(options?: RequestOptions): Promise<ModelInfo[]> {
     const signal = options?.signal;
@@ -293,5 +307,15 @@ export function createLmStudioClient(clientOptions: LmStudioClientOptions): LmSt
     };
   }
 
-  return { listModels, ensureLoaded, chat };
+  /**
+   * 自前で作った `Agent` だけ閉じる。`clientOptions.dispatcher` を渡された場合（`ownDispatcher`
+   * が undefined のまま）は何もしない（決定 19）。
+   */
+  async function close(): Promise<void> {
+    if (ownDispatcher !== undefined) {
+      await ownDispatcher.close();
+    }
+  }
+
+  return { listModels, ensureLoaded, chat, close };
 }

@@ -15,8 +15,10 @@ import {
   type InsertRunInput,
   insertRun,
   insertRunTarget,
+  listRuns,
   listRunsByStatus,
   listRunTargets,
+  setRecoveryConfirmedAt,
   setStopRequestedAt,
   toGenerationSettings,
   updateRunModelInfo,
@@ -407,6 +409,69 @@ describe("db/repositories/runs", () => {
     close();
   });
 
+  it("RC1: setRecoveryConfirmedAt は recovery_confirmed_at だけを書き、他の列に触れない（マイグレーション 0002）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", status: "recovery-waiting" }));
+    expect(run.recoveryConfirmedAt).toBeNull();
+
+    const at = new Date("2026-09-09T07:00:00.000Z");
+    setRecoveryConfirmedAt(db, "r1", at);
+
+    const found = findRun(db, "r1");
+    expect(found?.recoveryConfirmedAt).toEqual(at);
+    expect(found?.status).toBe("recovery-waiting");
+    close();
+  });
+
+  it("RC2: finishRun は status が recovery-waiting になるときだけ recovery_confirmed_at を null にする（マイグレーション 0002）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+
+    // recovery-waiting へ遷移するケース：直前に非 null な値が残っていても null に上書きされる。
+    const toRecoveryWaiting = insertRun(db, baseRunInput({ id: "r-recovery", status: "running" }));
+    setRecoveryConfirmedAt(db, toRecoveryWaiting.id, new Date("2026-09-09T08:00:00.000Z"));
+    expect(findRun(db, toRecoveryWaiting.id)?.recoveryConfirmedAt).not.toBeNull();
+    finishRun(db, toRecoveryWaiting.id, {
+      expectedStatus: "running",
+      status: "recovery-waiting",
+      stopReason: "aborted",
+      stopMessage: "接続が切れました",
+      generationUnconfirmed: true,
+      finishedAt: new Date("2026-09-09T08:30:00.000Z"),
+    });
+    expect(findRun(db, toRecoveryWaiting.id)?.recoveryConfirmedAt).toBeNull();
+
+    // recovery-waiting 以外（stopped）へ遷移するケース：recovery_confirmed_at は変わらない。
+    const toStopped = insertRun(db, baseRunInput({ id: "r-stopped", status: "running" }));
+    setRecoveryConfirmedAt(db, toStopped.id, new Date("2026-09-09T09:00:00.000Z"));
+    const beforeFinish = findRun(db, toStopped.id)?.recoveryConfirmedAt;
+    expect(beforeFinish).not.toBeNull();
+    finishRun(db, toStopped.id, {
+      expectedStatus: "running",
+      status: "stopped",
+      stopReason: "aborted",
+      stopMessage: "ユーザーが停止しました",
+      generationUnconfirmed: false,
+      finishedAt: new Date("2026-09-09T09:30:00.000Z"),
+    });
+    expect(findRun(db, toStopped.id)?.recoveryConfirmedAt).toEqual(beforeFinish);
+    close();
+  });
+
+  it("RC3: claimRun の options.clearStopState は recovery_confirmed_at も null に戻す（マイグレーション 0002）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", status: "recovery-waiting" }));
+    setRecoveryConfirmedAt(db, run.id, new Date("2026-09-09T10:00:00.000Z"));
+    expect(findRun(db, run.id)?.recoveryConfirmedAt).not.toBeNull();
+
+    const resumed = claimRun(db, "r1", "recovery-waiting", "running", { clearStopState: true });
+    expect(resumed).toBe(true);
+    expect(findRun(db, run.id)?.recoveryConfirmedAt).toBeNull();
+    close();
+  });
+
   it("N2b: claimRun の options.clearStopState は runs への UPDATE を1回しか発行しない（同じ1文であること）", () => {
     const { db, close } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
@@ -518,6 +583,54 @@ describe("db/repositories/runs", () => {
     expect(both.map((r) => r.id)).toEqual(["r-recovery", "r-running-z", "r-running-a"]);
 
     expect(listRunsByStatus(db, ["stopped"])).toEqual([]);
+    close();
+  });
+  it("listRuns は原稿名を添えて started_at の降順（同順位は id の昇順）で全件列挙する（決定 15）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿A", body: "本文" });
+    insertManuscriptVersion(db, { id: "mv2", name: "原稿B", body: "本文" });
+    // 同じ started_at の 2 件（r-old-b / r-old-a）を入れて、同順位が id の昇順で安定することを見る。
+    // id の辞書順と時系列順をわざと食い違わせ、orderBy の取り違えを検出できるようにする。
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-old-b",
+        manuscriptVersionId: "mv2",
+        startedAt: new Date("2026-09-09T01:00:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-old-a",
+        manuscriptVersionId: "mv1",
+        startedAt: new Date("2026-09-09T01:00:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-new",
+        manuscriptVersionId: "mv2",
+        startedAt: new Date("2026-09-09T03:00:00.000Z"),
+      }),
+    );
+
+    const entries = listRuns(db);
+
+    expect(entries.map((entry) => entry.run.id)).toEqual(["r-new", "r-old-a", "r-old-b"]);
+    expect(entries.map((entry) => entry.manuscriptName)).toEqual(["原稿B", "原稿A", "原稿B"]);
+    // 結合しても RunRecord の中身は findRun と同じ（JSON 列も復元されている）。
+    expect(entries[0]?.run).toEqual(findRun(db, "r-new"));
+
+    close();
+  });
+
+  it("listRuns は実行が 1 件も無ければ空配列", () => {
+    const { db, close } = setupDb();
+
+    expect(listRuns(db)).toEqual([]);
+
     close();
   });
 });

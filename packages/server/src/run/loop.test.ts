@@ -11,7 +11,7 @@ import type {
 } from "@shuten/shared";
 import { mergeCandidates } from "@shuten/shared";
 import { describe, expect, it, vi } from "vitest";
-
+import { fixedConnection } from "../connection.ts";
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
 import type { CheckUnitRecord, RecheckNotApplicableReason, RunRecord } from "../db/records.ts";
@@ -29,13 +29,7 @@ import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { insertRecheckUnit, listRecheckUnits } from "../db/repositories/rechecks.ts";
 import { insertRun, insertRunTarget } from "../db/repositories/runs.ts";
 import { LmStudioError } from "../lmstudio/errors.ts";
-import type {
-  ChatRequest,
-  ChatResult,
-  LmStudioClient,
-  ModelInfo,
-  Usage,
-} from "../lmstudio/types.ts";
+import type { ChatResult, LmStudioClient, Usage } from "../lmstudio/types.ts";
 import type { OrchestratorEvent, PipelineEvent, RunEvent } from "./events.ts";
 import { runLoop } from "./loop.ts";
 import type { OrchestratorDeps, StartRunInput } from "./orchestrator.ts";
@@ -45,6 +39,7 @@ import type { StopGate } from "./recovery.ts";
 import { createStopGate } from "./recovery.ts";
 import type { RecoveryGate } from "./recovery-gate.ts";
 import { createRecoveryGate } from "./recovery-gate.ts";
+import { SCRIPTED_LOADED_MODEL as LOADED_MODEL, scriptedClient } from "./test-support.ts";
 import { finishCheckUnitChecked, finishRecheckUnitChecked } from "./transitions.ts";
 
 /** ---------------------------------------------------------------------- */
@@ -80,15 +75,6 @@ const USAGE: Usage = {
   completionTokens: 5,
   totalTokens: 15,
   reasoningTokens: null,
-};
-
-const LOADED_MODEL: ModelInfo = {
-  id: "model-a",
-  type: "llm",
-  state: "loaded",
-  quantization: null,
-  maxContextLength: 4096,
-  loadedContextLength: 2048,
 };
 
 /** テストごとにマイグレーション適用済みのメモリ DB を作る。 */
@@ -138,45 +124,6 @@ function recheckResponse(): ChatResult {
   );
 }
 
-/** 1 回の生成要求への応答を決める関数。`index` は 0 始まりの通し番号。 */
-type ChatStep = (request: ChatRequest, index: number) => ChatResult | Promise<ChatResult>;
-
-interface ScriptedClient {
-  readonly client: LmStudioClient;
-  /** 送った要求（再試行を含む）。 */
-  readonly requests: ChatRequest[];
-  readonly ensureLoadedCalls: string[];
-}
-
-/**
- * 台本どおりに応答するモック。台本を使い切ったあとに要求が来たら例外にする
- * （想定外の生成要求を黙って成功させない）。
- */
-function scriptedClient(
-  steps: readonly ChatStep[],
-  options: { readonly ensureLoaded?: () => Promise<ModelInfo> } = {},
-): ScriptedClient {
-  const requests: ChatRequest[] = [];
-  const ensureLoadedCalls: string[] = [];
-  const client: LmStudioClient = {
-    listModels: () => Promise.resolve([LOADED_MODEL]),
-    ensureLoaded: (modelId) => {
-      ensureLoadedCalls.push(modelId);
-      return options.ensureLoaded?.() ?? Promise.resolve(LOADED_MODEL);
-    },
-    chat: async (request) => {
-      const index = requests.length;
-      requests.push(request);
-      const step = steps[index];
-      if (step === undefined) {
-        throw new Error(`台本にない生成要求（${String(index)} 件目）`);
-      }
-      return await step(request, index);
-    },
-  };
-  return { client, requests, ensureLoadedCalls };
-}
-
 interface Harness {
   readonly db: ReturnType<typeof setupDb>["db"];
   readonly events: RunEvent[];
@@ -203,10 +150,9 @@ function makeHarness(
   const events: RunEvent[] = [];
   const deps: OrchestratorDeps = {
     db,
-    client,
+    connection: fixedConnection(client, "http://127.0.0.1:1234"),
     queue: createRequestQueue(),
     recoveryGate: createRecoveryGate(),
-    endpointUrl: "http://127.0.0.1:1234",
     recoveryConfirmMs: 0,
     createId: idSequence(),
     onEvent: (event) => events.push(event),
@@ -960,6 +906,7 @@ describe("run/loop: 単位駆動ループ", () => {
         trace.push("chat");
         return Promise.resolve(checkResponse([]));
       },
+      close: () => Promise.resolve(),
     };
 
     const inner = createStopGate(0);
@@ -1188,6 +1135,7 @@ describe("run/loop: 単位駆動ループ", () => {
         trace.push("chat");
         return Promise.resolve(recheckResponse());
       },
+      close: () => Promise.resolve(),
     };
 
     const inner = createStopGate(0);

@@ -1,3 +1,4 @@
+import { RUN_SETTINGS_DEFAULTS } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
 
 import { parseArgs } from "./args.ts";
@@ -26,6 +27,19 @@ describe("parseArgs: 既定値", () => {
     });
     expect(result.value.checkTimeoutMs).toBe(300000);
     expect(result.value.recheckTimeoutMs).toBe(300000);
+  });
+
+  it("DEFAULTS 相当の値が RUN_SETTINGS_DEFAULTS（@shuten/shared）と一致する（PR10 決定 2・9）", () => {
+    const result = parseArgs(REQUIRED);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.perspectives).toEqual(RUN_SETTINGS_DEFAULTS.perspectives);
+    expect(result.value.maxTokens).toBe(RUN_SETTINGS_DEFAULTS.generation.maxTokens);
+    expect(result.value.temperature).toBe(RUN_SETTINGS_DEFAULTS.generation.temperature);
+    expect(result.value.reasoningEffort).toBe(RUN_SETTINGS_DEFAULTS.generation.reasoningEffort);
+    expect(result.value.chunkSettings).toEqual(RUN_SETTINGS_DEFAULTS.chunkSettings);
+    expect(result.value.checkTimeoutMs).toBe(RUN_SETTINGS_DEFAULTS.timeouts.checkMs);
+    expect(result.value.recheckTimeoutMs).toBe(RUN_SETTINGS_DEFAULTS.timeouts.recheckMs);
   });
 });
 
