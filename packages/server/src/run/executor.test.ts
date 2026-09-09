@@ -636,4 +636,26 @@ describe("createExecutor", () => {
     expect(outcome.failure.origin).toBe("ensure-loaded");
     expect(outcome.halt?.reason).toBe("model-not-loaded");
   });
+
+  it("E27: ensureLoaded が失敗して chat を送らなければ、onSend/onSettled は 0 回のまま（フックは ensureLoaded の周りでは呼ばない）", async () => {
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        throw new LmStudioError("model-not-loaded", "未ロード");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+    const onSend = vi.fn();
+    const onSettled = vi.fn();
+
+    const outcome = await executor.execute(REQUEST, parse, 1000, { onSend, onSettled });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    // onSend/onSettled を ensureLoaded の前後（あるいは execute 全体）に張ってしまう変異は、
+    // ここで onSend/onSettled が呼ばれてしまうため落ちる。
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSettled).not.toHaveBeenCalled();
+  });
 });

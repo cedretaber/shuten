@@ -346,15 +346,26 @@ describe("executeCheckUnit", () => {
     }
   });
 
-  it("再試行（2 回目の送信）でも onSend のたびにタイマーが張り直される（決定 27）", async () => {
+  it("G3: 再試行（2 回目の送信）では、2 回目の onSend から改めて checkMs を測り直す（決定 27）", async () => {
     vi.useFakeTimers();
     try {
       const onSlow = vi.fn();
       const pending = deferred<ExecOutcome<{ findings: [] }>>();
-      // 1 回目の送信はすぐに終わり（速い失敗で内部再試行に入った想定）、2 回目の送信は
-      // pending のまま待たせる。onSend のたびに張り直す実装でないと、1 回目の送信で
-      // 張ったタイマーが残ったまま（速い応答で解除されないまま）2 回目の待ちに引き継がれ、
-      // タイミングがずれる。
+      // 1 回目の送信は t=0 で始まり、800ms（checkMs=1000ms 未満）で終わって
+      // 2 回目の送信に切り替わる。2 回目は pending のまま待たせる。
+      //
+      // 「onSend のたびに前のタイマーを解除してから張り直す」実装でないと区別できない
+      // 変異が 3 通りある。
+      //   (a) 呼び出し時（t=0）に一度だけ張って、以降 onSend で張り直さない
+      //       → 1 回目の onSend（t=0）由来のタイマーが t=1000 で発火してしまう。
+      //   (b) onSettled で解除はするが、次の onSend で張り直さない
+      //       → t=1800 になっても一切発火しない。
+      //   (c) onSend のたびに張るが、前のタイマーを解除しない
+      //       → 1 回目由来（t=1000 発火）と 2 回目由来（t=1800 発火）の両方が生き残り、
+      //         t=1000 で（本来鳴ってはいけないのに）1 回鳴ってしまう。
+      // 正しい実装では、2 回目の onSend（t=800）で 1 回目のタイマーを解除してから
+      // 新しいタイマー（t=800+1000=1800 発火）を張るので、t=1000 では鳴らず、
+      // t=1800 でちょうど 1 回だけ鳴る。
       function execute<U>(
         _request: ChatRequest,
         _parse: (result: ChatResult) => U,
@@ -362,11 +373,16 @@ describe("executeCheckUnit", () => {
         hooks?: ExecuteHooks,
       ): Promise<ExecOutcome<U>> {
         hooks?.onSend?.();
-        hooks?.onSettled?.();
-        hooks?.onSend?.();
-        return pending.promise.finally(() => {
-          hooks?.onSettled?.();
-        }) as unknown as Promise<ExecOutcome<U>>;
+        return new Promise((res) => {
+          setTimeout(() => {
+            hooks?.onSettled?.();
+            hooks?.onSend?.();
+            void pending.promise.then((outcome) => {
+              hooks?.onSettled?.();
+              res(outcome as unknown as ExecOutcome<U>);
+            });
+          }, 800);
+        });
       }
       const executor: Executor = { execute, requestCount: 0, modelInfo: null };
 
@@ -374,11 +390,14 @@ describe("executeCheckUnit", () => {
         baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500, onSlow }),
       );
 
-      // 1 回目の送信由来のタイマーは onSettled で解除済みなので、2 回目の onSend から
-      // ちょうど checkMs（1000ms）経った時点で初めて onSlow が呼ばれる。
-      await vi.advanceTimersByTimeAsync(999);
+      // t=800：1 回目が終わり、2 回目の onSend でタイマーが張り直された直後。
+      await vi.advanceTimersByTimeAsync(800);
       expect(onSlow).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(1);
+      // t=1000（1 回目由来のタイマーが張ったままなら、ここで鳴ってしまう）。
+      await vi.advanceTimersByTimeAsync(200);
+      expect(onSlow).not.toHaveBeenCalled();
+      // t=1800（2 回目の onSend から checkMs 経過。ここで初めて 1 回だけ鳴る）。
+      await vi.advanceTimersByTimeAsync(800);
       expect(onSlow).toHaveBeenCalledTimes(1);
 
       pending.resolve(DONE_OUTCOME);
@@ -599,7 +618,7 @@ describe("executeCheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("G3: recoveryConfirmMs の値によらず、引数の onSend/onSettled が executor に届く（決定 27）", async () => {
+  it("recoveryConfirmMs の値によらず、引数の onSend/onSettled が executor に届く（決定 27）", async () => {
     for (const recoveryConfirmMs of [0, 500]) {
       const onSend = vi.fn();
       const onSettled = vi.fn();
@@ -923,7 +942,7 @@ describe("executeRecheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("G2: executeRecheckUnit でも、共有キューでの順番待ちは recheckMs の計測に含まれない（決定 27）", async () => {
+  it("G1 相当（recheck 版）: executeRecheckUnit でも、共有キューでの順番待ちは recheckMs の計測に含まれない（決定 27）", async () => {
     vi.useFakeTimers();
     try {
       const onSlow = vi.fn();
