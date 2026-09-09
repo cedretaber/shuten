@@ -390,7 +390,8 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 - それ以外 → `pending`。
 - 位置特定失敗の指摘の `not-applicable(unlocated)` は保存トランザクションの中で作り済み（決定 28）。
 
-**`not-applicable` の再確認単位を `running` に claim してはならない。** `run/save.ts` の
+**抑制が外れた `not-applicable(suppressed)` の単位だけは `pending` に戻す**（決定 45-4）。
+それ以外の **`not-applicable` の再確認単位を `running` に claim してはならない。** `run/save.ts` の
 `saveRecheckOutcome` は `disabled` / `suppressed` の `RecheckResult` を受け取ると例外を投げる
 （`running → not-applicable` は決定 3 の許容遷移表に無いため、状態を書けない）。ループが実行するのは
 `pending` の再確認単位だけであり、起票の時点で `not-applicable` にしたものはそのまま終端である。
@@ -429,6 +430,8 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 - `finished_at` → null
 - `stop_reason` / `stop_message` → null（前回の停止の記録。実行中の行に残すと画面が矛盾する。
   単位ごとの失敗（`check_units.failure_*`）は消さないので「何が起きたか」は失われない）
+
+**保存済みのプロンプト版が現行と違う実行は再開できない**（決定 45-1）。
 
 **`stop_reason` が `settings` の実行は再開できない**（最終レビューで判明した穴への対処）。
 `startRun` が決定 18・44 で作る `stopped(settings)` の実行（分割設定不正・タイムアウト設定不正・
@@ -660,6 +663,80 @@ export function createRecoveryGate(): RecoveryGate;
 違反したら**生成要求を 1 件も送る前に**設定エラーとして扱う。`InvalidChunkSettingsError` と
 同じく `runs` だけを `stopped`（`settings`）で作り、検査対象も検査単位も作らない
 （`stop_message` は定型文。数値は入れてよいが接続先 URL・API キーは入れない）。
+
+### 決定 45：PR #15 のレビュー対応（4 件）
+
+ブランチ全体の最終レビューの後、外部レビューで 4 件の指摘を受けた。いずれも実コードで再現を
+確認した実在の欠陥である。以下はその対処で、決定 2・3・20・32・34・36・43 を改訂する。
+
+#### 45-1：再開・再試行で保存済みの版を検証する（仕様 8.2）
+
+仕様 8.2 は「再開では原稿版、モデル、設定（許容語を含む）、**プロンプト版**を変更できない。
+変更する場合は新規検査として開始する」と定めている。ところが `runs` が保存する
+`prompt_version` / `allowed_word_rule_version` / `diagnostic_transform_version` は
+**コード内の定数**（`PROMPT_VERSION` 等）に由来するため、アプリを更新すると同じ実行の続きに
+別の版の結果が混ざり、記録は旧版のまま残る。原稿版・モデル・生成設定・分割設定・許容語一覧は
+`runs` の行から読むので変わらないが、この 3 つだけは変わりうる。
+
+`resumeRun` と `retryFailedUnits` の**両方**で、`claimRunChecked` の**前**に 3 つの版を
+現行の定数と比べ、1 つでも違えば `rejected(existing)` を返す（**DB を 1 行も変えず、生成要求も
+送らない**）。案内は「アプリの更新でプロンプト版が変わったため再開できない。新しい実行を
+開始してください」。旧版を再現する仕組みは持たない（MVP の範囲外）。
+
+#### 45-2：キュー待ち中の停止をただちに決着させる（決定 2・26 の改訂）
+
+`executor.execute` はキューの Promise をそのまま返すので、実行 A が生成中で実行 B がキュー待ちの
+とき、B を停止して signal を abort しても**B の `execute` は A の生成が終わるまで解決しない**。
+その間 B は `running` のままで、決定 26 が言う「キュー待ち中の停止はただちに止まる」が
+成り立っていない（`stop_requested_at` は書かれるが状態が動かない）。
+
+`RequestQueue.enqueue(job, options?: { signal?: AbortSignal })` を足し、**順番が来る前に
+中断されたジョブは、キューの順番を待たずにその場で決着**させる。実装の要点は 2 つ。
+
+- 取り消したジョブの**順番が来たときに `tail` の連鎖を途切れさせない**（`job` を呼ばずに
+  解決するだけにする）。途切れさせると後続ジョブの順序が壊れる。
+- 早期決着の経路と「順番が来て skip」の経路は**両方**走る。取り消し済みフラグで冪等にし、
+  `size` の減算が二重にならないようにする。
+
+executor はこの決着を、既存の「送信しなかった」経路（`blocked()` と `notSentFailure`）と同じ
+`ExecOutcome` に写す。生成要求は 1 件も送っていないので `generationUnconfirmed` は false のまま。
+
+#### 45-3：CLI 経路の判別を待機時間から切り離す（決定 20・32・43 の改訂）
+
+`isPendingFailure` と `pendingNote`（`run/units.ts`）は `recoveryConfirmMs > 0` を
+「オーケストレーター経路か否か」の判別に使っている。しかし決定 43 は
+`SHUTEN_RECOVERY_CONFIRM_MS = 0` を**正規の設定値**として許している（「`checkMs` がそのまま
+ハード上限」の意味）。0 のときタイムアウトすると、実行は `recovery-waiting` になるのに当該単位は
+`failed` になり、**手動再開でその単位を拾えない**。決定 20 の「打ち切られた単位はどちらの経路でも
+`pending`」が待機時間の設定によって崩れる。
+
+判別子を待機時間から分離する。`CheckUnitArgs` / `RecheckUnitArgs` に
+`treatUnconfirmedAsPending?: boolean`（既定 `false`）を足し、オーケストレーターは**常に true** を
+渡す。`isPendingFailure` と `pendingNote` はこのフラグだけを見る。`recoveryConfirmMs` は
+「上限まで待つ時間」の意味だけに戻す（`recoveryConfirmMs <= 0` で遅延通知のタイマーを作らない
+早期 return はそのまま残す。待機時間の話であって `pending` 化とは別のため）。CLI は
+どちらも渡さないので従来どおり（E1）。
+
+#### 45-4：抑制が外れた再確認単位を `pending` に戻す（決定 3・34 の改訂）
+
+`issueRechecks` は既存の `recheck_units` があると無条件に飛ばす。ところが失敗観点の再試行で
+同じ範囲・引用・修正案の別分類の候補が加わると、`merge-store.ts` が `category` を `unclear` に
+変えて**抑制を解除する**。このとき再確認単位は `not-applicable(suppressed)` のまま残り、
+再確認が 1 度も実行されない。仕様 6.5 は抑制された指摘を再確認しないと定めているだけで、
+抑制が外れた指摘を再確認しない理由はない。決定 10（再確認が終わった後に元候補が増えても
+やり直さない）は**すでに実行した**再確認の話であり、1 度も実行していない単位には当たらない。
+
+- **決定 3 の単位遷移表を改める**：`not-applicable` は終端だが、**`suppressed` の解除だけは
+  `pending` に戻せる**。`done` は引き続き終端で、`disabled`（実行ごとに固定）と
+  `unlocated`（位置特定の結果は変わらない）も戻さない。
+- 実装はリポジトリの専用関数（1 文の UPDATE。`WHERE status = 'not-applicable' AND
+  not_applicable_reason = 'suppressed'`）で `status` / `not_applicable_reason` / `finished_at` を
+  同時に戻す。`claimRecheckUnitChecked` では `not_applicable_reason` が消えないため。
+  状態を書く経路は `run/transitions.ts` のままにする。
+- **逆方向（`pending` の再確認単位に後から抑制が付く）は本 PR では入れない。** 到達はしうるが
+  （起票時に 1 候補だけで、後から同分類の候補が加わって `notation` に揃う場合）、遷移
+  （`pending → not-applicable`）は表にすでにあるので追加はいつでもでき、レビューも求めていない。
+  持ち越しに記録する。
 
 ## テスト
 
