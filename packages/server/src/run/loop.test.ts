@@ -805,6 +805,56 @@ describe("run/loop: 単位駆動ループ", () => {
     inner.dispose();
   });
 
+  it("決定 26: 停止要求の後、上限内に応答が届いたらループが aborted を合成し、次の単位には手を付けない", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-stop", unitStatuses: ["pending", "pending"] });
+
+    const gate = createStopGate(60_000);
+    const scripted = scriptedClient([
+      () => {
+        // 1 単位目の生成中に停止操作を受け、応答は上限内に届く（決定 26 の 3 番目の経路）。
+        gate.requestStop();
+        return checkResponse([]);
+      },
+    ]);
+
+    const events: Array<{ type: string }> = [];
+    const run = await runLoop({
+      db,
+      client: scripted.client,
+      queue: createRequestQueue(),
+      recoveryGate: createRecoveryGate(),
+      gate,
+      runId: seeded.run.id,
+      now: () => new Date(),
+      createId: idSequence(),
+      emit: (event) => events.push(event),
+    });
+    gate.dispose();
+
+    // 2 単位目には生成要求を送らない（台本は 1 件しか用意していない）。
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("aborted");
+    expect(run.generationUnconfirmed).toBe(false);
+
+    const units = listCheckUnits(db, run.id);
+    const first = units.find((unit) => unit.perspective === "typo");
+    const second = units.find((unit) => unit.perspective === "naturalness");
+    // 1 単位目は応答が届いたので done。2 単位目は claim すらしていない。
+    expect(first?.status).toBe("done");
+    expect(second?.status).toBe("pending");
+    expect(second?.startedAt).toBeNull();
+
+    const settled = events.filter((event) => event.type === "run-settled");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({
+      status: "stopped",
+      stop: { reason: "aborted", generationUnconfirmed: false },
+    });
+  });
+
   /** ---------------------------------------------------------------------- */
   /** 決定 35（終了状態は DB を読み直して決める） */
   /** ---------------------------------------------------------------------- */
