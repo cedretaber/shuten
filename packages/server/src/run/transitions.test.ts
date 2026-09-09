@@ -414,6 +414,32 @@ describe("run/transitions", () => {
       close();
     });
 
+    it("finishCheckUnitChecked: running → done は表にあり、委譲されて true を返す", () => {
+      const { db, close } = setupDb();
+      setupBase(db);
+      claimUnitChecked(db, "cu1", "pending", "running", {
+        startedAt: new Date("2026-09-09T00:00:00.000Z"),
+      });
+
+      const result = finishCheckUnitChecked(db, "cu1", {
+        expectedStatus: "running",
+        status: "done",
+        attempts: 1,
+        failure: null,
+        pendingNote: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: 100,
+        finishedAt: new Date("2026-09-09T01:00:00.000Z"),
+      });
+      expect(result).toBe(true);
+
+      const after = findCheckUnit(db, "cu1");
+      expect(after?.status).toBe("done");
+      expect(after?.attempts).toBe(1);
+      close();
+    });
+
     it("claimRunChecked: 表にある遷移でもリポジトリの条件（実際の status）に合わなければ false を返す（例外にしない。決定 12）", () => {
       const { db, close } = setupDb();
       setupBase(db);
