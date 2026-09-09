@@ -191,15 +191,35 @@ async function openSse(origin: string, path: string, init?: RequestInit): Promis
   };
 }
 
-/** 条件が満たされるまで待つ（実タイマー）。満たされなければ例外で落とす。 */
+/**
+ * このファイルのテスト上限（裁定 R18）。実 HTTP と実タイマーを使うので vitest の既定（5 秒）より広げる。
+ *
+ * **`WAIT_BUDGET_MS` と対で調整すること。** 1 つのテストの中で `waitFor` は多くて 4 回並ぶので、
+ * `TEST_TIMEOUT_MS > WAIT_BUDGET_MS * 4` を保つ。これが崩れると、条件が満たされないときに
+ * `waitFor` の名札付きの例外ではなく vitest の無名のタイムアウトで落ち、診断が失われる。
+ */
+const TEST_TIMEOUT_MS = 20_000;
+
+/** `waitFor` 1 回あたりの待ちの上限（実時間）。反復回数ではなく実時間で測る（CI の遅さに依らない）。 */
+const WAIT_BUDGET_MS = 4_000;
+
+/** `waitFor` の間隔。短くしても待ちの上限は `WAIT_BUDGET_MS` のまま。 */
+const WAIT_POLL_MS = 2;
+
+vi.setConfig({ testTimeout: TEST_TIMEOUT_MS });
+
+/** 条件が満たされるまで待つ（実タイマー）。満たされなければ**名札付きで**落とす。 */
 async function waitFor(condition: () => boolean, label: string): Promise<void> {
-  for (let attempt = 0; attempt < 2_000; attempt += 1) {
+  const deadline = Date.now() + WAIT_BUDGET_MS;
+  for (;;) {
     if (condition()) {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    if (Date.now() >= deadline) {
+      throw new Error(`条件が満たされませんでした: ${label}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
   }
-  throw new Error(`条件が満たされませんでした: ${label}`);
 }
 
 /** 「起きないこと」を見る前の猶予。長さそのものは主張しない。 */
@@ -594,6 +614,41 @@ describe("GET /api/runs/:id/events", () => {
     await waitFor(() => client.comments.length >= 2, "心拍が 2 回届く");
     expect(client.comments.every((comment) => comment === ": ping")).toBe(true);
     expect(client.frames).toEqual([]);
+  });
+
+  it("購読が閉じたら心拍のタイマーも止まる（clearInterval。裁定 R18）", async () => {
+    // 他の何とも重ならない間隔にして、SSE の心拍のタイマーだけを見分ける。
+    const PING_MS = 37;
+    const setSpy = vi.spyOn(globalThis, "setInterval");
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+
+    try {
+      const harness = open({ ssePingIntervalMs: PING_MS });
+      seedRun(harness, { runId: "run-live", status: "running" });
+      const origin = await startServer(harness);
+
+      const client = await openSse(origin, "/api/runs/run-live/events");
+      await waitFor(() => client.comments.length >= 2, "心拍が 2 回届く");
+
+      const pingTimers = setSpy.mock.calls
+        .map((call, index) => ({ delay: call[1], result: setSpy.mock.results[index] }))
+        .filter((entry) => entry.delay === PING_MS);
+      expect(pingTimers.length).toBe(1);
+      const handle = pingTimers[0]?.result?.value;
+
+      const received = client.comments.length;
+      harness.hub.closeAll();
+      await waitFor(() => client.ended(), "ストリームが完了する");
+      await settleTicks();
+
+      // 線上で見えるのはここまで（閉じたあとの書き込みは握りつぶされるので、心拍が止まったかは
+      // 本文だけでは見分けられない）。**タイマーが実際に止められたか**は handle で確かめる。
+      expect(client.comments.length).toBe(received);
+      expect(clearSpy.mock.calls.some((call) => call[0] === handle)).toBe(true);
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
   });
 
   it("決定 3: スキーマに通らないイベントは書かずに購読を閉じる", async () => {
