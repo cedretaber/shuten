@@ -55,14 +55,27 @@ function isPendingFailure(failure: UnitFailure, recoveryConfirmMs: number): bool
 }
 
 /**
- * `pending` にする失敗の `note`（DB では `pending_note`）に入れる文言（決定 20）。
- * ハード上限超過によるタイムアウトだけは、既存の失敗メッセージ（「生成要求がタイムアウトした」等）
- * ではなく、決定 20 が定める「生成終了は未確認」の趣旨の文言に差し替える。他の理由（未送信、
- * 実行中のアンロード、停止操作）は従来どおり失敗メッセージそのものを使う。
+ * `pending` にする失敗の `note`（DB では `pending_note`）に入れる文言（決定 20・32）。
+ *
+ * 「生成要求を送った後に打ち切られた」2 つの経路だけは、既存の失敗メッセージ（「生成要求が
+ * タイムアウトした」等）ではなく、決定 20 が定める「生成終了は未確認」の趣旨の文言に差し替える。
+ *
+ * - ハード上限超過（`timeout`）→「応答が上限内に届かなかった。生成終了は未確認」
+ * - 停止操作による打ち切り（`aborted`）→「停止操作により打ち切った。生成終了は未確認」（決定 32）
+ *
+ * どちらも `origin === "chat"`（実際に送った）に限る。送信前に止めた `origin: "local"` の
+ * `aborted`（キュー待ち・`ensureLoaded` 中の停止、門で止めた単位）は生成終了が未確認では
+ * ないので、従来どおり失敗メッセージそのものを使う。`recoveryConfirmMs > 0` を条件に含めるのは、
+ * `runPipeline`（CLI）が `signal` を渡して中断したときの文言を変えないため（E1）。
  */
 function pendingNote(failure: UnitFailure, recoveryConfirmMs: number): string {
-  if (recoveryConfirmMs > 0 && failure.origin === "chat" && failure.reason === "timeout") {
-    return "応答が上限内に届かなかった。生成終了は未確認";
+  if (recoveryConfirmMs > 0 && failure.origin === "chat") {
+    if (failure.reason === "timeout") {
+      return "応答が上限内に届かなかった。生成終了は未確認";
+    }
+    if (failure.reason === "aborted") {
+      return "停止操作により打ち切った。生成終了は未確認";
+    }
   }
   return failure.message;
 }

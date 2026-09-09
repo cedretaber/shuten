@@ -140,6 +140,19 @@ function rowToRecheckUnitRecord(row: typeof recheckUnits.$inferSelect): RecheckU
   };
 }
 
+/**
+ * 再確認単位を ID で 1 件探す。見つからなければ null。
+ * 個別再試行（決定 36）の対象検証が、渡された ID が `check_units` と `recheck_units` の
+ * どちらの表に属するかを引くために使う（`run_id` の一致も呼び出し側で確かめる）。
+ */
+export function findRecheckUnit(db: AppDatabaseLike, id: string): RecheckUnitRecord | null {
+  const row = db.select().from(recheckUnits).where(eq(recheckUnits.id, id)).get();
+  if (!row) {
+    return null;
+  }
+  return rowToRecheckUnitRecord(row);
+}
+
 /** 再確認単位を指摘 ID で 1 件探す。`finding_id` に一意制約があるため高々 1 件。見つからなければ null。 */
 export function findRecheckUnitByFinding(
   db: AppDatabaseLike,

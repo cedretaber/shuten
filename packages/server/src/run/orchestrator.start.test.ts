@@ -605,12 +605,23 @@ describe("run/orchestrator: startRun", () => {
     expect(targetsForSecond).toHaveLength(2);
   });
 
-  it("done は開始直後の RunRecord をそのまま解決する Promise である（本タスクの仮実装）", async () => {
+  /**
+   * Task 7 までは「`done` は開始直後の `RunRecord` をそのまま解決する（仮実装）」を固定していた。
+   * `unusedClient` が投げる素の `Error` はループの外まで抜けるので、Task 8 の決定 33 が
+   * これを握って実行を終端化するようになった。「reject しない」（決定 24）ことは変わらない。
+   */
+  it("X3: done は reject せず、想定外の例外では internal-error で終端化した実行に解決する（決定 24・33）", async () => {
     const { db } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: TEXT });
     const orchestrator = createOrchestrator(makeDeps(db));
 
     const { run, done } = orchestrator.startRun(baseInput());
-    await expect(done).resolves.toEqual(run);
+    const settled = await done;
+
+    expect(settled.id).toBe(run.id);
+    expect(settled.status).toBe("stopped");
+    expect(settled.stopReason).toBe("internal-error");
+    // 例外のメッセージ（`unusedClient` の文言）を転記せず、定型文だけを残す（決定 33）。
+    expect(settled.stopMessage).toBe("想定外のエラーで実行を停止しました");
   });
 });
