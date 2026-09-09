@@ -95,11 +95,11 @@ export interface RunRecord {
   /** 停止要求を受けた時刻。未受理・再開後は null（決定 21）。 */
   readonly stopRequestedAt: Date | null;
   /**
-   * 復旧確認の待機上限（ミリ秒）。オーケストレーター経路では `timeouts.checkMs` は打ち切りの
-   * 上限ではなく、超えた時点で遅延として通知する閾値になり、実際のハード上限は
-   * `checkMs + recoveryConfirmMs` になる（決定 7）。`runPipeline`（CLI）では
-   * `recoveryConfirmMs: 0` を使うため、`checkMs` がそのままハード上限という従来の意味のまま
-   * になる（決定 8）。
+   * 復旧確認の待機上限（ミリ秒）。オーケストレーター経路では `timeouts.checkMs` /
+   * `timeouts.recheckMs` は打ち切りの上限ではなく、超えた時点で遅延として通知する閾値になり、
+   * 実際のハード上限はそれぞれ `checkMs + recoveryConfirmMs` / `recheckMs + recoveryConfirmMs`
+   * になる（決定 7）。`runPipeline`（CLI）では `recoveryConfirmMs: 0` を使うため、
+   * `checkMs` / `recheckMs` がそのままハード上限という従来の意味のままになる（決定 8）。
    */
   readonly recoveryConfirmMs: number;
   readonly startedAt: Date;

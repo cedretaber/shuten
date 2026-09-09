@@ -96,6 +96,11 @@ node packages/cli/bin/shuten-eval.ts --manuscript <path> --model <id>
 終了コードは 0 = `completed`、1 = 引数・入出力の誤り、2 = `partially-failed`、3 = `stopped`。
 進捗は標準エラーへ、結果 JSON は `--out` を指定しなければ標準出力へ出す。
 
+`--check-timeout-ms` / `--recheck-timeout-ms` は、この CLI では従来どおり打ち切りの上限そのもの。
+Web UI 側のオーケストレーター経路では同名の設定値の意味が異なり、超えた時点で打ち切るのではなく
+「生成が遅延している」と通知する閾値になる（実際のハード上限は復旧確認の待機時間を加えた値。
+仕様書 8.2節、決定7）。
+
 `--mode full-text` では本文全体が 1 要求になるため、`--max-input-graphemes` を本文の書記素数より
 大きい値に上げる必要がある（既定の 12,000 では長い原稿で停止する）。
 
