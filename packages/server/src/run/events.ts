@@ -58,6 +58,17 @@ export type OrchestratorEvent =
       readonly input: Range;
     }
   | { readonly type: "generation-slow"; readonly unitId: string; readonly elapsedMs: number }
+  /**
+   * 保存トランザクションが条件付き更新の 0 行でロールバックした（決定 15）。
+   * その単位は**決着していない**（停止などで他の経路が先に決着させていた）ので、
+   * `check-finished` / `recheck-finished` の代わりにこれを出す。`finished` を出すと
+   * 「この結果で決着した」という嘘を購読側に伝えることになるため、両方は出さない。
+   */
+  | {
+      readonly type: "save-rolled-back";
+      readonly unitId: string;
+      readonly kind: "check" | "recheck";
+    }
   | { readonly type: "stop-requested" }
   | { readonly type: "run-settled"; readonly status: RunStatus; readonly stop: RunStop | null };
 

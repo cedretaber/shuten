@@ -316,8 +316,14 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
         stop ??= outcome.halt;
       }
       // 決定 15：await から戻った後に同期的に 1 トランザクションで書く。
-      saveRecheckOutcome(db, { run, unit, outcome, now: context.now() });
-      context.emit({ type: "recheck-finished", findingId: finding.id, result: outcome.result });
+      const saved = saveRecheckOutcome(db, { run, unit, outcome, now: context.now() });
+      if (saved.rolledBack) {
+        // 条件付き更新が 0 行＝この再確認は決着していない（他の経路が先に決着させた）。
+        // recheck-finished は出さない（決定 15）。
+        context.emit({ type: "save-rolled-back", unitId: unit.id, kind: "recheck" });
+      } else {
+        context.emit({ type: "recheck-finished", findingId: finding.id, result: outcome.result });
+      }
     }
   }
 
@@ -377,7 +383,7 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
       }
       // 決定 15：1 検査単位ぶんの書き込み（候補・診断・指摘・判断・not-applicable な
       // 再確認単位・単位の状態）を 1 トランザクションで書く。
-      saveCheckUnitOutcome(db, {
+      const saved = saveCheckUnitOutcome(db, {
         run,
         target,
         unit,
@@ -388,7 +394,13 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
         now: context.now(),
         modelInfo: executor.modelInfo,
       });
-      context.emit({ type: "check-finished", result: outcome.unit });
+      if (saved.rolledBack) {
+        // 条件付き更新が 0 行＝この検査単位は決着していない（他の経路が先に決着させた）。
+        // check-finished は出さない（決定 15）。候補もロールバック済みで 1 行も残っていない。
+        context.emit({ type: "save-rolled-back", unitId: unit.id, kind: "check" });
+      } else {
+        context.emit({ type: "check-finished", result: outcome.unit });
+      }
 
       if (stop !== null) {
         break;

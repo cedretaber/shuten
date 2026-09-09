@@ -36,14 +36,16 @@ import type {
   ModelInfo,
   Usage,
 } from "../lmstudio/types.ts";
-import type { RunEvent } from "./events.ts";
+import type { OrchestratorEvent, PipelineEvent, RunEvent } from "./events.ts";
 import { runLoop } from "./loop.ts";
 import type { OrchestratorDeps, StartRunInput } from "./orchestrator.ts";
 import { createOrchestrator } from "./orchestrator.ts";
 import { createRequestQueue } from "./queue.ts";
 import type { StopGate } from "./recovery.ts";
 import { createStopGate } from "./recovery.ts";
+import type { RecoveryGate } from "./recovery-gate.ts";
 import { createRecoveryGate } from "./recovery-gate.ts";
+import { finishCheckUnitChecked, finishRecheckUnitChecked } from "./transitions.ts";
 
 /** ---------------------------------------------------------------------- */
 /** 素材 */
@@ -797,7 +799,7 @@ describe("run/loop: 単位駆動ループ", () => {
       },
     };
 
-    await runLoopDirect(db, seeded.run.id, client, gate);
+    await runLoopDirect(db, seeded.run.id, client, { gate });
 
     // ループが executeCheckUnit の前後で呼んでいると "beginRequest" が "ensureLoaded" より
     // 前に来る（キュー待ちと ensureLoaded が「実行中の生成」に含まれてしまう）。
@@ -853,6 +855,337 @@ describe("run/loop: 単位駆動ループ", () => {
       status: "stopped",
       stop: { reason: "aborted", generationUnconfirmed: false },
     });
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-1：決定 25 の 3 番目（対象内の再確認順） */
+  /** ---------------------------------------------------------------------- */
+
+  /**
+   * 1 対象に `pending` な再確認単位を 2 件並べ、**本文の位置順**と**`finding_id` の昇順**を
+   * わざと食い違わせる。
+   * - 指摘 A：引用「たち」（start 15）、ID `f-aaa`
+   * - 指摘 B：引用「うえ」（start 2）、ID `f-zzz`
+   * `listFindingsForTarget`（start 昇順）の順は B → A。`listRecheckUnits`（`finding_id` 昇順）や
+   * 単純な作成順に差し替えると A → B になり、逆転が検出できる。
+   */
+  function seedTwoPendingRechecks(): {
+    readonly db: ReturnType<typeof setupDb>["db"];
+    readonly runId: string;
+  } {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-order",
+      unitStatuses: ["done"],
+      recheckEnabled: true,
+    });
+    // 作成順も位置順と逆にする（作成順に頼る実装も落とせるようにする）。
+    seedPendingRecheck(db, seeded, {
+      findingId: "f-aaa",
+      recheckUnitId: "ru-aaa",
+      quote: "たち",
+      start: 15,
+      end: 17,
+    });
+    seedPendingRecheck(db, seeded, {
+      findingId: "f-zzz",
+      recheckUnitId: "ru-zzz",
+      quote: "うえ",
+      start: 2,
+      end: 4,
+    });
+    return { db, runId: seeded.run.id };
+  }
+
+  it("決定 25: 対象内の再確認は listFindingsForTarget の並び（本文の位置順）で走る。finding_id 順にも作成順にも依存しない", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+    const scripted = scriptedClient([() => recheckResponse(), () => recheckResponse()]);
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+
+    await runLoopDirect(db, runId, scripted.client, { emit: (event) => events.push(event) });
+
+    const startedOrder = events.flatMap((event) =>
+      event.type === "recheck-started" ? [event.findingId] : [],
+    );
+    // 位置順（うえ: start 2 → たち: start 15）。finding_id 昇順なら ["f-aaa", "f-zzz"] になる。
+    expect(startedOrder).toEqual(["f-zzz", "f-aaa"]);
+    expect(scripted.requests).toHaveLength(2);
+    expect(listRecheckUnits(db, runId).every((unit) => unit.status === "done")).toBe(true);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-2：決定 39（復旧ゲートの配線）と recovery-waiting */
+  /** ---------------------------------------------------------------------- */
+
+  /** 生成中に応答を受け取れずに切断した（`generationUnconfirmed: true` になる唯一の作り方）。 */
+  function connectionLostDuringChat(): never {
+    throw new LmStudioError("connection", "応答を受け取れずに切断した", { status: null });
+  }
+
+  it("決定 39: 生成終了を確認できない停止では recovery-waiting になり、executor が（ループの終了を待たずに）復旧ゲートを閉じる", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-unconfirmed", unitStatuses: ["pending", "pending"] });
+
+    // block の呼び出し位置を、イベントの並びの中で観測する。
+    const trace: string[] = [];
+    const inner = createRecoveryGate();
+    const recoveryGate: RecoveryGate = {
+      get blockedRunIds() {
+        return inner.blockedRunIds;
+      },
+      get blocked() {
+        return inner.blocked;
+      },
+      block: (id) => {
+        trace.push("block");
+        inner.block(id);
+      },
+      unblock: (id) => inner.unblock(id),
+    };
+
+    const scripted = scriptedClient([() => connectionLostDuringChat()]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client, {
+      recoveryGate,
+      emit: (event) => trace.push(event.type),
+    });
+
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.stopReason).toBe("connection-lost");
+    expect(run.generationUnconfirmed).toBe(true);
+    expect(inner.blocked).toBe(true);
+    expect([...inner.blockedRunIds]).toEqual([seeded.run.id]);
+
+    // 決定 39：門を閉じるのは executor（キューのジョブの内側）。ループ終了時の block は
+    // 冪等な安全網でしかないので、**check-finished より前**に閉じていなければならない
+    // （onRecoveryRequired を落とすと、安全網の block が finalizeRun まで遅れてここが逆転する）。
+    expect(trace.indexOf("block")).toBeGreaterThanOrEqual(0);
+    expect(trace.indexOf("block")).toBeLessThan(trace.indexOf("check-finished"));
+    expect(trace).toContain("run-settled");
+  });
+
+  it("決定 39: 別の実行が復旧待ちの間は生成要求を 1 件も送らず、stopped（recovery-blocked）で終わる", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-blocked", unitStatuses: ["pending", "pending"] });
+
+    const recoveryGate = createRecoveryGate();
+    recoveryGate.block("別の実行");
+
+    // 台本は空。生成要求が 1 件でも送られたら「台本にない生成要求」で落ちる。
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client, { recoveryGate });
+
+    expect(scripted.requests).toHaveLength(0);
+    expect(scripted.ensureLoadedCalls).toHaveLength(0);
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("recovery-blocked");
+    expect(run.generationUnconfirmed).toBe(false);
+    // 単位は pending のまま残る（ゲートが開けば再開できる）。
+    expect(listCheckUnits(db, run.id).every((unit) => unit.status === "pending")).toBe(true);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-3：再確認側の停止経路とゲート配線 */
+  /** ---------------------------------------------------------------------- */
+
+  it("決定 26: 再確認でも beginRequest / endRequest は client.chat の直前・直後だけで呼ばれる", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    const trace: string[] = [];
+    let chatCount = 0;
+    const client: LmStudioClient = {
+      listModels: () => Promise.resolve([LOADED_MODEL]),
+      ensureLoaded: () => {
+        trace.push("ensureLoaded");
+        return Promise.resolve(LOADED_MODEL);
+      },
+      chat: () => {
+        chatCount += 1;
+        trace.push("chat");
+        return Promise.resolve(recheckResponse());
+      },
+    };
+
+    const inner = createStopGate(0);
+    const gate: StopGate = {
+      get signal() {
+        return inner.signal;
+      },
+      get stopRequested() {
+        return inner.stopRequested;
+      },
+      requestStop: () => inner.requestStop(),
+      beginRequest: () => {
+        trace.push("beginRequest");
+        inner.beginRequest();
+      },
+      endRequest: () => {
+        trace.push("endRequest");
+        inner.endRequest();
+      },
+      dispose: () => inner.dispose(),
+    };
+
+    await runLoopDirect(db, runId, client, { gate });
+    inner.dispose();
+
+    expect(chatCount).toBe(2);
+    // 検査単位は 1 件も走らない（すべて done）ので、この並びは再確認 2 件ぶんそのもの。
+    expect(trace).toEqual([
+      "ensureLoaded",
+      "beginRequest",
+      "chat",
+      "endRequest",
+      "ensureLoaded",
+      "beginRequest",
+      "chat",
+      "endRequest",
+    ]);
+  });
+
+  it("決定 26: 再確認の途中で停止要求を受けたら、次の再確認は claim せずに stopped（aborted）で終わる（仕様 8.2）", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    const gate = createStopGate(60_000);
+    const scripted = scriptedClient([
+      () => {
+        // 1 件目の再確認の生成中に停止操作を受け、応答は上限内に届く。
+        gate.requestStop();
+        return recheckResponse();
+      },
+    ]);
+
+    const run = await runLoopDirect(db, runId, scripted.client, { gate });
+    gate.dispose();
+
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("aborted");
+    expect(run.generationUnconfirmed).toBe(false);
+
+    const rechecks = listRecheckUnits(db, runId);
+    const first = rechecks.find((unit) => unit.findingId === "f-zzz");
+    const second = rechecks.find((unit) => unit.findingId === "f-aaa");
+    expect(first?.status).toBe("done");
+    expect(second?.status).toBe("pending");
+    expect(second?.startedAt).toBeNull();
+  });
+
+  it("決定 26: 再確認が停止を伴う失敗で終わったら、次の再確認には手を付けない（stop の早期 return）", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    // 1 件目で「応答を受け取れずに切断」→ generationUnconfirmed: true の停止。
+    const scripted = scriptedClient([() => connectionLostDuringChat()]);
+    const run = await runLoopDirect(db, runId, scripted.client);
+
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.generationUnconfirmed).toBe(true);
+
+    const rechecks = listRecheckUnits(db, runId);
+    const second = rechecks.find((unit) => unit.findingId === "f-aaa");
+    // 2 件目は claim すらしていない（gate.stopRequested は立っていないので、
+    // 早期 return が無いとここが running → pending に書き換わり started_at が付く）。
+    expect(second?.status).toBe("pending");
+    expect(second?.startedAt).toBeNull();
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-4：保存のロールバック（決定 15） */
+  /** ---------------------------------------------------------------------- */
+
+  it("決定 15: 検査単位の保存がロールバックしたら check-finished ではなく save-rolled-back を出す", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-rollback", unitStatuses: ["pending"] });
+    const unitId = seeded.units[0]?.id ?? "";
+
+    const scripted = scriptedClient([
+      () => {
+        // 生成中に別の経路（停止処理など）が先にこの単位を決着させた状況を作る。
+        // これで保存トランザクションの条件付き更新が 0 行になり、全体がロールバックする。
+        finishCheckUnitChecked(db, unitId, {
+          expectedStatus: "running",
+          status: "done",
+          attempts: 0,
+          failure: null,
+          pendingNote: null,
+          usage: null,
+          inputGraphemes: null,
+          elapsedMs: 0,
+          finishedAt: new Date(),
+        });
+        return checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]);
+      },
+    ]);
+
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+    await runLoopDirect(db, seeded.run.id, scripted.client, {
+      emit: (event) => events.push(event),
+    });
+
+    const types = events.map((event) => event.type);
+    expect(types).toContain("save-rolled-back");
+    expect(types).not.toContain("check-finished");
+    expect(events.find((event) => event.type === "save-rolled-back")).toEqual({
+      type: "save-rolled-back",
+      unitId,
+      kind: "check",
+    });
+    // ロールバックしたので候補も指摘も 1 行も残らない（決定 15）。
+    expect(listCandidates(db, seeded.run.id)).toHaveLength(0);
+    expect(listFindings(db, seeded.run.id)).toHaveLength(0);
+  });
+
+  it("決定 15: 再確認の保存がロールバックしたら recheck-finished ではなく save-rolled-back を出す", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    const scripted = scriptedClient([
+      () => {
+        finishRecheckUnitChecked(db, "ru-zzz", {
+          expectedStatus: "running",
+          status: "done",
+          attempts: 0,
+          failure: null,
+          pendingNote: null,
+          notApplicableReason: null,
+          verdict: "keep",
+          reasonKind: "error-confirmed",
+          reason: "別の経路が先に決着させた",
+          suggestionValid: true,
+          usage: null,
+          inputGraphemes: null,
+          elapsedMs: 0,
+          finishedAt: new Date(),
+        });
+        return recheckResponse();
+      },
+      () => recheckResponse(),
+    ]);
+
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+    await runLoopDirect(db, runId, scripted.client, { emit: (event) => events.push(event) });
+
+    const rolledBack = events.filter((event) => event.type === "save-rolled-back");
+    expect(rolledBack).toEqual([{ type: "save-rolled-back", unitId: "ru-zzz", kind: "recheck" }]);
+    // 2 件目（f-aaa）は正常に決着するので recheck-finished が 1 件だけ出る。
+    const finished = events.filter((event) => event.type === "recheck-finished");
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ findingId: "f-aaa" });
+  });
+
+  it("決定 15: ロールバックが起きなければ save-rolled-back は出ず、finished が出る", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+    const scripted = scriptedClient([() => recheckResponse(), () => recheckResponse()]);
+
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+    await runLoopDirect(db, runId, scripted.client, { emit: (event) => events.push(event) });
+
+    const types = events.map((event) => event.type);
+    expect(types).not.toContain("save-rolled-back");
+    expect(types.filter((type) => type === "recheck-finished")).toHaveLength(2);
   });
 
   /** ---------------------------------------------------------------------- */
@@ -1106,28 +1439,87 @@ function insertLocatedFinding(
   });
 }
 
+/**
+ * 位置確定済みの指摘 1 件と、その `pending` な再確認単位を手で作る。
+ * 指摘 ID を明示できるので、「本文の位置順」と「`finding_id` の昇順」を**わざと食い違わせた**
+ * フィクスチャが組める（決定 25 の 3 番目＝対象内の再確認順の検査に要る）。
+ */
+function seedPendingRecheck(
+  db: ReturnType<typeof setupDb>["db"],
+  seeded: SeededRun,
+  input: {
+    readonly findingId: string;
+    readonly recheckUnitId: string;
+    readonly quote: string;
+    readonly start: number;
+    readonly end: number;
+  },
+): void {
+  insertFinding(db, {
+    id: input.findingId,
+    runId: seeded.run.id,
+    manuscriptVersionId: "mv1",
+    targetId: seeded.targetId,
+    locateStatus: "located",
+    range: { start: input.start, end: input.end },
+    paragraphId: 0,
+    quote: input.quote,
+    suggestion: `${input.quote}の修正案`,
+    category: "notation",
+    initialVerdict: "likely-error",
+    mergeKey: `${String(input.start)}:${String(input.end)}:${JSON.stringify(input.quote)}`,
+    suppression: null,
+  });
+  insertRecheckUnit(db, {
+    id: input.recheckUnitId,
+    runId: seeded.run.id,
+    findingId: input.findingId,
+    inputRange: null,
+    status: "pending",
+    notApplicableReason: null,
+    attempts: 0,
+    failure: null,
+    pendingNote: null,
+    verdict: null,
+    reasonKind: null,
+    reason: null,
+    suggestionValid: null,
+    usage: null,
+    inputGraphemes: null,
+    elapsedMs: null,
+    startedAt: null,
+    finishedAt: null,
+  });
+}
+
+interface RunLoopDirectOptions {
+  readonly gate?: StopGate;
+  readonly recoveryGate?: RecoveryGate;
+  readonly emit?: (event: PipelineEvent | OrchestratorEvent) => void;
+}
+
 /** `runLoop` を直接呼ぶ（オーケストレーターを介さない）。 */
 async function runLoopDirect(
   db: ReturnType<typeof setupDb>["db"],
   runId: string,
   client: LmStudioClient,
-  gateOverride?: StopGate,
+  options: RunLoopDirectOptions = {},
 ): Promise<RunRecord> {
-  const gate = gateOverride ?? createStopGate(0);
+  const gate = options.gate ?? createStopGate(0);
   try {
     return await runLoop({
       db,
       client,
       queue: createRequestQueue(),
-      recoveryGate: createRecoveryGate(),
+      recoveryGate: options.recoveryGate ?? createRecoveryGate(),
       gate,
       runId,
       now: () => new Date(),
       createId: idSequence(),
-      emit: () => undefined,
+      emit: options.emit ?? (() => undefined),
     });
   } finally {
-    if (gateOverride === undefined) {
+    if (options.gate === undefined) {
       gate.dispose();
     }
   }
