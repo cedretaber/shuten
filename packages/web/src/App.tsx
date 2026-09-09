@@ -1,38 +1,20 @@
-import { countGraphemes } from "@shuten/shared";
-import { useEffect, useState } from "react";
+import { Route, Routes } from "react-router";
+import { HomePage } from "./app/home-page.tsx";
+import { Layout } from "./app/layout.tsx";
+import { NotFound } from "./app/not-found.tsx";
+import { ROUTES } from "./app/routes.ts";
+import { ConnectionSettingsPage } from "./features/connection/connection-settings-page.tsx";
+import { RunReceiptPage } from "./features/run-receipt/run-receipt-page.tsx";
 
-interface Health {
-  status: string;
-  node: string;
-  graphemeCheck: number;
-}
-
-/** scaffold の動作確認用の最小画面。実装設計後に置き換える。 */
 export function App() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then((res) => res.json() as Promise<Health>)
-      .then(setHealth)
-      .catch((e: unknown) => setError(String(e)));
-  }, []);
-
   return (
-    <main>
-      <h1>朱点</h1>
-      <p>ブラウザ側の書記素計数: {countGraphemes("👨‍👩‍👧")}</p>
-      {health ? (
-        <p>
-          サーバー: {health.status} / Node {health.node} / サーバー側の書記素計数:{" "}
-          {health.graphemeCheck}
-        </p>
-      ) : error ? (
-        <p>サーバーに接続できません: {error}</p>
-      ) : (
-        <p>サーバーに接続中…</p>
-      )}
-    </main>
+    <Routes>
+      <Route element={<Layout />}>
+        <Route path={ROUTES.home} element={<HomePage />} />
+        <Route path={ROUTES.connectionSettings} element={<ConnectionSettingsPage />} />
+        <Route path={ROUTES.run} element={<RunReceiptPage />} />
+        <Route path="*" element={<NotFound />} />
+      </Route>
+    </Routes>
   );
 }
