@@ -2249,6 +2249,40 @@ describe("run/orchestrator: 復旧確認の永続化（PR10 決定 11）", () =>
     expect(readRun(harness.db, seeded.run.id).recoveryConfirmedAt).toBeNull();
   });
 
+  it("D7: 走っているループがある実行の確認はゲートを開けず、確認時刻も書かない（裁定 R11）", async () => {
+    const pending = deferred<ChatResult>();
+    const scripted = scriptedClient([() => pending.promise]);
+    const harness = makeHarness(scripted.client);
+
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    await flush();
+    // ループは生きている（生成要求の応答待ち）。
+    expect(harness.orchestrator.activeRunIds()).toEqual([started.run.id]);
+    expect(readRun(harness.db, started.run.id).status).toBe("running");
+
+    // `run/loop.ts` の onRecoveryRequired と同じ副作用。executor が生成の終了を確認できなく
+    // なった時点で閉じるので、実行が recovery-waiting になる前から blockedRunIds に入る。
+    harness.recoveryGate.block(started.run.id);
+
+    const confirmed = harness.orchestrator.confirmRecovery(started.run.id);
+
+    // 現在のレコードは返すが、ゲートは開けず、確認時刻も書かない
+    // （終了未確認の生成が走っている最中に別の実行が生成要求を送れてしまうため）。
+    expect(confirmed?.status).toBe("running");
+    expect(confirmed?.recoveryConfirmedAt).toBeNull();
+    expect(harness.recoveryGate.blockedRunIds.has(started.run.id)).toBe(true);
+    expect(readRun(harness.db, started.run.id).recoveryConfirmedAt).toBeNull();
+
+    // ループが終わって recovery-waiting になれば、同じ確認操作が通る。
+    pending.reject(connectionLost());
+    const run = await started.done;
+    expect(run.status).toBe("recovery-waiting");
+
+    const after = harness.orchestrator.confirmRecovery(started.run.id);
+    expect(after?.recoveryConfirmedAt).not.toBeNull();
+    expect(harness.recoveryGate.blocked).toBe(false);
+  });
+
   it("D6: 再開すると確認は無効になり、また recovery-waiting になっても確認済みにはならない", async () => {
     vi.useFakeTimers();
     try {

@@ -218,6 +218,8 @@ export interface Orchestrator {
    * 復旧の確認（PR10 決定 11）。実行が無ければ null（HTTP は 404）。あれば
    * `markRecoveryConfirmed` を通して確認時刻を残し、復旧ゲートを開けて、読み直した実行を返す。
    * **実行の `status` は変えない**（再開は `resumeRun` の仕事）。冪等。
+   * 走っているループがある実行（レジストリにある実行）は、DB も書かずゲートも開けずに
+   * 現在のレコードを返す（レビュー裁定 R11）。
    */
   confirmRecovery(runId: string): RunRecord | null;
 }
@@ -1122,11 +1124,25 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * `markRecoveryConfirmed` が確認時刻を書いてからゲートを開け、読み直した実行を返す
    * （書き込みが失敗すればゲートは開かず、例外がそのまま伝わる）。冪等：すでに確認済みなら
    * 時刻を書き直さず、ゲートを開けるだけ。**実行の `status` は変えない。**
+   *
+   * **走っているループがある実行は、DB も書かずゲートも開けずに現在のレコードを返す**
+   * （レビュー裁定 R11）。復旧ゲートは実行が `recovery-waiting` になる前から閉じる
+   * （`run/loop.ts` の `onRecoveryRequired` は executor が生成の終了を確認できなくなった時点で
+   * 閉じ、実行が終端化されるのは `finalizeRun`）。その間 `blockedRunIds` には `running` の
+   * 実行の ID が入っており、`GET /api/recovery` はその集合をそのまま見せるので、確認操作が
+   * 届きうる。ここで開けると、終了を確認できていない生成が走っている最中に別の実行が
+   * 生成要求を送れてしまう（`docs/reference/invariants.md`「前の生成が継続している可能性が
+   * ある場合は後続生成を送信しない」に反する）。判定はレジストリで行う（決定 7。走っているかの
+   * 正本は DB の `status` ではない）。ガードを `markRecoveryConfirmed` 側に置かないのは、
+   * 通常の再開が claim 後の `running` のレコードを渡して `unblock` だけを行うためである。
    */
   function confirmRecovery(runId: string): RunRecord | null {
     const existing = findRun(deps.db, runId);
     if (existing === null) {
       return null;
+    }
+    if (registry.has(runId)) {
+      return existing;
     }
     markRecoveryConfirmed(existing);
     return findRun(deps.db, runId);
