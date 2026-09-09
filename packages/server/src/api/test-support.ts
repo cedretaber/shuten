@@ -13,9 +13,10 @@
  * - フェイククライアントの台本（`steps` / `listModels` / `ensureLoaded`）。
  *
  * フェイクは `createClient` の `baseUrl` に**結び直される**（`client.bind`）。接続設定を
- * 更新すると新しい接続先に結んだクライアントができ、失敗の台本が投げる `LmStudioError` の
- * `message` にはその接続先が入る。**番兵の URL を失敗経路まで届かせるのはこの継ぎ目**で、
- * ここを固定文字列にすると A0 が空振りで通る。
+ * 更新すると新しい接続先に結んだクライアントができ、台本はその URL を
+ * `ChatStep` の文脈（`endpointUrl`）から読める。**失敗の `message` に接続先 URL は入らない**
+ * （裁定 R12。実クライアントも入れない）。代わりに `FAKE_FAILURE_MARKER` が入るので、
+ * A0（Task 10）は「失敗経路を実際に通ったか」をその印で確かめる。
  */
 
 import type { Hono } from "hono";

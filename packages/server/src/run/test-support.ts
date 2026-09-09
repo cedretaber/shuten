@@ -5,10 +5,16 @@
  * `api/test-support.ts` の `setupApi()` で共用する。台本（`ChatStep` の配列）どおりに応答し、
  * 使い切ったあとに要求が来たら例外にする（「送らないはずの生成要求」を黙って成功させない）。
  *
- * **失敗の台本で投げる `LmStudioError` の `message` には必ず接続先 URL を埋め込む**
- * （`failure()` がそうする）。実クライアントの最悪の形を模すためで、これが無いと
- * 「接続先 URL を応答・ログ・SSE・エラーに出さない」の検査（Task 10 の A0）が
- * 空振りで通ってしまう（URL の入っていない失敗経路を見ても何も分からない）。
+ * **失敗の台本が投げる `LmStudioError` の `message` に接続先 URL は入れない**（裁定 R12）。
+ * 実クライアント（`lmstudio/client.ts`）が投げる `message` は定型文・モデル ID・HTTP 状態・
+ * タイムアウト値だけでできており、接続先 URL は `cause` にしか現れない。`cause` は
+ * `executor.ts` の `toFailure` が写さないので保存も射影もされない。フェイクが URL を
+ * 埋め込むと、系が約束していない漏えいを A0 に検出させることになる。
+ *
+ * 代わりに `failure()` は `FAKE_FAILURE_MARKER` を頭に付けた定型文を使う。A0（Task 10）は
+ * この印を探すことで「失敗経路を実際に通ったか」を確かめられる（通っていなければ、番兵の
+ * 検査は空振りで通ってしまう）。実クライアント側の保証は
+ * `lmstudio/client.test.ts` の C52・C53（`message` に接続先 URL を入れない）が持つ。
  */
 
 import type { FailureReason } from "@shuten/shared";
@@ -29,12 +35,19 @@ export const SCRIPTED_LOADED_MODEL: ModelInfo = {
   loadedContextLength: 2048,
 };
 
-/** 台本の関数が受け取る共通の文脈。`failure` は接続先 URL を埋め込んだ例外を作る。 */
+/**
+ * A0（Task 10）が「失敗経路を実際に通った」ことを確かめるための印。`failure()` が作る
+ * `LmStudioError` の `message` に必ず入る。接続先 URL・API キーは入らない。
+ */
+export const FAKE_FAILURE_MARKER = "FAKE-FAILURE";
+
+/** 台本の関数が受け取る共通の文脈。 */
 export interface FakeCallContext {
+  /** そのクライアントが結ばれている接続先。`message` には入らない（裁定 R12）。 */
   readonly endpointUrl: string;
   /**
-   * 失敗の台本で投げる例外。`message` に**必ず**接続先 URL を埋め込む
-   * （実クライアントは接続先を含むメッセージを投げうる）。
+   * 失敗の台本で投げる例外。`message` は `FAKE-FAILURE-<kind>: <note>` で、
+   * **接続先 URL も API キーも含まない**（実クライアントの `message` と同じ性質）。
    */
   failure(kind: FailureReason, note?: string): LmStudioError;
 }
@@ -68,7 +81,7 @@ export interface ScriptedClient {
   readonly ensureLoadedCalls: string[];
   readonly listModelsCalls: number;
   readonly closeCalls: number;
-  /** 既定の接続先に結んだ失敗。台本の外（`listModels` の差し替えなど）で使う。 */
+  /** 失敗の例外を作る。台本の外（`listModels` の差し替えなど）で使う。 */
   failure(kind: FailureReason, note?: string): LmStudioError;
   /**
    * 接続先 URL だけを差し替えたクライアント。台本・記録・呼び出し回数は共有する。
@@ -78,10 +91,10 @@ export interface ScriptedClient {
   bind(endpointUrl: string): LmStudioClient;
 }
 
-/** 接続先 URL を埋め込んだ `LmStudioError`。 */
-function failureFor(endpointUrl: string, kind: FailureReason, note?: string): LmStudioError {
+/** 失敗の印だけを入れた `LmStudioError`。接続先 URL は入れない（裁定 R12）。 */
+function failureFor(kind: FailureReason, note?: string): LmStudioError {
   const detail = note ?? "生成要求に失敗した";
-  return new LmStudioError(kind, `${detail}（接続先: ${endpointUrl}）`, { raw: null });
+  return new LmStudioError(kind, `${FAKE_FAILURE_MARKER}-${kind}: ${detail}`, { raw: null });
 }
 
 export function scriptedClient(
@@ -99,7 +112,7 @@ export function scriptedClient(
   function bind(endpointUrl: string): LmStudioClient {
     const context: FakeCallContext = {
       endpointUrl,
-      failure: (kind, note) => failureFor(endpointUrl, kind, note),
+      failure: (kind, note) => failureFor(kind, note),
     };
     return {
       listModels: async () => {
@@ -142,7 +155,7 @@ export function scriptedClient(
     get closeCalls(): number {
       return closeCalls;
     },
-    failure: (kind, note) => failureFor(defaultEndpointUrl, kind, note),
+    failure: (kind, note) => failureFor(kind, note),
     bind,
   };
 }

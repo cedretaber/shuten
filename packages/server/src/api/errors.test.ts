@@ -250,8 +250,25 @@ describe("readJson", () => {
     expect(json).toEqual({ value: {} });
   });
 
-  it("optional でも Content-Type が application/json でなければ 400 invalid-json", async () => {
+  it("R13: optional なら本文も Content-Type も無い要求を {} として受ける", async () => {
+    // `fetch(url, { method: "POST" })` の形。Task 7 の retry-failed（本文なし = 全件）が通る。
+    const { status, json } = await postBody(readJsonApp({ optional: true }), undefined, undefined);
+    expect(status).toBe(200);
+    expect(json).toEqual({ value: {} });
+  });
+
+  it("R13: optional なら空本文の Content-Type は問わない", async () => {
     const { status, json } = await postBody(readJsonApp({ optional: true }), "", "text/plain");
+    expect(status).toBe(200);
+    expect(json).toEqual({ value: {} });
+  });
+
+  it("optional でも本文があれば Content-Type を要求する", async () => {
+    const { status, json } = await postBody(
+      readJsonApp({ optional: true }),
+      JSON.stringify({ a: 1 }),
+      "text/plain",
+    );
     expect(status).toBe(400);
     expect((json as ErrorBody).error.code).toBe("invalid-json");
   });

@@ -142,26 +142,31 @@ function isJsonContentType(raw: string | undefined): boolean {
 /**
  * JSON 本文を読む。決定 4 のとおり、ここで `invalid-json` に写す（500 にしない）。
  *
- * - `Content-Type` が `application/json` でない（省略を含む）→ 400 `invalid-json`。
- *   `c.req.json()` は `Content-Type` を見ないので、自前でヘッダーを見る。
- * - 本文が空：`optional` なら `{}`、そうでなければ 400 `invalid-json`。
- * - `JSON.parse` の `SyntaxError` → 400 `invalid-json`。
+ * 本文を先に読み、**空本文なら `optional` を先に見る**（裁定 R13）。
  *
- * `Content-Type` の検査は `optional` でも行う（本文の有無より先に、要求の形を見る）。
+ * - 本文が空で `optional` → `{}`。`Content-Type` は見ない。`fetch(url, { method: "POST" })` は
+ *   本文も `Content-Type` も送らないので、ここで `Content-Type` を要求すると
+ *   「本文なし・空本文は全件」と決めた要求（`POST /api/runs/:id/retry-failed`）が 400 になる。
+ *   決定 4 の表の「空本文（任意でない場合）」という限定は、`Content-Type` の検査にも同じくかかる。
+ * - 本文が空で `optional` でない → 400 `invalid-json`。
+ * - 本文があって `Content-Type` が `application/json` でない（省略を含む）→ 400 `invalid-json`。
+ *   `c.req.json()` は `Content-Type` を見ないので、自前でヘッダーを見る。
+ * - `JSON.parse` の `SyntaxError` → 400 `invalid-json`。
  */
 export async function readJson(
   c: Context,
   options?: { readonly optional?: boolean },
 ): Promise<unknown> {
-  if (!isJsonContentType(c.req.header("content-type"))) {
-    throw new ApiError(400, "invalid-json", INVALID_JSON_MESSAGE);
-  }
-
   const text = await c.req.text();
+
   if (text.trim() === "") {
     if (options?.optional === true) {
       return {};
     }
+    throw new ApiError(400, "invalid-json", INVALID_JSON_MESSAGE);
+  }
+
+  if (!isJsonContentType(c.req.header("content-type"))) {
     throw new ApiError(400, "invalid-json", INVALID_JSON_MESSAGE);
   }
 

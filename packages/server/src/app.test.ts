@@ -40,14 +40,36 @@ describe("A7: 静的配信との共存", () => {
     expect(await res.text()).toContain("shuten");
   });
 
-  // 未知の `/api/*` は、静的配信の SPA フォールバック（`app.get("*", index.html)`）に拾われて
-  // 200 と index.html を返す。PR9 以前からの挙動で、本 Task では変えない（ルーターに
-  // catch-all を足すと、Task 5 以降が足す route の登録順に依存する罠を作るため）。
-  // JSON の 404 を返したい場合は別途決める（計画書のエンドポイント一覧に規定が無い）。
+  it("R14: 未知の /api/* は JSON の 404（index.html にフォールバックしない）", async () => {
+    const { app } = setupApi({ webDistDir: distDir });
+    const res = await app.request("/api/nope");
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toMatchObject({ error: { code: "not-found" } });
+  });
+
+  it("R14: /api そのものも JSON の 404", async () => {
+    const { app } = setupApi({ webDistDir: distDir });
+    const res = await app.request("/api");
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not-found" } });
+  });
+
+  it("R14: /api/* のマウントは notFound を飲み込まない（POST など他のメソッドでも同じ）", async () => {
+    const { app } = setupApi({ webDistDir: distDir });
+    const res = await app.request("/api/health", { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not-found" } });
+  });
 
   it("webDistDir が無ければ静的配信を付けない（API だけが動く）", async () => {
     const { app } = setupApi();
     expect((await app.request("/api/health")).status).toBe(200);
     expect((await app.request("/")).status).toBe(404);
+    // 静的配信が無くても未知の /api/* は JSON の 404。
+    const res = await app.request("/api/nope");
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: { code: "not-found" } });
   });
 });

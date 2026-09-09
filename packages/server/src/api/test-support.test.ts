@@ -1,15 +1,20 @@
 /**
  * テスト基盤そのものの検査。
  *
- * ここで守るのは「フェイクが投げる `LmStudioError` の `message` に**そのときの接続先 URL**が
- * 入る」という継ぎ目である。これが壊れると、Task 10 の漏えい検査（A0）は番兵の URL を
- * 一度も含まない失敗経路を見ることになり、空振りで通ってしまう。
+ * ここで守るのは 2 つ。
+ *
+ * 1. フェイクが `createClient` の `baseUrl` に結び直され、台本がその接続先を読めること
+ *    （`PUT /api/settings/connection` が実行に効くことの土台）。
+ * 2. 失敗の台本が投げる `LmStudioError` の `message` に**接続先 URL が入らない**こと
+ *    （裁定 R12。実クライアントと同じ性質にする）。代わりに `FAKE_FAILURE_MARKER` が入るので、
+ *    A0（Task 10）は「失敗経路を実際に通ったか」をその印で確かめられる。
  */
 
 import { describe, expect, it } from "vitest";
 
 import { LmStudioError } from "../lmstudio/errors.ts";
 import type { ChatRequest } from "../lmstudio/types.ts";
+import { FAKE_FAILURE_MARKER } from "../run/test-support.ts";
 import { setupApi } from "./test-support.ts";
 
 const SENTINEL_URL = "http://sentinel.invalid:9";
@@ -30,7 +35,43 @@ describe("setupApi", () => {
     expect(connection.describe()).toEqual({ endpointUrl: SENTINEL_URL, hasApiKey: true });
   });
 
-  it("失敗の台本が投げる LmStudioError の message に接続先 URL が入る", async () => {
+  it("台本は自分が結ばれている接続先を文脈から読める", async () => {
+    const seen: string[] = [];
+    const harness = setupApi({
+      env: { lmStudioUrl: SENTINEL_URL, lmStudioApiKey: null },
+      steps: [
+        ({ endpointUrl, failure }) => {
+          seen.push(endpointUrl);
+          throw failure("connection");
+        },
+        ({ endpointUrl, failure }) => {
+          seen.push(endpointUrl);
+          throw failure("connection");
+        },
+      ],
+    });
+
+    await harness.connection
+      .current()
+      .client.chat(REQUEST, { timeoutMs: 1000 })
+      .catch(() => undefined);
+
+    harness.connection.update({ endpointUrl: "http://127.0.0.1:4321" });
+    expect(harness.connection.current().endpointUrl).toBe("http://127.0.0.1:4321");
+    // 古いクライアントは閉じられる（回数を数えている）。
+    expect(harness.client.closeCalls).toBe(1);
+
+    await harness.connection
+      .current()
+      .client.chat(REQUEST, { timeoutMs: 1000 })
+      .catch(() => undefined);
+
+    // 台本・記録は共有され、接続先だけが差し替わる。
+    expect(seen).toEqual([SENTINEL_URL, "http://127.0.0.1:4321"]);
+    expect(harness.client.requests).toHaveLength(2);
+  });
+
+  it("R12: 失敗の message に接続先 URL を入れず、失敗の印を入れる", async () => {
     const { connection } = setupApi({
       env: { lmStudioUrl: SENTINEL_URL, lmStudioApiKey: null },
       steps: [
@@ -40,52 +81,32 @@ describe("setupApi", () => {
       ],
     });
 
-    const { client } = connection.current();
-    await expect(client.chat(REQUEST, { timeoutMs: 1000 })).rejects.toThrow(/sentinel\.invalid/);
+    const error = await connection
+      .current()
+      .client.chat(REQUEST, { timeoutMs: 1000 })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(LmStudioError);
+    const message = (error as LmStudioError).message;
+    expect(message).toContain(`${FAKE_FAILURE_MARKER}-connection`);
+    expect(message).not.toContain("sentinel");
+    expect(String((error as LmStudioError).stack)).not.toContain("sentinel");
   });
 
-  it("listModels / ensureLoaded の失敗にも接続先 URL が入る", async () => {
+  it("R12: listModels / ensureLoaded の失敗も同じ性質を持つ", async () => {
     const { connection } = setupApi({
       env: { lmStudioUrl: SENTINEL_URL, lmStudioApiKey: null },
       listModels: ({ failure }) => Promise.reject(failure("connection", "一覧を取得できない")),
       ensureLoaded: ({ failure }) => Promise.reject(failure("model-not-loaded", "未ロード")),
     });
-
     const { client } = connection.current();
-    await expect(client.listModels()).rejects.toThrow(/sentinel\.invalid/);
-    await expect(client.ensureLoaded("model-a")).rejects.toThrow(/sentinel\.invalid/);
-  });
 
-  it("接続設定を更新すると、以後の失敗には新しい接続先が入る（台本は共有される）", async () => {
-    const harness = setupApi({
-      env: { lmStudioUrl: SENTINEL_URL, lmStudioApiKey: null },
-      steps: [
-        ({ failure }) => {
-          throw failure("connection");
-        },
-        ({ failure }) => {
-          throw failure("connection");
-        },
-      ],
-    });
-
-    const before = harness.connection.current();
-    await expect(before.client.chat(REQUEST, { timeoutMs: 1000 })).rejects.toThrow(
-      /sentinel\.invalid/,
-    );
-
-    harness.connection.update({ endpointUrl: "http://127.0.0.1:4321" });
-    const after = harness.connection.current();
-    expect(after.endpointUrl).toBe("http://127.0.0.1:4321");
-    // 古いクライアントは閉じられる（回数を数えている）。
-    expect(harness.client.closeCalls).toBe(1);
-
-    // 台本は共有されているので、2 件目の台本が使われる。
-    const error = await after.client.chat(REQUEST, { timeoutMs: 1000 }).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(LmStudioError);
-    expect((error as LmStudioError).message).toContain("127.0.0.1:4321");
-    expect((error as LmStudioError).message).not.toContain("sentinel");
-    expect(harness.client.requests).toHaveLength(2);
+    for (const promise of [client.listModels(), client.ensureLoaded("model-a")]) {
+      const error = await promise.catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(LmStudioError);
+      expect((error as LmStudioError).message).toContain(FAKE_FAILURE_MARKER);
+      expect((error as LmStudioError).message).not.toContain("sentinel");
+    }
   });
 
   it("台本を使い切ったあとの生成要求は例外にする", async () => {
