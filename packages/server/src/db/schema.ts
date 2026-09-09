@@ -8,13 +8,18 @@ import type {
   LocateFailureReason,
   RecheckReasonKind,
   RecheckVerdict,
+  RunStopReason,
 } from "@shuten/shared";
 import {
+  CANDIDATE_LOCATE_STATUSES,
   FAILURE_REASONS,
   FINDING_CATEGORIES,
+  FINDING_LOCATE_STATUSES,
   INITIAL_VERDICTS,
+  RECHECK_NOT_APPLICABLE_REASONS,
   RECHECK_REASON_KINDS,
   RECHECK_VERDICTS,
+  RUN_STOP_REASONS,
 } from "@shuten/shared";
 import { sql } from "drizzle-orm";
 import { foreignKey, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
@@ -24,13 +29,7 @@ import type { GenerationSettings } from "../prompts/types.ts";
 import { JUDGMENT_STATUSES, type JudgmentStatus } from "../run/judgment.ts";
 import { RUN_STATUSES, type RunStatus, UNIT_STATUSES, type UnitStatus } from "../run/status.ts";
 import { PERSPECTIVES } from "./json.ts";
-import type {
-  CandidateLocateStatus,
-  FindingLocateStatus,
-  RecheckNotApplicableReason,
-  RunStopReason,
-  UnitFailureRecord,
-} from "./records.ts";
+import type { UnitFailureRecord } from "./records.ts";
 
 /**
  * Drizzle スキーマ（仕様書 8.1 節）。
@@ -51,29 +50,12 @@ import type {
 export type SchemaPerspective = (typeof PERSPECTIVES)[number];
 
 /**
- * `candidates` / `findings` の位置特定状態。`LocateFailureReason`（shared）に `located` を加えたもの。
- * `satisfies` を付け、`records.ts` の `CandidateLocateStatus` から値が抜けたときにコンパイルで気づける
- * ようにする（`PERSPECTIVES` と同じ姿勢）。ただし検出できるのは既存の値が削れたときだけで、
- * 型に値が増えたのにここへ足し忘れたケースまでは検出できない。
+ * `candidates` / `findings` の位置特定状態、`recheck_units.not_applicable_reason`、
+ * `runs.stop_reason` の定数配列は `@shuten/shared` の `run/stop-reason.ts` に移した
+ * （PR10 決定 2・9）。ここでは import した `CANDIDATE_LOCATE_STATUSES` /
+ * `FINDING_LOCATE_STATUSES` / `RECHECK_NOT_APPLICABLE_REASONS` / `RUN_STOP_REASONS` を
+ * そのまま使う。
  */
-const CANDIDATE_LOCATE_STATUSES = [
-  "located",
-  "not-found",
-  "ambiguous",
-  "outside-target",
-] as const satisfies readonly CandidateLocateStatus[];
-const FINDING_LOCATE_STATUSES = [
-  "located",
-  "not-found",
-  "ambiguous",
-] as const satisfies readonly FindingLocateStatus[];
-
-/** `recheck_units.not_applicable_reason`。仕様書 6.5 節。 */
-const RECHECK_NOT_APPLICABLE_REASONS = [
-  "disabled",
-  "suppressed",
-  "unlocated",
-] as const satisfies readonly RecheckNotApplicableReason[];
 
 /** `UnitFailure.origin`。ensureLoaded 由来・生成要求由来・送信前の例外の別。 */
 type FailureOrigin = UnitFailureRecord["origin"];
@@ -82,18 +64,6 @@ const FAILURE_ORIGINS = [
   "chat",
   "local",
 ] as const satisfies readonly FailureOrigin[];
-
-/** `runs.stop_reason`。`db/records.ts` の `RunStopReason` の値をそのまま列挙にする。 */
-const RUN_STOP_REASONS = [
-  "model-not-loaded",
-  "recovery-needed",
-  "connection-lost",
-  "settings",
-  "aborted",
-  "internal-error",
-  "recovery-blocked",
-  "backend-restarted",
-] as const satisfies readonly RunStopReason[];
 
 /** `diagnostics.reason`。`LocateFailureReason`（shared）は `located` を含まない 3 値。 */
 const LOCATE_FAILURE_REASONS = [

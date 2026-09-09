@@ -62,22 +62,27 @@ export interface LlmRecheckOutput {
   readonly suggestionValid: boolean;
 }
 
+/**
+ * 初回検査で LLM が返す指摘 1 件のワイヤ形式（`LlmFinding` と同じ形）。.transform を持たない。
+ * PR10 の DTO（`shared/src/api/dto.ts` の `CandidateDto.llm`）はこのスキーマをそのまま再利用する
+ * （検証ロジックを 2 か所に書かないため）。文法制約付き生成でモデルがこの順にキーを出すため、
+ * キー順を変えないこと。
+ */
+export const llmFindingSchema = z.object({
+  paragraphId: z.number().int().min(0),
+  quote: z.string().min(1),
+  before: z.string(),
+  after: z.string(),
+  category: z.enum(FINDING_CATEGORIES),
+  reason: z.string(),
+  suggestion: z.string().nullable(),
+  verdict: z.enum(INITIAL_VERDICTS),
+});
+
 // 内部用の「ワイヤー」スキーマ。.transform / .refine / .preprocess を持たない。
 // モデルの応答そのものの形を表し、z.toJSONSchema への唯一の入力になる。
-// 文法制約付き生成でモデルがこの順にキーを出すため、キー順を変えないこと。
 const checkOutputWire = z.object({
-  findings: z.array(
-    z.object({
-      paragraphId: z.number().int().min(0),
-      quote: z.string().min(1),
-      before: z.string(),
-      after: z.string(),
-      category: z.enum(FINDING_CATEGORIES),
-      reason: z.string(),
-      suggestion: z.string().nullable(),
-      verdict: z.enum(INITIAL_VERDICTS),
-    }),
-  ),
+  findings: z.array(llmFindingSchema),
 });
 
 const recheckOutputWire = z.object({

@@ -1,15 +1,19 @@
 import type {
+  CandidateLocateStatus,
   ChunkSettings,
   DiagnosticCandidate,
   FailureReason,
   FindingCategory,
+  FindingLocateStatus,
   InitialVerdict,
   LlmFinding,
   LocateFailureReason,
   Perspective,
   Range,
+  RecheckNotApplicableReason,
   RecheckReasonKind,
   RecheckVerdict,
+  RunStopReason,
 } from "@shuten/shared";
 
 import type { ModelInfo, Usage } from "../lmstudio/types.ts";
@@ -24,31 +28,17 @@ import type { RunStatus, UnitStatus } from "../run/status.ts";
  * 外向きの形をスキーマ実装の詳細から独立させるため。同じ理由で、PR7 のパイプライン結果型
  * （`../run/result.ts`）にも依存しない。列挙・意味が重なる場合でも（`StopReason` /
  * `UnitFailure` など）、ここでは独立した型として持つ。
- */
-
-/** `candidates` / `findings` の位置特定状態。`located` の有無だけが違う。 */
-export type CandidateLocateStatus = "located" | "not-found" | "ambiguous" | "outside-target";
-export type FindingLocateStatus = "located" | "not-found" | "ambiguous";
-
-/**
- * `runs.stop_reason`。`../run/result.ts` の `StopReason` と値は同じだが、独立させて持つ。
  *
- * `backend-restarted` は `run/result.ts` の `StopReason` には無い（決定 13・40）。起動時照合
- * （`reconcileOnStartup`）は executor の halt を経由せずに直接この値を書くので、halt 由来の
- * `StopReason` に足す必要が無い。
+ * `CandidateLocateStatus` / `FindingLocateStatus` / `RunStopReason` /
+ * `RecheckNotApplicableReason` の値の正本は `@shuten/shared` の `run/stop-reason.ts` に移した
+ * （PR10 決定 2・9）。ここでは再エクスポートだけ行う。
  */
-export type RunStopReason =
-  | "model-not-loaded"
-  | "recovery-needed"
-  | "connection-lost"
-  | "settings"
-  | "aborted"
-  | "internal-error"
-  | "recovery-blocked"
-  | "backend-restarted";
-
-/** `recheck_units.not_applicable_reason`。仕様書 6.5 節。 */
-export type RecheckNotApplicableReason = "disabled" | "suppressed" | "unlocated";
+export type {
+  CandidateLocateStatus,
+  FindingLocateStatus,
+  RecheckNotApplicableReason,
+  RunStopReason,
+};
 
 /** ---------------------------------------------------------------------- */
 /** 原稿版 */

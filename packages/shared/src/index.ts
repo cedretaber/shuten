@@ -1,3 +1,79 @@
+export { MAX_TIMEOUT_MS, RUN_SETTINGS_DEFAULTS } from "./api/defaults.ts";
+export type {
+  CandidateDto,
+  CheckUnitDto,
+  ConnectionCheckDto,
+  ConnectionSettingsDto,
+  DiagnosticDto,
+  FindingDetailDto,
+  FindingDto,
+  FindingReasonDto,
+  GenerationSettingsDto,
+  JudgmentDto,
+  ManuscriptVersionDto,
+  ModelInfoDto,
+  ProgressDto,
+  RecheckSummaryDto,
+  RecheckUnitDto,
+  RecoveryDto,
+  RunDetailDto,
+  RunDto,
+  RunSummaryDto,
+  RunTargetDto,
+  RunUnitsDto,
+  UnitFailureDto,
+  UnitStatusCounts,
+} from "./api/dto.ts";
+export {
+  candidateDtoSchema,
+  checkUnitDtoSchema,
+  connectionCheckDtoSchema,
+  connectionSettingsDtoSchema,
+  diagnosticDtoSchema,
+  findingDetailDtoSchema,
+  findingDtoSchema,
+  findingReasonDtoSchema,
+  generationSettingsDtoSchema,
+  judgmentDtoSchema,
+  manuscriptVersionDtoSchema,
+  modelInfoDtoSchema,
+  progressDtoSchema,
+  recheckSummaryDtoSchema,
+  recheckUnitDtoSchema,
+  recoveryDtoSchema,
+  runDetailDtoSchema,
+  runDtoSchema,
+  runSummaryDtoSchema,
+  runTargetDtoSchema,
+  runUnitsDtoSchema,
+  unitFailureDtoSchema,
+} from "./api/dto.ts";
+export type { ApiError } from "./api/error.ts";
+export { apiErrorSchema } from "./api/error.ts";
+export type { RunEventDto } from "./api/events.ts";
+export { runEventDtoSchema } from "./api/events.ts";
+export type {
+  ChunkSettingsRequest,
+  ConfirmRecoveryRequest,
+  ConnectionCheckRequest,
+  CreateManuscriptRequest,
+  GenerationSettingsRequest,
+  PutConnectionRequest,
+  PutJudgmentRequest,
+  RetryFailedRequest,
+  StartRunRequest,
+} from "./api/requests.ts";
+export {
+  chunkSettingsRequestSchema,
+  confirmRecoveryRequestSchema,
+  connectionCheckRequestSchema,
+  createManuscriptRequestSchema,
+  generationSettingsRequestSchema,
+  putConnectionRequestSchema,
+  putJudgmentRequestSchema,
+  retryFailedRequestSchema,
+  startRunRequestSchema,
+} from "./api/requests.ts";
 export type { CheckInput, ContextWindow, TargetRange } from "./chunk/plan.ts";
 export { buildCheckInput, buildRecheckInput, planTargets } from "./chunk/plan.ts";
 export { findSentenceBoundaries } from "./chunk/sentence.ts";
@@ -23,6 +99,7 @@ export {
   FINDING_CATEGORIES,
   INITIAL_VERDICTS,
   llmCheckOutputSchema,
+  llmFindingSchema,
   llmRecheckOutputSchema,
   RECHECK_REASON_KINDS,
   RECHECK_VERDICTS,
@@ -48,6 +125,23 @@ export type { MergedFinding } from "./merge/merge.ts";
 export { mergeCandidates, mergeKey } from "./merge/merge.ts";
 export type { FailureReason } from "./run/failure-reason.ts";
 export { FAILURE_REASONS } from "./run/failure-reason.ts";
+export type { JudgmentStatus } from "./run/judgment.ts";
+export { JUDGMENT_STATUSES } from "./run/judgment.ts";
+export type { ReasoningEffort } from "./run/reasoning-effort.ts";
+export type { RunStatus, UnitStatus } from "./run/status.ts";
+export { RUN_STATUSES, UNIT_STATUSES } from "./run/status.ts";
+export type {
+  CandidateLocateStatus,
+  FindingLocateStatus,
+  RecheckNotApplicableReason,
+  RunStopReason,
+} from "./run/stop-reason.ts";
+export {
+  CANDIDATE_LOCATE_STATUSES,
+  FINDING_LOCATE_STATUSES,
+  RECHECK_NOT_APPLICABLE_REASONS,
+  RUN_STOP_REASONS,
+} from "./run/stop-reason.ts";
 export type { GraphemeSegment } from "./text/grapheme.ts";
 export { countGraphemes, segmentGraphemes } from "./text/grapheme.ts";
 export type { GraphemeIndex } from "./text/grapheme-index.ts";

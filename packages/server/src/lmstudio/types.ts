@@ -4,10 +4,14 @@
  * ワイヤ形式（snake_case の JSON）はここには出さない。`wire.ts` が相互変換を担う。
  */
 
+import type { ReasoningEffort } from "@shuten/shared";
 import type { Dispatcher } from "undici";
 
-/** 思考の強さ。トップレベルの `reasoning_effort` に対応する（決定 0003）。 */
-export type ReasoningEffort = "none" | "low" | "medium" | "high";
+/**
+ * 思考の強さ。値の正本は `@shuten/shared` の `run/reasoning-effort.ts` に移した
+ * （PR10 決定 2・9）。ここでは再エクスポートだけ行う。
+ */
+export type { ReasoningEffort };
 
 export interface ChatMessage {
   readonly role: "system" | "user" | "assistant";
