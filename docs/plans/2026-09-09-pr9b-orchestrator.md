@@ -92,6 +92,8 @@ export interface OrchestratorDeps {
   readonly db: AppDatabase;
   readonly client: LmStudioClient;
   readonly queue: RequestQueue;
+  /** プロセス全体の復旧ゲート（決定 39）。キューと同じく index.ts で 1 個だけ作って渡す。 */
+  readonly recoveryGate: RecoveryGate;
   readonly endpointUrl: string;      // runs.endpoint_url に保存する。イベント・結果には出さない
   readonly recoveryConfirmMs: number; // config.ts（決定 8）
   readonly now?: (() => Date) | undefined;
@@ -124,6 +126,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator;
   （このプロセスが走らせていない実行は止めようがない。起動時に残った `running` 行は
   `reconcileOnStartup` が処理する）。
 - イベントは `deps.onEvent` に流す。実行 ID は `RunEvent` が持つ（決定 37）ので購読口は 1 つでよい。
+- **`queue` と `recoveryGate` はオーケストレーターの内側で作らない。** `index.ts` が
+  `createRequestQueue()` / `createRecoveryGate()` を 1 個ずつ作り、`createOrchestrator` に渡す。
+  内側で作ると、同じキューとゲートを共有すべき PR10 の接続確認が同じインスタンスを使えない。
 - `endpointUrl` は `runs.endpoint_url` に保存するだけで、イベント・`stop_message` には入れない。
   **`RunRecord` 自体は `endpointUrl` を持つ**ので、`startRun` などが返すレコードは
   「サーバー内部でだけ扱う値」である。PR10 は HTTP 応答へそのまま流さず、
@@ -175,8 +180,17 @@ export function createStopGate(recoveryConfirmMs: number): StopGate;
 - `requestStop()` は `stopRequested` を立て、**実行中の要求があれば** `recoveryConfirmMs` 後に
   `abort()` を予約する。実行中の要求が無ければただちに `abort()` する（送信していないので
   生成終了は未確認にならない）。
-- `endRequest()` は予約された `abort()` を解除する。ただし `stopRequested` が立っていれば、
-  次の `beginRequest()` は起きない（ループが手前で止まる）。
+- `endRequest()` は予約された `abort()` を解除する。**ただし `stopRequested` が立っていれば、
+  解除ではなくその場で `abort()` する。** この要求は応答が届いて終わっているので「生成終了は
+  確認できた」（`generationUnconfirmed` は false のまま）が、**executor 内部の自動再試行**
+  （`malformed` / `truncated` / HTTP 応答ありの `connection`）はループに制御を戻さずに次の
+  `chat` を送ってしまう。停止要求後に新しい要求を送らない（仕様 8.2）を守れるのは、
+  ここで signal を落としておく形だけである。
+  - 例：1 回目の `chat` 中に停止 → 上限内に `malformed` な応答が届く → `endRequest()` が
+    abort → executor は再試行の手前で signal を見て送らない → `stopped`
+    （`generationUnconfirmed: false`）。
+  - abort 後にループが合成する停止（`aborted` / false）と、executor が返す停止（同じく false）の
+    どちらでも実行は `stopped` になる（決定 23）。
 - **`beginRequest()` / `endRequest()` を呼ぶのは executor だけ**（`client.chat` の直前と、
   その `finally`。自動再試行では試行ごとに 1 往復）。ループが `executeCheckUnit` の前後で
   呼ぶと、キュー待ちと `ensureLoaded` の時間が「実行中の生成」に含まれてしまい、
@@ -212,6 +226,13 @@ execute<T>(request: ChatRequest, parse: (result: ChatResult) => T, timeoutMs: nu
 `units.ts` は `onSend` の中でタイマーを張り直す（前のタイマーは解除してから）。試行ごとに
 測り直すのは、`chat` に渡すハード上限（`checkMs + recoveryConfirmMs`）も試行ごとに適用されるため。
 `recoveryConfirmMs <= 0` の早期 return（タイマーを作らない）はそのまま残し、E1 を守る。
+
+**executor は自動再試行の手前で signal を再確認する。** 現在の `runOne` は
+`isRetryable(error) && !retried` だけで `continue` し、次の周回の `ensureLoaded` まで中断を見ない。
+`isAborted(signal)` を再試行の条件に足し、中断されていたら再試行せずに
+`halt ??= { reason: "aborted", message: "停止要求により再試行を送らなかった", failure, generationUnconfirmed: false }`
+を立てて返す（届いた応答の失敗内容 `failure` は捨てない。`ensureLoaded` の abort まで進めると
+`malformed` だった事実が「モデル一覧の取得中に中断された」に置き換わってしまう）。
 
 **このフックは停止ゲートの入口でもある。** `executeCheckUnit` / `executeRecheckUnit` は
 任意の `onSend` / `onSettled` を受け取り、自分の遅延通知タイマーと合成して executor に渡す。
@@ -490,6 +511,13 @@ export function createRecoveryGate(): RecoveryGate;
   回ってきた時点。既存の `halt` 検査と同じ場所）で `gate.blocked` を見て、真なら `ensureLoaded` も
   `chat` も呼ばずに返す。キューへの投入時ではなく**順番が回ってきた時点**で見るので、
   「A が未確認になった時点で B がすでにキュー待ち」でも B は送信前に止まる。
+- **ゲートを閉じるのは executor（キューのジョブの内側）**。ループ側で
+  「実行が `recovery-waiting` に決着したら `block`」だけにすると閉じるのが遅れる。現在のキューは
+  A のジョブが解決した直後に B のジョブを始めるので、A の結果が executor からループへ戻り、
+  保存・実行状態の更新を経て `block(A)` に届く前に、B の `runOne` がゲートを見てしまう
+  （V1 が不安定になる）。`createExecutor` に `onRecoveryRequired?: () => void` を足し、
+  **`generationUnconfirmed: true` の `halt` を返す直前に同期的に**呼ぶ。オーケストレーターは
+  そこで `recoveryGate.block(runId)` する。ループ終了時の `block` は**冪等な安全網**として残す。
 - ゲートに止められた実行 B は `stopped`、停止理由は新しい値 **`recovery-blocked`**、
   `generationUnconfirmed: false`（B は 1 度も送っていない）。B の単位は `pending` のままなので、
   A の復旧を確認して A を再開すればゲートが開き、B も再開できる。
@@ -554,6 +582,25 @@ export function createRecoveryGate(): RecoveryGate;
   タイマーを即時発火させるため、上限待ちが機能しなくなる
 - 満たさなければ起動時に例外（既存の設定エラーと同じ扱い）
 
+### 決定 44：ハード上限は加算後の値も検証する
+
+`LmStudioClient` は `chat` の先頭で `validateTimeoutMs`（1 以上 2^31−1 以下の整数。
+`lmstudio/client.ts`）を通す。オーケストレーター経路が渡すのは
+**`checkMs + recoveryConfirmMs`** と **`recheckMs + recoveryConfirmMs`**（決定 7）なので、
+各値が単体で範囲内でも**加算結果が上限を超えると `TypeError`** になる。これは
+`LmStudioError` ではないので決定 33 の網に落ち、設定の誤りが `internal-error` として
+記録されてしまう。`runs.timeouts` の JSON 検証（`runTimeoutsSchema`）は `z.number()` だけで
+正負も整数性も見ていない。
+
+`startRun` の設定検証（決定 18 の `validateChunkSettings` と同じ位置）で次を確かめる。
+
+- `checkMs`・`recheckMs` が 1 以上の安全な整数であること
+- `checkMs + recoveryConfirmMs <= 2^31 - 1` かつ `recheckMs + recoveryConfirmMs <= 2^31 - 1`
+
+違反したら**生成要求を 1 件も送る前に**設定エラーとして扱う。`InvalidChunkSettingsError` と
+同じく `runs` だけを `stopped`（`settings`）で作り、検査対象も検査単位も作らない
+（`stop_message` は定型文。数値は入れてよいが接続先 URL・API キーは入れない）。
+
 ## テスト
 
 PR9 計画書のテスト一覧（Q・S・O・T・R・P・M・D・E）をそのまま引き継ぎ、次を足す。
@@ -569,10 +616,15 @@ PR9 計画書のテスト一覧（Q・S・O・T・R・P・M・D・E）をその�
 
 - V1 実行 A が `chat` 中の打ち切りで `recovery-waiting` に入った時点で**すでにキュー待ちだった**
   実行 B の要求が送られず、B が `stopped`（`recovery-blocked`）になること。
-  B の検査単位は `pending` のまま残ること
+  B の検査単位は `pending` のまま残ること。**モックのキューではなく実物の `createRequestQueue()`
+  を使い**、「A のジョブの解決 → B の `runOne` 開始」という実際の順序で検査する
+  （ゲートを閉じるのが executor の `onRecoveryRequired` でなくループ側だと落ちること。決定 39）
 - V2 A を手動再開するとゲートが開き、B を再開すると生成要求が送られること
 - V3 起動時照合が `recovery-waiting` の実行を読んでゲートを復元すること（再起動しただけでは開かない）
 - V4 復旧待ちが 2 件あるとき、1 件を再開してもゲートは開かないこと（集合で持つことの確認）
+- V5 **停止要求の後に executor の自動再試行が送られないこと**（決定 26）。1 回目の `chat` 中に
+  停止し、上限内に `malformed` な応答が届いたとき、2 回目の `chat` を送らずに `stopped`
+  （`generationUnconfirmed: false`）になること。`client.chat` の呼び出し回数で確認する
 
 ### 状態遷移の強制（W）
 
@@ -618,6 +670,9 @@ PR9 計画書のテスト一覧（Q・S・O・T・R・P・M・D・E）をその�
   （開始が失敗した場合は 1 件も出ないこと）
 - C3 `parseRecoveryConfirmMs`：未設定で 120000、`"0"` を許可、負値・非整数・
   `Number.isSafeInteger` 超過・2,147,483,647 超過を拒否すること（決定 43）
+- C4 `checkMs + recoveryConfirmMs` が 2^31−1 を超える設定で `startRun` すると、生成要求を
+  1 件も送らずに `stopped`（`settings`）になること。`recheckMs` 側も同じ。`checkMs` が 0・負値・
+  非整数でも同じこと（決定 44）
 
 ### 非退行（E、再掲）
 
@@ -664,18 +719,22 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 `executeWithSlowNotice` が自分のタイマーと合成して executor に渡す。
 
 **手順**
-1. `executor.ts`：`runOne` の `client.chat` 呼び出しの直前で `hooks?.onSend?.()`、その
+1. `executor.ts`：自動再試行の条件に `!isAborted(signal)` を足し、中断されていたら再試行せずに
+   `halt ??= { reason: "aborted", ..., generationUnconfirmed: false }` を立てて返す（決定 27）。
+   届いた応答の `failure`（`malformed` など）は捨てない。
+2. `executor.ts`：`runOne` の `client.chat` 呼び出しの直前で `hooks?.onSend?.()`、その
    `finally` で `hooks?.onSettled?.()` を呼ぶ。成功・失敗・例外のいずれでも `onSettled` を
    必ず呼び、`onSend` と同数にする。再試行のたびに 1 往復（1 回の `execute` で最大 2 往復）。
    `ensureLoaded` の周りでは呼ばない。
-2. `units.ts`：`executeWithSlowNotice` は `onSend` の中でタイマーを張り直し
+3. `units.ts`：`executeWithSlowNotice` は `onSend` の中でタイマーを張り直し
    （前のタイマーを `clearTimeout` してから `setTimeout(onSlow, budgetMs)`）、`onSettled` で解除する。
    引数で受け取った `onSend` / `onSettled`（ループが渡す停止ゲート）も同じ場所で呼ぶ。
    `recoveryConfirmMs <= 0` の早期 return はそのまま残す。
-3. G1：キューに先行ジョブを積み、`checkMs` を超えるまで待たせてから送信させ、`onSlow` が
+4. G1：キューに先行ジョブを積み、`checkMs` を超えるまで待たせてから送信させ、`onSlow` が
    呼ばれないことを fake timers で確認する。
-4. G2・G3 と、「`onSend` と `onSettled` が同数で、例外時にも `onSettled` が呼ばれること」を書く。
-5. `pipeline.test.ts` と `packages/cli` を**変更せず**に `pnpm check`（E1）。
+5. G2・G3 と、「`onSend` と `onSettled` が同数で、例外時にも `onSettled` が呼ばれること」、
+   「signal が中断されていたら再試行を送らないこと」を書く。
+6. `pipeline.test.ts` と `packages/cli` を**変更せず**に `pnpm check`（E1）。
 
 **完了条件**：G1〜G3 が緑。E1 が緑。
 
@@ -698,6 +757,7 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
    - `beginRequest()` 中の `requestStop()` が abort を予約し、`recoveryConfirmMs` 未満では
      abort しないこと
    - `endRequest()` が予約を解除し、その後 `recoveryConfirmMs` を過ぎても abort しないこと
+   - **`stopRequested` が立っているときの `endRequest()` はその場で abort すること**（決定 26）
    - `recoveryConfirmMs` 経過で abort すること
    - `requestStop()` が冪等であること（2 回呼んでもタイマーが 2 本にならない）
    - `dispose()` がタイマーを解除すること
@@ -708,6 +768,10 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
    `halt: { reason: "recovery-blocked", generationUnconfirmed: false }` を返す。
    executor のテストで「ゲートが閉じているとき `client` が 1 度も呼ばれないこと」を確認する。
    `recoveryGate` を渡さない経路（`runPipeline` / CLI）の挙動は変えない（E1）。
+5. `createExecutor` に `options.onRecoveryRequired` を足し、**`generationUnconfirmed: true` の
+   `halt` を返す直前に同期的に**呼ぶ（決定 39）。executor のテストで
+   「`ExecOutcome` を返す Promise が解決する前に呼ばれていること」を確認する
+   （`onRecoveryRequired` の中で記録した順序と、`execute` の `await` 後の順序を比べる）。
 
 **完了条件**：停止ゲートの 6 件と復旧ゲートのテストが緑。`pnpm check` が緑。E1 が緑。
 
@@ -785,18 +849,20 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 3. `startOperationId` の UNIQUE 違反（`SQLITE_CONSTRAINT_UNIQUE` かつ `start_operation_id`）
    だけを捕まえ、`findRunByStartOperationId` で既存の実行を返す。ほかの制約違反は再送出（O10）。
    レジストリに走っているループがあれば、その `done` を返す（決定 24）。
-4. `InputTooLongError` → 当該対象の単位を `failed`（`input-too-long`）で作り、実行を
+4. 決定 44 のタイムアウト検証を `validateChunkSettings` と同じ位置で行い、違反したら
+   `runs` だけを `stopped`（`settings`）で作って返す（C4）。
+5. `InputTooLongError` → 当該対象の単位を `failed`（`input-too-long`）で作り、実行を
    `stopped`（`settings`）にして返す（O16）。`InvalidChunkSettingsError` → `runs` だけを
    `stopped`（`settings`）で作る。どちらもループを始めない。
-5. `manuscriptVersionId` が存在しない → 実行を作らずに例外（呼び出し側の誤り。PR10 が 404 にする）。
-6. O13：完了済み実行があっても新しい `startOperationId` で別の実行 ID になり、
+6. `manuscriptVersionId` が存在しない → 実行を作らずに例外（呼び出し側の誤り。PR10 が 404 にする）。
+7. O13：完了済み実行があっても新しい `startOperationId` で別の実行 ID になり、
    `findings` / `candidates` が混ざらないこと。
-7. O15：開始の途中で落ちても「実行はあるが検査単位が 0 件」の行が残らないこと
+8. O15：開始の途中で落ちても「実行はあるが検査単位が 0 件」の行が残らないこと
    （`insertCheckUnit` を失敗させ、`runs` も `run_targets` も残らないことを確認）。
-8. **本タスクの `done` は仮実装**：ループは Task 7 で作るので、ここでは開始直後の `RunRecord` を
+9. **本タスクの `done` は仮実装**：ループは Task 7 で作るので、ここでは開始直後の `RunRecord` を
    そのまま解決する Promise を返す。ループを本タスクで書き始めない。
 
-**完了条件**：O10・O13・O15・O16・C1・C2 が緑。`pnpm check` が緑。
+**完了条件**：O10・O13・O15・O16・C1・C2・C4 が緑。`pnpm check` が緑。
 
 ### Task 7：単位駆動ループと再確認の起票（決定 19・25・31・34・35）
 
@@ -832,7 +898,7 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 - Modify: `packages/server/src/run/orchestrator.ts`（`stopRun` / `resumeRun` / `retryFailedUnits`）
 - Modify: `packages/server/src/run/units.ts`（決定 32 の `pendingNote`）
 - Test: `packages/server/src/run/orchestrator.stop.test.ts`
-  （O4〜O9、O11、O18、R2〜R4b、X1〜X3、Y1〜Y5、V1・V2・V4）
+  （O4〜O9、O11、O18、R2〜R4b、X1〜X3、Y1〜Y5、V1・V2・V4・V5）
 
 **手順**
 1. `stopRun`：`setStopRequestedAt` → `gate.requestStop()` → `stop-requested` イベント。
@@ -846,7 +912,8 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
    `claimRecheckUnitChecked`（`failed → pending`）で戻す。**状態を 1 つも変える前に**、
    同じトランザクションの中で決定 36 の 4 つの検証を全 ID に対して行い、1 件でも違反したら
    `RetryTargetError` を投げて何も変えずに拒否する（Y1〜Y5）。
-5. 実行が `recovery-waiting` に決着したら `gate.block(runId)`（決定 39）。V1・V2・V4 を書く。
+5. `createExecutor` に `onRecoveryRequired: () => gate.block(runId)` を渡す（決定 39）。
+   ループ終了時の `gate.block` は冪等な安全網として残す。V1・V2・V4・V5 を書く。
 6. 決定 33 の例外処理（`running` の単位を `pending` に戻す・定型文・`done` を reject しない）。
 7. O4：停止 → 上限内に応答 → その応答が保存され、実行が `stopped`。
    R2：上限超過 → `recovery-waiting` かつ `generation_unconfirmed = true`。
@@ -864,7 +931,7 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
    変わらない／変わること。O8：再確認だけの再開。O9：個別再試行と状態の再計算。
    O11：実行中への再開要求が二重に走らないこと。O18：`stop_requested_at` の書き込みと消去。
 
-**完了条件**：O4〜O9・O11・O18・R2〜R4b・X1〜X3・Y1〜Y5・V1・V2・V4 が緑。E1 が緑。
+**完了条件**：O4〜O9・O11・O18・R2〜R4b・X1〜X3・Y1〜Y5・V1・V2・V4・V5 が緑。E1 が緑。
 `pnpm check` が緑。
 
 ### Task 9：起動時照合と再起動（決定 13・39・40・43）
@@ -882,10 +949,12 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
    `transitions.ts` 経由（W3）。T9（途中で例外を起こすと両方ロールバックされること）を書く。
 2. 同じ照合の中で、`recovery-waiting` にした実行と `listRunsByStatus(["recovery-waiting"])` で
    読んだ既存の実行を `gate.block(runId)` する（決定 39 のゲート復元）。V3 を書く。
-3. `config.ts`：`parseRecoveryConfirmMs`（決定 43）。`parsePort` は流用しない
+3. `index.ts`：`createRequestQueue()` と `createRecoveryGate()` を 1 個ずつ作り、
+   `createOrchestrator` に渡す（決定 24）。オーケストレーターの内側では作らない。
+4. `config.ts`：`parseRecoveryConfirmMs`（決定 43）。`parsePort` は流用しない
    （0 を許可し、`Number.isSafeInteger` と `setTimeout` の実用上限 2,147,483,647 を検査する）。C3 を書く。
-4. R5・R6 を書く。
-5. D1：ファイル DB で実行を途中まで進め、ハンドルを閉じて開き直し、`reconcileOnStartup` →
+5. R5・R6 を書く。
+6. D1：ファイル DB で実行を途中まで進め、ハンドルを閉じて開き直し、`reconcileOnStartup` →
    `resumeRun` で最後まで進むこと。Windows 経路は CI で確認する。
 
 **完了条件**：R5・R6・T9・V3・C3・D1 が緑。`pnpm check` が緑。
