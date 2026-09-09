@@ -34,6 +34,7 @@ function unusedClient(): LmStudioClient {
     chat: () => {
       throw new Error("chat は呼ばれない想定（Task 6 は生成要求を送らない）");
     },
+    close: () => Promise.resolve(),
   };
 }
 

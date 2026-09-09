@@ -94,6 +94,11 @@ export interface RunRecord {
   readonly recoveryConfirmMs: number;
   readonly startedAt: Date;
   readonly finishedAt: Date | null;
+  /**
+   * 復旧確認の時刻。`recovery-waiting` に遷移した時点で null、復旧確認 API が書き
+   * （`setRecoveryConfirmedAt`）、再開（`claimRun` の `clearStopState`）で null に戻る。
+   */
+  readonly recoveryConfirmedAt: Date | null;
 }
 
 /** ---------------------------------------------------------------------- */

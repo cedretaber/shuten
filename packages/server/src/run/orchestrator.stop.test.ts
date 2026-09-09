@@ -240,6 +240,7 @@ function scriptedClient(
       }
       return await step({ request, index, signal: chatOptions.signal });
     },
+    close: () => Promise.resolve(),
   };
   return { client, requests, ensureLoadedCalls };
 }

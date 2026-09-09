@@ -146,6 +146,12 @@ export const runs = sqliteTable(
     stopRequestedAt: integer("stop_requested_at", { mode: "timestamp_ms" }),
     startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
     finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+    /**
+     * 復旧確認の時刻。マイグレーション `0002`（PR10 決定 5・19 系の Task 3 が使う復旧確認 API の
+     * 準備）。`recovery-waiting` に遷移した時点で null（`finishRun`）、復旧確認 API が書き
+     * （`setRecoveryConfirmedAt`）、再開で `claimRun` の `clearStopState` が null に戻す。
+     */
+    recoveryConfirmedAt: integer("recovery_confirmed_at", { mode: "timestamp_ms" }),
   },
   (t) => [
     uniqueIndex("runs_start_operation_id_key").on(t.startOperationId),
@@ -421,5 +427,22 @@ export const judgments = sqliteTable("judgments", {
     .references(() => findings.id),
   status: text("status", { enum: JUDGMENT_STATUSES }).notNull().$type<JudgmentStatus>(),
   note: text("note"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/** ---------------------------------------------------------------------- */
+/** アプリ設定 */
+/** ---------------------------------------------------------------------- */
+
+/**
+ * UI から設定する値の永続化（PR10 決定 5）。マイグレーション `0002`。
+ *
+ * PR10 で使う鍵は `lm_studio_url`（LM Studio の接続先 URL）の 1 つだけだが、表の形は
+ * 将来の鍵にも使える汎用のキー・バリューのままにする（列を足すより安い）。
+ * API キーはここに保存しない（プロセスのメモリのみ。決定 5）。
+ */
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });

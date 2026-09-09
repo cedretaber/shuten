@@ -60,6 +60,7 @@ const UNUSED_CLIENT: LmStudioClient = {
   chat: () => {
     throw new Error("起動時照合は chat を呼ばないはず");
   },
+  close: () => Promise.resolve(),
 };
 
 function setupDb() {

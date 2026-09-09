@@ -173,6 +173,7 @@ function scriptedClient(
       }
       return await step(request, index);
     },
+    close: () => Promise.resolve(),
   };
   return { client, requests, ensureLoadedCalls };
 }
@@ -960,6 +961,7 @@ describe("run/loop: 単位駆動ループ", () => {
         trace.push("chat");
         return Promise.resolve(checkResponse([]));
       },
+      close: () => Promise.resolve(),
     };
 
     const inner = createStopGate(0);
@@ -1188,6 +1190,7 @@ describe("run/loop: 単位駆動ループ", () => {
         trace.push("chat");
         return Promise.resolve(recheckResponse());
       },
+      close: () => Promise.resolve(),
     };
 
     const inner = createStopGate(0);

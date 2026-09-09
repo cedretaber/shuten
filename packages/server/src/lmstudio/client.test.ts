@@ -882,3 +882,48 @@ describe("dispatcher: 実 HTTP サーバーでの回帰", () => {
     expect(elapsed).toBeLessThan(HEADER_DELAY_MS);
   }, 10_000);
 });
+
+describe("close()（決定 19）", () => {
+  it("C50 clientOptions.dispatcher を渡した場合、close() してもその dispatcher 自体の close は呼ばれない（所有者が閉じる）", async () => {
+    const dispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+    const closeSpy = vi.spyOn(dispatcher, "close");
+    try {
+      const client = createLmStudioClient({ baseUrl: BASE_URL, dispatcher });
+      await client.close();
+      expect(closeSpy).not.toHaveBeenCalled();
+    } finally {
+      await dispatcher.close();
+    }
+  });
+
+  it("C51 dispatcher を渡さない場合、close() が自前の Agent を閉じ、以後の listModels が失敗する（実 HTTP サーバーを使う C47 と同じ道具立て）", async () => {
+    const created = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m1", state: LOADED_STATE }] }));
+    });
+    await new Promise<void>((resolve) => {
+      created.listen(0, "127.0.0.1", resolve);
+    });
+    const address = created.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("待ち受けポートを取得できなかった");
+    }
+    const baseUrl = `http://127.0.0.1:${String(address.port)}`;
+    try {
+      const client = createLmStudioClient({ baseUrl });
+      // close する前は普通に成功する（自前の Agent がまだ生きている）。
+      const before = await client.listModels({ timeoutMs: 5000 });
+      expect(before.map((model) => model.id)).toEqual(["m1"]);
+
+      await client.close();
+
+      const error = await catchLmStudioError(client.listModels({ timeoutMs: 5000 }));
+      expect(error.kind).toBe("connection");
+    } finally {
+      created.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        created.close(() => resolve());
+      });
+    }
+  }, 10_000);
+});

@@ -112,4 +112,11 @@ export interface LmStudioClient {
   ensureLoaded(modelId: string, options?: RequestOptions): Promise<ModelInfo>;
   /** `POST /v1/chat/completions` で 1 回の生成要求を送る。内部で `ensureLoaded` は呼ばない。 */
   chat(request: ChatRequest, options: ChatOptions): Promise<ChatResult>;
+  /**
+   * クライアントが自前で作った undici の `Agent` を閉じる（決定 19。PR7 からの持ち越し）。
+   * `clientOptions.dispatcher` を呼び出し元が渡した場合はそちらの所有物なので閉じない
+   * （呼び出し元が閉じる責任を持つ）。`ConnectionManager.update` が古いクライアントを
+   * 閉じるときと shutdown で使う。
+   */
+  close(): Promise<void>;
 }

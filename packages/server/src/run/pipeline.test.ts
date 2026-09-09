@@ -165,6 +165,7 @@ function createMockClient(behavior: MockBehavior = {}): MockClient {
       }
       return chatResult(call.kind === "recheck" ? RECHECK_BODY : EMPTY_CHECK);
     },
+    close: () => Promise.resolve(),
   };
   return { client, calls, ensureCalls };
 }

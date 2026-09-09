@@ -64,6 +64,7 @@ function createMockClient(behavior: {
       calls.push("chat");
       return behavior.chat !== undefined ? await behavior.chat(request) : chatResult("ok");
     }),
+    close: vi.fn(async () => {}),
   };
 }
 

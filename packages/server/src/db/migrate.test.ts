@@ -7,7 +7,7 @@ import { createDatabase } from "./client.ts";
 import { applyMigrations, resolveMigrationsFolder } from "./migrate.ts";
 import { findRun } from "./repositories/runs.ts";
 
-/** 仕様書 8.1 節で定義する 9 表。 */
+/** 仕様書 8.1 節で定義する 9 表 + PR10 決定 5 の `settings` 表。 */
 const EXPECTED_TABLES = [
   "manuscript_versions",
   "runs",
@@ -18,6 +18,7 @@ const EXPECTED_TABLES = [
   "recheck_units",
   "diagnostics",
   "judgments",
+  "settings",
 ] as const;
 
 /** `meta/_journal.json` の最小限の形（本テストで使う部分だけ）。 */
@@ -85,6 +86,21 @@ describe("applyMigrations", () => {
     for (const table of EXPECTED_TABLES) {
       expect(names.has(table)).toBe(true);
     }
+
+    close();
+  });
+
+  it("M1b: settings 表が key・value・updated_at 列を持ち、runs に recovery_confirmed_at 列がある（PR10 決定 5・マイグレーション 0002）", () => {
+    const { db, close } = createDatabase(":memory:");
+    applyMigrations(db);
+
+    const settingsColumns = db
+      .all<{ name: string }>(sql`pragma table_info(settings)`)
+      .map((c) => c.name);
+    expect(new Set(settingsColumns)).toEqual(new Set(["key", "value", "updated_at"]));
+
+    const runsColumns = db.all<{ name: string }>(sql`pragma table_info(runs)`).map((c) => c.name);
+    expect(runsColumns).toContain("recovery_confirmed_at");
 
     close();
   });

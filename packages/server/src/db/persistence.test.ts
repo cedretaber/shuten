@@ -436,6 +436,7 @@ describe("db/persistence", () => {
             raw: {},
           });
         },
+        close: () => Promise.resolve(),
       };
 
       const recoveryGate = createRecoveryGate();

@@ -57,6 +57,20 @@ export function parsePort(raw: string): number {
 }
 
 /**
+ * `parseLmStudioUrl` が投げる例外のクラス（PR10 決定 5）。`connection.ts` は起動時、`settings`
+ * 表に保存された接続先 URL の検証に同じ `parseLmStudioUrl` を再利用する。そこで検証に失敗した
+ * ときは、この例外を `instanceof` で判別したうえで、接続先 URL を含まない定型文に差し替えて
+ * 投げ直す（決定 5「URL を含まない定型文を出して非ゼロ終了する」）。`Error` を拡張して名前を
+ * 付けるだけで、メッセージ自体はここでは変えない（環境変数の起動時検証は従来どおり `raw` を出す）。
+ */
+export class InvalidLmStudioUrlError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidLmStudioUrlError";
+  }
+}
+
+/**
  * LM Studio のルート URL を検証して正規化する（決定 1）。
  *
  * `new URL().href` は `http://h:1234/` のように末尾スラッシュの扱いが混ざるため使わない。
@@ -68,26 +82,28 @@ export function parseLmStudioUrl(raw: string): string {
   try {
     url = new URL(trimmed);
   } catch {
-    throw new Error(`SHUTEN_LM_STUDIO_URL を URL として解析できません: ${JSON.stringify(raw)}`);
+    throw new InvalidLmStudioUrlError(
+      `SHUTEN_LM_STUDIO_URL を URL として解析できません: ${JSON.stringify(raw)}`,
+    );
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(
+    throw new InvalidLmStudioUrlError(
       `SHUTEN_LM_STUDIO_URL は http または https でなければなりません: ${JSON.stringify(raw)}`,
     );
   }
   if (!/^\/+$/.test(url.pathname)) {
-    throw new Error(
+    throw new InvalidLmStudioUrlError(
       `SHUTEN_LM_STUDIO_URL にパスを含めることはできません（ルート URL のみ）: ${JSON.stringify(raw)}`,
     );
   }
   if (url.search !== "" || url.hash !== "") {
-    throw new Error(
+    throw new InvalidLmStudioUrlError(
       `SHUTEN_LM_STUDIO_URL にクエリやフラグメントを含めることはできません: ${JSON.stringify(raw)}`,
     );
   }
   if (url.username !== "" || url.password !== "") {
     // パスワードが例外メッセージやログ・実行記録（仕様書 8.1 節）に漏れないよう raw は出さない。
-    throw new Error("SHUTEN_LM_STUDIO_URL に資格情報を含めることはできません");
+    throw new InvalidLmStudioUrlError("SHUTEN_LM_STUDIO_URL に資格情報を含めることはできません");
   }
   return trimmed.replace(/\/+$/, "");
 }

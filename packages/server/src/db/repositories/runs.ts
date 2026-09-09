@@ -28,10 +28,12 @@ import { runs, runTargets } from "../schema.ts";
  * `stopRequestedAt` / `recoveryConfirmMs`（マイグレーション `0001`）も、既存の呼び出し・テストを
  * 壊さないよう `id` / `startedAt` と同じ扱いで任意にする。省略時は `stopRequestedAt: null`、
  * `recoveryConfirmMs: 0`（＝従来どおり `checkMs` がハード上限）を使う。
+ * `recoveryConfirmedAt`（マイグレーション `0002`）は挿入時に指定する意味がない
+ * （新規実行は常に復旧未確認から始まる）ので、この入力からは外して常に null で作る。
  */
 export type InsertRunInput = Omit<
   RunRecord,
-  "id" | "startedAt" | "stopRequestedAt" | "recoveryConfirmMs"
+  "id" | "startedAt" | "stopRequestedAt" | "recoveryConfirmMs" | "recoveryConfirmedAt"
 > & {
   readonly id?: string;
   readonly startedAt?: Date;
@@ -76,6 +78,7 @@ export function insertRun(db: AppDatabaseLike, input: InsertRunInput): RunRecord
       stopRequestedAt,
       startedAt,
       finishedAt: input.finishedAt,
+      recoveryConfirmedAt: null,
     })
     .run();
   return {
@@ -102,6 +105,7 @@ export function insertRun(db: AppDatabaseLike, input: InsertRunInput): RunRecord
     stopRequestedAt,
     startedAt,
     finishedAt: input.finishedAt,
+    recoveryConfirmedAt: null,
   };
 }
 
@@ -135,6 +139,7 @@ function rowToRunRecord(row: typeof runs.$inferSelect): RunRecord {
     recoveryConfirmMs: row.recoveryConfirmMs,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt ?? null,
+    recoveryConfirmedAt: row.recoveryConfirmedAt ?? null,
   };
 }
 
@@ -184,6 +189,7 @@ export function toGenerationSettings(record: RunRecord): GenerationSettings {
  * - `generation_unconfirmed` → false
  * - `finished_at` → null
  * - `stop_reason` / `stop_message` → null（前回の停止の記録）
+ * - `recovery_confirmed_at` → null（マイグレーション `0002`。再開したら前回の復旧確認は無効）
  */
 export function claimRun(
   db: AppDatabaseLike,
@@ -203,12 +209,21 @@ export function claimRun(
             finishedAt: null,
             stopReason: null,
             stopMessage: null,
+            recoveryConfirmedAt: null,
           }
         : { status: to },
     )
     .where(and(eq(runs.id, id), eq(runs.status, from)))
     .run();
   return result.changes === 1;
+}
+
+/**
+ * 復旧確認の時刻を書く（マイグレーション `0002`）。`recovery-waiting` かどうかの確認は
+ * 呼び出し側（PR10 Task 3 の復旧確認 API）の責務で、ここでは無条件に上書きする。
+ */
+export function setRecoveryConfirmedAt(db: AppDatabaseLike, id: string, at: Date): void {
+  db.update(runs).set({ recoveryConfirmedAt: at }).where(eq(runs.id, id)).run();
 }
 
 /**
@@ -266,6 +281,9 @@ export interface FinishRunInput {
  * `status` が `expectedStatus` と一致せず 0 行しか更新できなければ false を返す（決定 5・
  * PR8 必須事項 2）。false は「停止などで先に決着していた」ことを意味し、呼び出し側は
  * 上書きしてはならない。false のとき状態以外の列も一切変わらない。
+ *
+ * `status` が `recovery-waiting` になるときだけ `recovery_confirmed_at` を null にする
+ * （マイグレーション `0002`）。それ以外の遷移では触れない（既存の値を保つ）。
  */
 export function finishRun(db: AppDatabaseLike, id: string, input: FinishRunInput): boolean {
   const result = db
@@ -276,6 +294,7 @@ export function finishRun(db: AppDatabaseLike, id: string, input: FinishRunInput
       stopMessage: input.stopMessage,
       generationUnconfirmed: input.generationUnconfirmed,
       finishedAt: input.finishedAt,
+      ...(input.status === "recovery-waiting" ? { recoveryConfirmedAt: null } : {}),
     })
     .where(and(eq(runs.id, id), eq(runs.status, input.expectedStatus)))
     .run();
