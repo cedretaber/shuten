@@ -19,7 +19,7 @@
  * A0（Task 10）は「失敗経路を実際に通ったか」をその印で確かめる。
  */
 
-import type { Hono } from "hono";
+import { Hono } from "hono";
 
 import { createApp } from "../app.ts";
 import type { ConnectionManager } from "../connection.ts";
@@ -63,6 +63,18 @@ export interface SetupApiOverrides {
   readonly webDistDir?: string | undefined;
   readonly createId?: (() => string) | undefined;
   readonly now?: (() => Date) | undefined;
+  /**
+   * テスト用の継ぎ目。`/api` に**追加のサブルーターをマウント**して route を足す
+   * （`createApp` が組んだ実物のアプリに、`createApiRouter` と同じ `app.route("/api", ...)` で足す）。
+   *
+   * 例外の写像を「実配線を通って」確かめるために使う。追加のルーターには `onError` を**付けない**ので、
+   * 投げた例外は親の `app.onError` まで落ちる。つまりこの継ぎ目で見ているのは
+   * 「マウントしたルーターの route が投げた例外が、1 形式の JSON になる」という契約そのもので、
+   * サブアプリの `onError` が効くかどうかという Hono の内部仕様には依存しない。
+   *
+   * **エンドポイントの実装には使わない**（Task 5 以降の route は `api/router.ts` に足すこと）。
+   */
+  readonly extendRouter?: ((router: Hono) => void) | undefined;
 }
 
 export interface ApiHarness {
@@ -74,12 +86,18 @@ export interface ApiHarness {
   /** フェイククライアントの操作口（台本・記録・`bind`）。 */
   readonly client: ScriptedClient;
   readonly connection: ConnectionManager;
+  /**
+   * ハーネスが持っている資源を解放する（メモリ DB を閉じ、event hub の購読を閉じる）。
+   * テストの `afterEach` などで呼ぶこと。呼ばないと `setupApi()` のたびに
+   * better-sqlite3 のハンドルが積み上がる。冪等。
+   */
+  close(): void;
 }
 
 export function setupApi(overrides: SetupApiOverrides = {}): ApiHarness {
   const env = overrides.env ?? { lmStudioUrl: SCRIPTED_ENDPOINT_URL, lmStudioApiKey: null };
 
-  const { db } = createDatabase(":memory:");
+  const { db, close: closeDb } = createDatabase(":memory:");
   applyMigrations(db);
 
   const client = scriptedClient(overrides.steps ?? [], {
@@ -126,5 +144,23 @@ export function setupApi(overrides: SetupApiOverrides = {}): ApiHarness {
     },
   );
 
-  return { app, db, orchestrator, hub, gate, client, connection };
+  if (overrides.extendRouter !== undefined) {
+    // `createApp` が組んだアプリに、実配線と同じ `route()` で追加のサブルーターをマウントする。
+    // 静的配信のラッパーは `/api` 配下を `next()` に流すので、あとから足しても route が勝つ。
+    const extra = new Hono();
+    overrides.extendRouter(extra);
+    app.route("/api", extra);
+  }
+
+  let closed = false;
+  function close(): void {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    hub.closeAll();
+    closeDb();
+  }
+
+  return { app, db, orchestrator, hub, gate, client, connection, close };
 }

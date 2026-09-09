@@ -22,10 +22,20 @@ function isApiPath(path: string): boolean {
  * SPA のフォールバックに拾われず `notFound` まで落ち、**JSON の 404** になる。
  * 200 と HTML を返すと、PR11 の API クライアントは JSON の解析に失敗するだけで、
  * 分岐に使える状態コードを受け取れない。
+ *
+ * `onError` は**親にも**付ける（決定 4 の「写像は 1 か所」は写像の実体が 1 つという意味で、
+ * 登録箇所を 1 つに限る意味ではない）。理由は 2 つ。
+ *
+ * - `route()` でマウントしたサブアプリの `onError` が使われるかは Hono の内部仕様で、
+ *   hono@4.13.7 では効くが、版を上げたときに黙って壊れると Task 5 以降の全ハンドラーの
+ *   エラー形が変わる。親に付けておけばその依存が消える。
+ * - 親に登録したミドルウェア（下の静的配信のラッパー）が投げた例外は、そもそも
+ *   サブアプリの `onError` には届かない。
  */
 export function createApp(config: Pick<ServerConfig, "webDistDir">, deps: ApiDeps): Hono {
   const app = new Hono();
 
+  app.onError(handleApiError);
   app.route("/api", createApiRouter(deps));
 
   if (existsSync(config.webDistDir)) {

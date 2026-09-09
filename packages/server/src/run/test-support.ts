@@ -71,7 +71,13 @@ export interface ScriptedClientOptions {
 }
 
 export interface ScriptedClient {
-  /** 既定の接続先に結んだクライアント。 */
+  /**
+   * 既定の接続先に結んだクライアント。**`setupApi` 経由の実行が使うのはこれではない**
+   * （`ConnectionManager` が `createClient` で作った別のインスタンスを使う。台本と記録は共有するが、
+   * 接続設定の更新には追従しない）。API のテストで実行が使っているクライアントを見たいときは
+   * `connection.current().client` を読むこと。この `client` は台本・記録・`bind` の入口として、
+   * 接続の供給元を介さないテスト（`run/loop.test.ts` など）が使う。
+   */
   readonly client: LmStudioClient;
   readonly endpointUrl: string;
   /** 台本。テストの途中で `push` して足せる。 */
