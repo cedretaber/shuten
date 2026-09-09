@@ -10,6 +10,8 @@
  * ブロックの出入りは呼び出し元（オーケストレーター）の責務：
  * - 実行が recovery-waiting になったとき → block(runId)
  * - resumeRun が recovery-waiting の実行の claimRunChecked に成功したとき → unblock(runId)
+ * - resumeRun が版の食い違い（決定 45-1）で recovery-waiting の実行を拒否したとき → unblock(runId)
+ *   （ゲートを開ける意味は「利用者が生成終了を確認した」ことで、その実行を続けられるかとは独立）
  * - reconcileOnStartup が起動時に status = "recovery-waiting" の実行を読み、全件 block する
  */
 export interface RecoveryGate {

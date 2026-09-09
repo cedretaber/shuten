@@ -345,6 +345,10 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 文言を変えないため（E1）。`origin === "chat"` で絞るのは、送信していない単位は「生成終了が
 未確認」ではないため。
 
+**改訂（45-3）**：上の `recoveryConfirmMs > 0` は経路の判別子としては誤りだった。
+`treatUnconfirmedAsPending`（呼び出し元が渡すフラグ。既定 `false`、オーケストレーターは常に `true`）
+に置き換えている。読むときは上の 2 箇所を `treatUnconfirmedAsPending` と読み替えること。
+
 ### 決定 33：想定外の例外の扱い（決定 14 の具体化）
 
 ループの最上位で `LmStudioError` でも `InputTooLongError` でもない例外を捕まえ、次を行う。
@@ -1053,7 +1057,8 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 1. `stopRun`：`setStopRequestedAt` → `gate.requestStop()` → `stop-requested` イベント。
    `runs.status` は `running` のまま（決定 21）。レジストリに無ければ `{ accepted: false }`。
 2. `units.ts` の `pendingNote` に決定 32 の分岐を足す（`recoveryConfirmMs > 0` かつ
-   `origin === "chat"` かつ `aborted`）。E1 を壊していないことを確認する。
+   `origin === "chat"` かつ `aborted`。`recoveryConfirmMs > 0` は 45-3 で
+   `treatUnconfirmedAsPending` に改訂した）。E1 を壊していないことを確認する。
 3. `resumeRun` / `retryFailedUnits`：決定 36 の表どおりに受け付け、
    `claimRunChecked(..., { clearStopState: true })` で `running` にしてからループを起動する。
    `resumeRun` が `recovery-waiting` の実行の claim に成功したら `gate.unblock(runId)`（決定 39）。

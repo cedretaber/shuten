@@ -530,7 +530,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    *    判断した後だけで、その事実は後から起きた例外とは無関係に真である。ここで `stopped` に
    *    してしまうと、ゲートを開けられるのは `recovery-waiting` の実行を claim できたときだけ
    *    （決定 39）なので、**プロセス全体の送信が再起動まで止まる**。
-   *    「ゲートが閉じている ⟺ その実行は `recovery-waiting`」を不変条件として保つ。
+   *    「ゲートが閉じている ⟹ その実行は `recovery-waiting`」を不変条件として保つ。ここで使うのは
+   *    この向きだけである。逆向き（`recovery-waiting` ならゲートが閉じている）は決定 45-1 の
+   *    拒否経路（版が変わった `recovery-waiting` の実行を、DB は `recovery-waiting` のまま
+   *    ゲートだけ開けて拒否する）で成り立たない。再起動時は `reconcileOnStartup` が
+   *    `recovery-waiting` を全件閉じ直すので、その実行のゲートはまた閉じる
+   *    （持ち越しの「復旧を確認した操作（PR10）」がこの往復を無くす）。
    * 3. 単位の差し戻しと終端化は 1 トランザクションにする（片方だけ書けた状態を残さない）。
    * 4. **この後始末自体が失敗することもある**（DB が原因の例外なら 1・2 も、その後の読み直しも
    *    失敗する）。その場合も握り、`done` は最後に読めた `RunRecord`（読めなければ引数）で

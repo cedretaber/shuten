@@ -735,6 +735,24 @@ describe("runPipeline", () => {
     expect(countChecks(mock.calls)).toBe(2);
   });
 
+  it("P18c: 再確認の chat が timeout でもその再確認は failed のまま（CLI は treatUnconfirmedAsPending を渡さない。決定 45-3）", async () => {
+    const mock = createMockClient({
+      chat: (call) => {
+        if (call.kind === "recheck") {
+          throw new LmStudioError("timeout", "要求がタイムアウトした");
+        }
+        return chatResult(isTarget0(call) ? checkBody(typoFinding()) : EMPTY_CHECK);
+      },
+    });
+
+    const result = await runPipeline(baseArgs(mock.client, { mode: "split-recheck" }));
+
+    // オーケストレーター経路（run/loop.ts）だけが打ち切りを pending にする。CLI は E1 のとおり failed。
+    const recheck = expectRecheckFailed(recheckAt(result, 0));
+    expect(recheck.failure.reason).toBe("timeout");
+    expect(recheck.failure.origin).toBe("chat");
+  });
+
   it("P19: InvalidChunkSettingsError で stopped（settings）になり、targets と checkUnits が空になる", async () => {
     const events: PipelineEvent[] = [];
     const mock = createMockClient();

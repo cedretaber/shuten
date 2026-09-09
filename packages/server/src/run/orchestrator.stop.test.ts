@@ -859,6 +859,32 @@ describe("run/orchestrator: 停止要求が届いた場所で結果が変わる�
     expect(unitsOf(harness.db, run.id)[0]?.status).toBe("done");
   });
 
+  it("45-3: 再確認単位も recoveryConfirmMs が 0 のタイムアウトで pending になる（決定 20・43）", async () => {
+    const scripted = scriptedClient([
+      () => {
+        throw timedOut();
+      },
+    ]);
+    // 検査単位と同じ配線が再確認単位（loop.ts の executeRecheckUnit 呼び出し）にも要る。
+    const harness = makeHarness(scripted.client, { recoveryConfirmMs: 0 });
+    const seeded = seedRun(harness.db, {
+      runId: "run-recheck-timeout-zero",
+      status: "stopped",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: true,
+    });
+    const { recheckUnitId } = seedRecheckUnit(harness.db, seeded, "pending");
+
+    const run = await harness.orchestrator.resumeRun(seeded.run.id).done;
+
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("recovery-waiting");
+    const recheck = listRecheckUnits(harness.db, run.id).find((unit) => unit.id === recheckUnitId);
+    // failed になると resumeRun（pending しか拾わない）で復旧できなくなる。
+    expect(recheck?.status).toBe("pending");
+    expect(recheck?.pendingNote).toBe("応答が上限内に届かなかった。生成終了は未確認");
+  });
+
   it("R3: recovery-waiting の実行があると、別の実行にも自動で生成要求を送らない（決定 39）", async () => {
     const scripted = scriptedClient([
       () => {
@@ -1588,31 +1614,36 @@ describe("run/orchestrator: retryFailedUnits（決定 36）", () => {
     expect(unitsOf(harness.db, waiting.run.id)[0]?.status).toBe("failed");
   });
 
-  for (const testCase of STALE_VERSION_CASES) {
-    it(`45-1: 保存済みの ${testCase.label} が現行と違う実行は再試行せず、DB を 1 行も変えない（仕様 8.2）`, async () => {
-      const scripted = scriptedClient([]);
-      const harness = makeHarness(scripted.client);
-      const seeded = seedRun(harness.db, {
-        runId: `retry-stale-${testCase.label}`,
-        status: "stopped",
-        // 失敗単位があるので、版の検査が無ければ受け付けられて単位が pending に戻ってしまう。
-        unitStatuses: ["failed", "done"],
-        ...testCase.seed,
+  // 再試行が受け付ける状態は partially-failed と stopped の 2 つ（決定 36）。決定 36 の主経路は
+  // partially-failed のほうなので、版の検査は両方の状態で確かめる（片方だけだと、ガードを
+  // 「stopped のときだけ」に狭めた実装と区別できない）。
+  for (const status of ["stopped", "partially-failed"] as const) {
+    for (const testCase of STALE_VERSION_CASES) {
+      it(`45-1: ${status} でも保存済みの ${testCase.label} が現行と違えば再試行せず、DB を 1 行も変えない（仕様 8.2）`, async () => {
+        const scripted = scriptedClient([]);
+        const harness = makeHarness(scripted.client);
+        const seeded = seedRun(harness.db, {
+          runId: `retry-stale-${status}-${testCase.label}`,
+          status,
+          // 失敗単位があるので、版の検査が無ければ受け付けられて単位が pending に戻ってしまう。
+          unitStatuses: ["failed", "done"],
+          ...testCase.seed,
+        });
+        const runBefore = readRun(harness.db, seeded.run.id);
+        const unitsBefore = unitsOf(harness.db, seeded.run.id);
+
+        const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
+
+        expect(retried.accepted).toBe(false);
+        expect(await retried.done).toMatchObject({ status });
+        await flush();
+
+        expect(scripted.requests).toHaveLength(0);
+        expect(scripted.ensureLoadedCalls).toHaveLength(0);
+        expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+        expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
       });
-      const runBefore = readRun(harness.db, seeded.run.id);
-      const unitsBefore = unitsOf(harness.db, seeded.run.id);
-
-      const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
-
-      expect(retried.accepted).toBe(false);
-      expect(await retried.done).toMatchObject({ status: "stopped" });
-      await flush();
-
-      expect(scripted.requests).toHaveLength(0);
-      expect(scripted.ensureLoadedCalls).toHaveLength(0);
-      expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
-      expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
-    });
+    }
   }
 });
 
