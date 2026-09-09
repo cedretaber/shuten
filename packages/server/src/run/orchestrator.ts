@@ -843,8 +843,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * 再開も終端化もされないまま残るためである。残さないと `reconcileOnStartup` が起動のたびに
    * ゲートを閉じ直し、利用者は起動のたびに確認をやり直すことになる。
    *
-   * `recovery-waiting` 以外の状態では DB を書かず `unblock` だけ呼ぶ（無害。ゲートに無い
-   * 実行 ID の `unblock` は何もしない）。
+   * `recovery-waiting` 以外の状態では DB を書かず `unblock` だけ呼ぶ。**この `unblock` に
+   * 条件は付けない**：通常の再開（`resumeRun`）は claim 後の `running` のレコードを渡して
+   * ゲートを開けるので、ここで状態を見て弾くと再開がゲートを開けられなくなる。
+   * 「走っているループがある実行のゲートを確認操作で開けてしまわない」ためのガードは、
+   * 呼び出し側の `confirmRecovery` がレジストリで行う（レビュー裁定 R11）。
    */
   function markRecoveryConfirmed(run: RunRecord): void {
     if (run.status === "recovery-waiting" && run.recoveryConfirmedAt === null) {
