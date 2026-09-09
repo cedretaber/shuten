@@ -77,5 +77,16 @@ export function canTransitionUnit(from: UnitStatus, to: UnitStatus): boolean {
 export function runStatusForStop(
   stop: RunStop,
 ): Extract<RunStatus, "stopped" | "recovery-waiting"> {
-  return stop.generationUnconfirmed ? "recovery-waiting" : "stopped";
+  return runStatusForUnconfirmed(stop.generationUnconfirmed);
+}
+
+/**
+ * 決定 23 の規則そのもの。`RunStop` を作らない経路（`run/orchestrator.ts` の
+ * `settleInternalError` と起動時照合）から、同じ規則を書き直さずに使うための入口。
+ * 判断材料は「生成が LM Studio 側で走り続けている可能性があるか」の 1 つだけである。
+ */
+export function runStatusForUnconfirmed(
+  generationUnconfirmed: boolean,
+): Extract<RunStatus, "stopped" | "recovery-waiting"> {
+  return generationUnconfirmed ? "recovery-waiting" : "stopped";
 }

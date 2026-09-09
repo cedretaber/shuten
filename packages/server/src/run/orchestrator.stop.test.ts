@@ -55,6 +55,31 @@ const CHUNK_ONE_TARGET: ChunkSettings = {
   maxInputGraphemes: 50,
 };
 
+/**
+ * `targetGraphemes` が 1 未満なので `planTargets` が `InvalidChunkSettingsError` を投げる設定。
+ * `startRun` は対象も検査単位も 1 件も作らずに `stopped`（`settings`）を書く（決定 18）。
+ */
+const CHUNK_INVALID_SETTINGS: ChunkSettings = {
+  targetGraphemes: 0,
+  contextGraphemes: 0,
+  recheckContextGraphemes: 0,
+  roundingTolerance: 0,
+  maxInputGraphemes: 50,
+};
+
+/**
+ * 20 書記素の `BODY` が `[0,10)` `[10,20)` の 2 対象に割れ、どちらも参考文脈 5 書記素を足すと
+ * 15 > `maxInputGraphemes` で `buildCheckInput` が `InputTooLongError` を投げる設定。
+ * `startRun` は全単位を `failed`（`input-too-long`）で作りつつ実行を `stopped`（`settings`）にする（決定 18）。
+ */
+const CHUNK_TOO_LONG: ChunkSettings = {
+  targetGraphemes: 10,
+  contextGraphemes: 5,
+  recheckContextGraphemes: 0,
+  roundingTolerance: 0,
+  maxInputGraphemes: 10,
+};
+
 /** 停止ゲートの上限。これを超えると打ち切る（決定 6）。 */
 const RECOVERY_CONFIRM_MS = 60_000;
 
@@ -1126,6 +1151,75 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
     // 停止の記録も消えていない（claimRunChecked を呼んでいない）。
     expect(readRun(harness.db, partial.run.id).stopReason).toBe("aborted");
     expect(scripted.requests).toHaveLength(0);
+  });
+
+  it("stopped（settings・分割設定不正）の実行は再開を拒否され、停止の記録が残り、生成要求も送られない（決定 36）", async () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+
+    const started = harness.orchestrator.startRun(
+      baseInput({ startOperationId: "op-invalid", chunkSettings: CHUNK_INVALID_SETTINGS }),
+    );
+    const before = readRun(harness.db, started.run.id);
+    expect(before.status).toBe("stopped");
+    expect(before.stopReason).toBe("settings");
+    expect(before.stopMessage).not.toBeNull();
+    // 検査単位が 0 件なので、受け付けてしまうと即 completed（指摘 0 件）になる。
+    expect(unitsOf(harness.db, started.run.id)).toHaveLength(0);
+
+    const resumed = harness.orchestrator.resumeRun(started.run.id);
+    expect(resumed.accepted).toBe(false);
+    expect(resumed.run.status).toBe("stopped");
+    expect(await resumed.done).toMatchObject({ status: "stopped", stopReason: "settings" });
+    await flush();
+
+    const after = readRun(harness.db, started.run.id);
+    expect(after.status).toBe("stopped");
+    expect(after.stopReason).toBe("settings");
+    expect(after.stopMessage).toBe(before.stopMessage);
+    expect(after.finishedAt).not.toBeNull();
+    expect(unitsOf(harness.db, started.run.id)).toHaveLength(0);
+    // ループが起きていない（`chat` も `ensureLoaded` も 1 度も呼ばれない）。
+    expect(scripted.requests).toHaveLength(0);
+    expect(scripted.ensureLoadedCalls).toHaveLength(0);
+  });
+
+  it("stopped（settings・入力上限超過）の実行は再開を拒否され、failed の単位も停止の記録も変わらない（決定 36）", async () => {
+    const scripted = scriptedClient([]);
+    const harness = makeHarness(scripted.client);
+
+    const started = harness.orchestrator.startRun(
+      baseInput({ startOperationId: "op-too-long", chunkSettings: CHUNK_TOO_LONG }),
+    );
+    const before = readRun(harness.db, started.run.id);
+    expect(before.status).toBe("stopped");
+    expect(before.stopReason).toBe("settings");
+    expect(before.stopMessage).not.toBeNull();
+    // 2 対象 × 2 観点がすべて failed（input-too-long）。受け付けると即 partially-failed になる。
+    const unitsBefore = unitsOf(harness.db, started.run.id);
+    expect(unitsBefore).toHaveLength(4);
+    for (const unit of unitsBefore) {
+      expect(unit.status).toBe("failed");
+      expect(unit.failure?.reason).toBe("input-too-long");
+    }
+
+    const resumed = harness.orchestrator.resumeRun(started.run.id);
+    expect(resumed.accepted).toBe(false);
+    expect(resumed.run.status).toBe("stopped");
+    expect(await resumed.done).toMatchObject({ status: "stopped", stopReason: "settings" });
+    await flush();
+
+    const after = readRun(harness.db, started.run.id);
+    expect(after.status).toBe("stopped");
+    expect(after.stopReason).toBe("settings");
+    expect(after.stopMessage).toBe(before.stopMessage);
+    expect(after.finishedAt).not.toBeNull();
+    for (const unit of unitsOf(harness.db, started.run.id)) {
+      expect(unit.status).toBe("failed");
+      expect(unit.failure?.reason).toBe("input-too-long");
+    }
+    expect(scripted.requests).toHaveLength(0);
+    expect(scripted.ensureLoadedCalls).toHaveLength(0);
   });
 
   it("存在しない実行 ID の再開は呼び出し側の誤りとして例外にする", () => {

@@ -99,8 +99,14 @@ export function parseLmStudioApiKey(raw: string | undefined): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-/** `setTimeout` の実用上限（符号付き 32bit 整数の最大値）。超えると Node はタイマーを即時発火させる。 */
-const MAX_TIMEOUT_MS = 2_147_483_647;
+/**
+ * `setTimeout` / LM Studio のタイムアウト引数が受け付ける実用上の上限
+ * （符号付き 32bit 整数の最大値）。超えると Node はタイマーを即時発火させる。
+ *
+ * `run/orchestrator.ts` の決定 44（`checkMs + recoveryConfirmMs` の上限検査）も同じ値を使うため、
+ * ここから export して 1 か所に持つ（2 か所に書くと片方だけ直す事故が起きる）。
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * `SHUTEN_RECOVERY_CONFIRM_MS` を検証して数値にする（決定 43）。

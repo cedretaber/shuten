@@ -333,15 +333,22 @@ describe("db/repositories/runs", () => {
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
     const run = insertRun(db, baseRunInput({ id: "r1", modelInfo: null }));
     expect(run.modelInfo).toBeNull();
+    // 2 件目の実行。**`model_info` は null で作る**：ここに値を入れてしまうと
+    // `WHERE model_info IS NULL` に阻まれ、`WHERE id = ?` を落とす変異を検出できない。
+    const other = insertRun(db, baseRunInput({ id: "r2", modelInfo: null }));
+    expect(other.modelInfo).toBeNull();
 
     const firstInfo: ModelInfo = MODEL_INFO;
     updateRunModelInfo(db, "r1", firstInfo);
     expect(findRun(db, "r1")?.modelInfo).toEqual(firstInfo);
+    // 対象外の実行は書き換わらない（`WHERE id = ?` が効いている）。
+    expect(findRun(db, "r2")?.modelInfo).toBeNull();
 
     // 2度目の呼び出し（既に model_info が非 null）は無視され、最初の値のまま。
     const secondInfo: ModelInfo = { ...MODEL_INFO, id: "model-b", loadedContextLength: 2048 };
     updateRunModelInfo(db, "r1", secondInfo);
     expect(findRun(db, "r1")?.modelInfo).toEqual(firstInfo);
+    expect(findRun(db, "r2")?.modelInfo).toBeNull();
     close();
   });
 
@@ -349,6 +356,10 @@ describe("db/repositories/runs", () => {
     const { db, close } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
     insertRun(db, baseRunInput({ id: "r1", status: "running" }));
+    // 2 件目の実行。`stop_requested_at` は null で作り、書き換わらないことを断定する
+    // （`WHERE id = ?` を落とす変異を検出するため）。
+    const other = insertRun(db, baseRunInput({ id: "r2", status: "running" }));
+    expect(other.stopRequestedAt).toBeNull();
 
     const at = new Date("2026-09-09T05:00:00.000Z");
     setStopRequestedAt(db, "r1", at);
@@ -356,6 +367,9 @@ describe("db/repositories/runs", () => {
     const found = findRun(db, "r1");
     expect(found?.stopRequestedAt).toEqual(at);
     expect(found?.status).toBe("running");
+    const untouched = findRun(db, "r2");
+    expect(untouched?.stopRequestedAt).toBeNull();
+    expect(untouched?.status).toBe("running");
     close();
   });
 

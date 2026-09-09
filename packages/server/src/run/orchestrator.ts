@@ -34,6 +34,7 @@ import {
   splitParagraphs,
 } from "@shuten/shared";
 
+import { MAX_TIMEOUT_MS } from "../config.ts";
 import type { AppDatabase, AppDatabaseLike } from "../db/client.ts";
 import { isUniqueConstraintViolation } from "../db/errors.ts";
 import { createId as createIdDefault } from "../db/ids.ts";
@@ -58,6 +59,7 @@ import type { RequestQueue } from "./queue.ts";
 import type { StopGate } from "./recovery.ts";
 import { createStopGate } from "./recovery.ts";
 import type { RecoveryGate } from "./recovery-gate.ts";
+import { runStatusForUnconfirmed } from "./state.ts";
 import type { RunStatus } from "./status.ts";
 import {
   claimRecheckUnitChecked,
@@ -67,9 +69,6 @@ import {
   finishRecheckUnitChecked,
   finishRunChecked,
 } from "./transitions.ts";
-
-/** `setTimeout` / LM Studio のタイムアウト引数が受け付ける実用上の上限（符号付き 32bit 整数の最大値）。 */
-const MAX_TIMEOUT_MS = 2147483647;
 
 /** ---------------------------------------------------------------------- */
 /** 公開インターフェース（決定 24） */
@@ -172,7 +171,10 @@ export interface Orchestrator {
    * `stop_requested_at` を書き直さない）。
    */
   stopRun(runId: string): StopRunResult;
-  /** 再開（決定 36・39）。`stopped` / `recovery-waiting` の実行だけを受け付ける。 */
+  /**
+   * 再開（決定 36・39）。`stopped` / `recovery-waiting` の実行だけを受け付ける
+   * （`stop_reason` が `settings` のものは除く）。
+   */
   resumeRun(runId: string): RunLaunchResult;
   /** 失敗単位の個別再試行（決定 36）。`partially-failed` / `stopped` の実行だけを受け付ける。 */
   retryFailedUnits(runId: string, options?: RetryFailedUnitsOptions): RunLaunchResult;
@@ -225,6 +227,74 @@ interface RetryTargets {
  */
 function isInputTooLong(unit: { readonly failure: UnitFailureRecord | null }): boolean {
   return unit.failure?.reason === "input-too-long";
+}
+
+/**
+ * `running` の検査単位・再確認単位を `pending` に戻す（決定 33・40 で共通の規則）。
+ * **呼び出し元のトランザクションの中で呼ぶこと**（実行の終端化と同じ 1 トランザクションにする）。
+ *
+ * 戻さないと `resumeRun` が拾えない（`claimUnitChecked(pending → running)` が 0 行になり、
+ * 起動時照合は起動時にしか走らない）。処理状態（次に何をするか）だけを戻し、直前に何が
+ * 起きたか（`attempts` / `failure` / `usage` / `inputGraphemes` / `elapsedMs`）は保つ
+ * （決定 20 と同じ考え方）。
+ *
+ * 戻り値は「戻す前に `running` の単位が 1 件でもあったか」。**この判定は書き換えより先に
+ * 確定させる**：先に `pending` に書き換えてから同じ行を読み直すと `running` が 0 件になり、
+ * 「単位を持っていなかった」と誤判定する（決定 40 が警告している誤分類そのもの）。
+ * 呼び出し元はこれを「生成が LM Studio 側で走り続けている可能性があるか」の判断に使う。
+ *
+ * @param note `pending` に戻した単位に残す `pending_note`（呼び出し元ごとの定型文）。
+ */
+function resetRunningUnits(
+  tx: AppDatabaseLike,
+  runId: string,
+  note: string,
+  finishedAt: Date,
+): boolean {
+  const checkUnits = listCheckUnits(tx, runId);
+  const recheckUnits = listRecheckUnits(tx, runId);
+  const hadRunning =
+    checkUnits.some((unit) => unit.status === "running") ||
+    recheckUnits.some((unit) => unit.status === "running");
+
+  for (const unit of checkUnits) {
+    if (unit.status !== "running") {
+      continue;
+    }
+    finishCheckUnitChecked(tx, unit.id, {
+      expectedStatus: "running",
+      status: "pending",
+      attempts: unit.attempts,
+      failure: unit.failure,
+      pendingNote: note,
+      usage: unit.usage,
+      inputGraphemes: unit.inputGraphemes,
+      elapsedMs: unit.elapsedMs,
+      finishedAt,
+    });
+  }
+  for (const unit of recheckUnits) {
+    if (unit.status !== "running") {
+      continue;
+    }
+    finishRecheckUnitChecked(tx, unit.id, {
+      expectedStatus: "running",
+      status: "pending",
+      attempts: unit.attempts,
+      failure: unit.failure,
+      pendingNote: note,
+      notApplicableReason: null,
+      verdict: unit.verdict,
+      reasonKind: unit.reasonKind,
+      reason: unit.reason,
+      suggestionValid: unit.suggestionValid,
+      usage: unit.usage,
+      inputGraphemes: unit.inputGraphemes,
+      elapsedMs: unit.elapsedMs,
+      finishedAt,
+    });
+  }
+  return hadRunning;
 }
 
 /**
@@ -422,9 +492,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   /**
    * 決定 33：想定外の例外で抜けた実行の後始末。
    *
-   * 1. その時点で `running` の検査単位・再確認単位を `pending` に戻す。**戻さないと
+   * 1. その時点で `running` の検査単位・再確認単位を `pending` に戻す（`resetRunningUnits`。
+   *    起動時照合と同じ規則で、`pending_note` の定型文だけが違う）。**戻さないと
    *    `resumeRun` が拾えない**（`claimUnitChecked(pending → running)` が 0 行になり、
-   *    起動時照合は起動時にしか走らない）。`pending_note` は定型文。
+   *    起動時照合は起動時にしか走らない）。
    * 2. 実行を終端化する。`stop_reason` は `internal-error`、`stop_message` は定型文のみ。
    *    例外のメッセージには接続先 URL・API キーだけでなく**原稿の断片**が混ざりうる
    *    （`run/persist.ts` の `PersistBoundaryError` は違反した引用の先頭 20 コード単位を持つ）。
@@ -448,48 +519,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     try {
       const finishedAt = now();
       deps.db.transaction((tx) => {
-        for (const unit of listCheckUnits(tx, run.id)) {
-          if (unit.status !== "running") {
-            continue;
-          }
-          // 決定 20 と同じ考え方で、処理状態（次に何をするか）は `pending` に戻しつつ、
-          // 直前に何が起きたか（`failure` / `attempts` / `usage` / `elapsed_ms`）は保つ。
-          finishCheckUnitChecked(tx, unit.id, {
-            expectedStatus: "running",
-            status: "pending",
-            attempts: unit.attempts,
-            failure: unit.failure,
-            pendingNote: INTERNAL_ERROR_UNIT_NOTE,
-            usage: unit.usage,
-            inputGraphemes: unit.inputGraphemes,
-            elapsedMs: unit.elapsedMs,
-            finishedAt,
-          });
-        }
-        for (const unit of listRecheckUnits(tx, run.id)) {
-          if (unit.status !== "running") {
-            continue;
-          }
-          finishRecheckUnitChecked(tx, unit.id, {
-            expectedStatus: "running",
-            status: "pending",
-            attempts: unit.attempts,
-            failure: unit.failure,
-            pendingNote: INTERNAL_ERROR_UNIT_NOTE,
-            notApplicableReason: null,
-            verdict: unit.verdict,
-            reasonKind: unit.reasonKind,
-            reason: unit.reason,
-            suggestionValid: unit.suggestionValid,
-            usage: unit.usage,
-            inputGraphemes: unit.inputGraphemes,
-            elapsedMs: unit.elapsedMs,
-            finishedAt,
-          });
-        }
+        resetRunningUnits(tx, run.id, INTERNAL_ERROR_UNIT_NOTE, finishedAt);
         finishRunChecked(tx, run.id, {
           expectedStatus: "running",
-          status: unconfirmed ? "recovery-waiting" : "stopped",
+          status: runStatusForUnconfirmed(unconfirmed),
           stopReason: "internal-error",
           stopMessage: INTERNAL_ERROR_RUN_MESSAGE,
           generationUnconfirmed: unconfirmed,
@@ -721,7 +754,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   }
 
   /**
-   * 再開（決定 36・39）。受け付けるのは `stopped` と `recovery-waiting` だけ。
+   * 再開（決定 36・39）。受け付けるのは `stopped` と `recovery-waiting` だけで、
+   * そのうち **`stop_reason` が `settings` のものは受け付けない**。
    *
    * `claimRunChecked(..., { clearStopState: true })` で `running` にしてからループを起動する。
    * ループは初回実行と再開を区別しないので、`pending` の単位を拾って続きから進む
@@ -747,6 +781,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // `running`（このプロセスにループが無い）・`completed`・`partially-failed` は拒否。
       // `partially-failed` からの再開は「やることなし」で即 `partially-failed` に戻るだけなので、
       // 失敗単位の個別再試行（`retryFailedUnits`）に案内する（決定 36 の表）。
+      return rejected(existing);
+    }
+    if (existing.stopReason === "settings") {
+      // 決定 36：設定エラーで止まった実行は再開できない。`startRun` が決定 18・44 で作る
+      // `stopped`（`settings`）の実行は検査単位が 0 件か全件 `failed`（`input-too-long`）なので、
+      // そのまま受け付けると**生成要求を 1 件も送らずに** `completed` / `partially-failed` になり、
+      // しかも `clearStopState` が停止理由まで消してしまう。1 度も検査していない実行が
+      // 「完了・指摘 0 件」として残るのは `docs/reference/invariants.md` の
+      // 「失敗を指摘ゼロと誤表示しない」に反する。利用者への案内は「設定を見直して
+      // 新しい実行を開始する」。実行中に出る `settings`（モデル種別が生成に使えない、
+      // `chat` が返す入力上限超過）も同じ扱いでよい。どちらもメッセージ自体が
+      // 「設定を見直せ」という意味だからである。
+      //
+      // **判別子を「`pending` の単位が 0 件」に置いてはならない**：最後の検査単位を保存した直後、
+      // 対象の決着処理（決定 34 の再確認の起票）の前に停止した実行は、`pending` の単位が 0 件でも
+      // 「起票して再確認を走らせる」という正当な仕事が残っており、弾くと復旧できなくなる。
       return rejected(existing);
     }
     if (!claimRunChecked(deps.db, runId, existing.status, "running", { clearStopState: true })) {
@@ -821,16 +871,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * （決定 40。複数の実行をまたいで 1 つのトランザクションにしない。1 実行の失敗で他の実行の
    * 照合まで巻き戻さないため）。
    *
-   * 1. トランザクションの中で、更新前に `running` の検査単位・再確認単位の有無を確定する
-   *    （`hadRunning`）。**この判定を単位の書き換えより先に行う**：先に単位を `pending` に
-   *    書き換えてから同じ行を読み直すと `running` が 0 件になり、「単位を持っていなかった」と
-   *    誤判定してしまう（決定 40 が警告している誤分類そのもの）。
-   * 2. `running` の単位を `pending` に戻す（`pending_note` は定型文）。処理状態は戻すが、
-   *    直前に何が起きたか（`failure` / `attempts` / `usage` / `elapsedMs`）は保つ
-   *    （`settleInternalError` と同じ考え方）。
+   * 1・2. `resetRunningUnits` が、更新前に `running` の単位の有無（`hadRunning`）を確定してから
+   *    それらを `pending` に戻す（判定を書き換えより先に行う理由はその関数の説明にある）。
+   *    `pending_note` は定型文で、`failure` / `attempts` / `usage` / `elapsedMs` は保つ
+   *    （`settleInternalError` と同じ規則を共有している）。
    * 3. 1 の判定に基づいて実行の状態を更新する：`running` の単位を持っていたら
    *    `recovery-waiting`（`generationUnconfirmed: true`）、持っていなければ `stopped`
-   *    （`generationUnconfirmed: false`）。
+   *    （`generationUnconfirmed: false`）。決定 23 のこの規則は `runStatusForUnconfirmed` に寄せてある。
    *
    * トランザクションが失敗したら（`finishRunChecked` が false を返す場合を含め）例外を投げて
    * 抜ける。ここで握りつぶさない：`index.ts` の「例外は捕まえずに非ゼロ終了させる」方針に委ね、
@@ -845,49 +892,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   function reconcileRun(runId: string): void {
     const finishedAt = now();
     deps.db.transaction((tx) => {
-      const checkUnits = listCheckUnits(tx, runId);
-      const recheckUnits = listRecheckUnits(tx, runId);
-      const hadRunning =
-        checkUnits.some((unit) => unit.status === "running") ||
-        recheckUnits.some((unit) => unit.status === "running");
-
-      for (const unit of checkUnits) {
-        if (unit.status !== "running") {
-          continue;
-        }
-        finishCheckUnitChecked(tx, unit.id, {
-          expectedStatus: "running",
-          status: "pending",
-          attempts: unit.attempts,
-          failure: unit.failure,
-          pendingNote: RECONCILE_UNIT_NOTE,
-          usage: unit.usage,
-          inputGraphemes: unit.inputGraphemes,
-          elapsedMs: unit.elapsedMs,
-          finishedAt,
-        });
-      }
-      for (const unit of recheckUnits) {
-        if (unit.status !== "running") {
-          continue;
-        }
-        finishRecheckUnitChecked(tx, unit.id, {
-          expectedStatus: "running",
-          status: "pending",
-          attempts: unit.attempts,
-          failure: unit.failure,
-          pendingNote: RECONCILE_UNIT_NOTE,
-          notApplicableReason: null,
-          verdict: unit.verdict,
-          reasonKind: unit.reasonKind,
-          reason: unit.reason,
-          suggestionValid: unit.suggestionValid,
-          usage: unit.usage,
-          inputGraphemes: unit.inputGraphemes,
-          elapsedMs: unit.elapsedMs,
-          finishedAt,
-        });
-      }
+      const hadRunning = resetRunningUnits(tx, runId, RECONCILE_UNIT_NOTE, finishedAt);
 
       // stop_reason はレビュー裁定（R-1）どおり、両分岐とも専用の "backend-restarted" を使う。
       // "internal-error" は「想定外の例外」の意味（決定 14）なので、正常な起動処理である
@@ -897,7 +902,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // すでに担っているので、stop_reason は 1 つで足りる。
       const ok = finishRunChecked(tx, runId, {
         expectedStatus: "running",
-        status: hadRunning ? "recovery-waiting" : "stopped",
+        status: runStatusForUnconfirmed(hadRunning),
         stopReason: "backend-restarted",
         stopMessage: hadRunning ? RECONCILE_RECOVERY_MESSAGE : RECONCILE_STOPPED_MESSAGE,
         generationUnconfirmed: hadRunning,
