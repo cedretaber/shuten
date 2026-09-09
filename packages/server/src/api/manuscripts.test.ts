@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { MALFORMED_MULTIPART_MESSAGE } from "./manuscripts.ts";
 import type { ApiHarness } from "./test-support.ts";
 import { createHarnessRegistry, JSON_HEADERS } from "./test-support.ts";
 
@@ -207,6 +208,52 @@ describe("POST /api/manuscripts/upload（アップロード）", () => {
 
     expect(status).toBe(400);
     expect((body as { error: { code: string } }).error.code).toBe("validation");
+  });
+
+  it("Content-Type: multipart/form-data に境界（boundary）が無いと 400 validation（500 にならない）", async () => {
+    const harness = open();
+    // 送った原稿の断片がエラー本文に出ないことを確かめるため、他の語と衝突しない固有の文字列にする
+    // （日本語の一般語「本文」は固定のエラー文言自体にも出るので、原稿の断片の判定には使えない）。
+    const manuscriptFragment = "SECRET-MANUSCRIPT-FRAGMENT-NO-BOUNDARY";
+
+    const res = await harness.app.request("/api/manuscripts/upload", {
+      method: "POST",
+      headers: { "content-type": "multipart/form-data" },
+      body: `--boundary\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n\r\n${manuscriptFragment}\r\n--boundary--\r\n`,
+    });
+    const bodyText = await res.text();
+
+    expect(res.status).toBe(400);
+    const parsed = JSON.parse(bodyText) as { error: { code: string; message: string } };
+    expect(parsed.error.code).toBe("validation");
+    // parseBody のガード（parseUploadForm）を実際に通ったことを、固定文言そのもので確かめる
+    // （でなければ resolveUploadedFile 側の validation と区別できない）。
+    expect(parsed.error.message).toBe(MALFORMED_MULTIPART_MESSAGE);
+    // 送った原稿の断片がエラー本文に出ない。
+    expect(bodyText).not.toContain(manuscriptFragment);
+  });
+
+  it("Content-Type: multipart/form-data の境界が本文と一致しないと 400 validation（500 にならない）", async () => {
+    const harness = open();
+    const manuscriptFragment = "SECRET-MANUSCRIPT-FRAGMENT-BOUNDARY-MISMATCH";
+    const declaredBoundary = "does-not-match";
+    const actualBoundary = "actual-boundary";
+
+    const res = await harness.app.request("/api/manuscripts/upload", {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${declaredBoundary}` },
+      body: `--${actualBoundary}\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n\r\n${manuscriptFragment}\r\n--${actualBoundary}--\r\n`,
+    });
+    const bodyText = await res.text();
+
+    expect(res.status).toBe(400);
+    const parsed = JSON.parse(bodyText) as { error: { code: string; message: string } };
+    expect(parsed.error.code).toBe("validation");
+    expect(parsed.error.message).toBe(MALFORMED_MULTIPART_MESSAGE);
+    // 送った原稿の断片・境界文字列がエラー本文に出ない。
+    expect(bodyText).not.toContain(manuscriptFragment);
+    expect(bodyText).not.toContain(declaredBoundary);
+    expect(bodyText).not.toContain(actualBoundary);
   });
 
   it("file が文字列（File でない）なら 400 validation", async () => {

@@ -21,7 +21,7 @@ import {
   ingestUtf8Bytes,
   manuscriptVersionDtoSchema,
 } from "@shuten/shared";
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 
 import { findManuscriptVersion, insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import type { ApiDeps } from "./deps.ts";
@@ -34,6 +34,28 @@ const EMPTY_BODY_MESSAGE = "本文が空です（原稿を保存できません�
 /** アップロードの `name`／`file` の検証に使う 400 `validation`。 */
 function validationError(field: string): ApiError {
   return new ApiError(400, "validation", `入力の検証に失敗しました: ${field}`);
+}
+
+/**
+ * `multipart/form-data` の本文が壊れている（境界（boundary）が無い／本文と一致しない等）ときの
+ * 400 `validation`。要求本文の断片は入れない定型文（決定 4 の不変条件）。
+ */
+export const MALFORMED_MULTIPART_MESSAGE =
+  "アップロードの本文を multipart/form-data として読めません";
+
+/**
+ * `c.req.parseBody` だけを囲む。Hono/undici は境界の欠落・不一致で `TypeError` を投げるので、
+ * それだけを 400 `validation` に写す（決定 14 のエラー表）。それ以外（`parseBody` より後の
+ * 処理）で起きる `TypeError` まで拾わないよう、ガードする範囲をこの呼び出し 1 つに絞る。
+ */
+async function parseUploadForm(
+  c: Context,
+): Promise<Awaited<ReturnType<Context["req"]["parseBody"]>>> {
+  try {
+    return await c.req.parseBody({ all: true });
+  } catch {
+    throw new ApiError(400, "validation", MALFORMED_MULTIPART_MESSAGE);
+  }
 }
 
 /**
@@ -74,7 +96,9 @@ export function registerManuscriptRoutes(router: Hono, deps: ApiDeps): void {
 
   router.post("/manuscripts/upload", async (c) => {
     // `all: true` が必須：付けないと同名項目は最後の値だけが残り、重複を検出できない。
-    const form = await c.req.parseBody({ all: true });
+    // 境界（boundary）の欠落・不一致による `TypeError` は `parseUploadForm` が 400 に写す
+    // （それ以外の箇所の `TypeError` は素通しして 500 のままにする）。
+    const form = await parseUploadForm(c);
 
     const file = resolveUploadedFile(form.file);
     const name = resolveUploadedName(form.name, file);
