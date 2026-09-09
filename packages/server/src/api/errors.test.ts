@@ -67,6 +67,23 @@ describe("handleApiError", () => {
     expect(body.error.message).not.toContain("42");
   });
 
+  it("schema.parse が投げた例外も 400 validation になる（ハンドラーの実経路）", async () => {
+    // 各 Task のハンドラーは `schema.parse(await readJson(c))` と書く。zod 4 の `parse` が
+    // 投げるのは `safeParse().error` と同じクラスとは限らないので、実際に投げさせて確かめる。
+    const app = new Hono();
+    app.onError(handleApiError);
+    app.get("/x", () => {
+      z.object({ id: z.string() }).parse({ id: 1 });
+      return new Response("unreachable");
+    });
+
+    const res = await app.request("/x");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error.code).toBe("validation");
+    expect(body.error.message).toContain("id");
+  });
+
   it("MalformedBodyError は 400 malformed-body", async () => {
     const { status, body } = await requestError(new MalformedBodyError("孤立サロゲート"));
     expect(status).toBe(400);
