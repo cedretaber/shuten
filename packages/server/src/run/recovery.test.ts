@@ -61,14 +61,12 @@ describe("createStopGate", () => {
       await vi.advanceTimersByTimeAsync(100);
       gate.endRequest();
 
-      // タイマーの発火を待たずに、その場で abort している。
+      // タイマーの発火（t=500）を待たずに、t=100 の endRequest() の時点でその場で
+      // abort している（abort は不可逆なので、この後の dispose()/時間経過では
+      // 「予約されていたタイマーが残っていないこと」自体は検査できない。それは R7 の役目）。
       expect(gate.signal.aborted).toBe(true);
 
-      // 念のため、予約されていたタイマーが残っていないことも確かめる
-      // （dispose 後に時間を進めても状態は変わらない：既に true のまま）。
       gate.dispose();
-      await vi.advanceTimersByTimeAsync(1000);
-      expect(gate.signal.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -105,6 +103,9 @@ describe("createStopGate", () => {
       // ここで setTimeout が複数回呼ばれず 1 回だけであること（＝タイマーが 2 本以上に
       // ならないこと）で確かめられる。
       expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+      // 2 回目・3 回目の requestStop() が（冪等ではなく）即座に abort してしまう変異も、
+      // ここでまだ abort していないことを確かめれば検出できる。
+      expect(gate.signal.aborted).toBe(false);
 
       setTimeoutSpy.mockRestore();
       gate.dispose();

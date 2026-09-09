@@ -9,7 +9,8 @@ import type {
   Usage,
 } from "../lmstudio/types.ts";
 import { createExecutor } from "./executor.ts";
-import type { RecoveryGate } from "./recovery-gate.ts";
+import { createRequestQueue } from "./queue.ts";
+import { createRecoveryGate, type RecoveryGate } from "./recovery-gate.ts";
 
 const REQUEST: ChatRequest = {
   model: "test-model",
@@ -684,6 +685,12 @@ describe("createExecutor", () => {
     expect(outcome.attempts).toBe(0);
     expect(outcome.halt?.reason).toBe("recovery-blocked");
     expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    // RunStop.failure はこの実行自身の失敗ではないので null（result.ts のコメントに倣う。
+    // 停止要求＝aborted の halt.failure と同じ扱い）。単位側の outcome.failure は
+    // 「送らなかった」という単位の事実として非 null（notSentFailure、origin: "local"）で
+    // pending に写るための材料になる。
+    expect(outcome.halt?.failure).toBeNull();
+    expect(outcome.failure.origin).toBe("local");
   });
 
   it("R9: recoveryGate を渡しても blocked が偽なら、従来どおり ensureLoaded → chat の順で呼ぶ", async () => {
@@ -696,6 +703,61 @@ describe("createExecutor", () => {
 
     expect(outcome.ok).toBe(true);
     expect(calls).toEqual(["ensureLoaded", "chat"]);
+  });
+
+  it("R13: recoveryGate.blocked は「投入時」ではなく「共有キューで順番が回ってきた時点」で見る（決定 39 の本題）", async () => {
+    // 本物の RequestQueue と RecoveryGate を使う。R8/R9 は blocked を定数で固定したスタブ
+    // だったため、「execute() を呼んだ時点（queue.enqueue の手前）で recoveryGate.blocked を
+    // 読んでしまう」という決定 39 が禁じている実装でも通ってしまっていた。ここでは A が
+    // まだ未確認になっていない時点（B の execute() を呼んだ直後）ではゲートは開いており、
+    // A の実行が recovery-waiting に決着してはじめて（＝共有キューで B の順番が回ってきた
+    // 時点までに）閉じることを、実際のキュー・ゲートの組み合わせで固定する。
+    const queue = createRequestQueue();
+    const gate = createRecoveryGate();
+
+    const clientA = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const executorA = createExecutor(clientA, {
+      now: createClock(),
+      queue,
+      recoveryGate: gate,
+      onRecoveryRequired: () => {
+        gate.block("run-a");
+      },
+    });
+
+    const clientB = createMockClient({});
+    const executorB = createExecutor(clientB, {
+      now: createClock(),
+      queue,
+      recoveryGate: gate,
+    });
+
+    // A と B の execute() を同期的に続けて呼ぶ。この時点では A の chat はまだ 1 ステップも
+    // 進んでいない（Promise が作られただけ）ので、gate.blocked は依然として false。
+    // B がここで「投入時」に blocked を読んでしまう実装なら、B は素通りしてしまう。
+    const promiseA = executorA.execute(REQUEST, parse, 1000);
+    expect(gate.blocked).toBe(false);
+    const promiseB = executorB.execute(REQUEST, parse, 1000);
+
+    const [outcomeA, outcomeB] = await Promise.all([promiseA, promiseB]);
+
+    expect(outcomeA.ok).toBe(false);
+    if (outcomeA.ok) return;
+    expect(outcomeA.halt?.reason).toBe("recovery-needed");
+    expect(outcomeA.halt?.generationUnconfirmed).toBe(true);
+    expect(gate.blocked).toBe(true);
+
+    expect(outcomeB.ok).toBe(false);
+    if (outcomeB.ok) return;
+    // B は共有キューで自分の番が回ってきた時点でゲートを見るので、A が未確認になった
+    // あとに送信しようとした B は、ensureLoaded すら呼ばずに recovery-blocked で止まる。
+    expect(clientB.ensureLoaded).not.toHaveBeenCalled();
+    expect(clientB.chat).not.toHaveBeenCalled();
+    expect(outcomeB.halt?.reason).toBe("recovery-blocked");
   });
 
   it("R10: generationUnconfirmed: true の halt を返す直前に onRecoveryRequired が同期的に呼ばれる（決定 39）", async () => {

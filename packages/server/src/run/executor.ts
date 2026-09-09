@@ -260,10 +260,13 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
       // 送らない。ensureLoaded も chat も呼ばない。この実行自体は 1 度も送っていないので
       // generationUnconfirmed は false のまま（単位は pending に残り、復旧が確認できれば
       // ゲートが開いて再開できる）。
-      const message = "別の実行が復旧待ちのため生成要求を送らなかった";
-      const failure = notSentFailure(message);
-      halt = makeStop("recovery-blocked", "別の実行が復旧待ちのため実行を停止した", failure, false);
-      return finish(blocked(halt, message, startedAt));
+      // RunStop.failure は「停止の原因になった失敗」（result.ts）で、設定値の検証エラーや
+      // 停止要求（aborted）と同じく null にする。原因はこの実行自身の失敗ではなく別の実行が
+      // 復旧待ちであることなので、失敗の記録を run 全体の停止理由に載せると「この実行が
+      // aborted で失敗した」と読める余地が残ってしまう。単位側（blocked() が作る
+      // outcome.failure）は「送らなかった」という単位の事実なので、そちらは非 null のまま。
+      halt = makeStop("recovery-blocked", "別の実行が復旧待ちのため実行を停止した", null, false);
+      return finish(blocked(halt, "別の実行が復旧待ちのため生成要求を送らなかった", startedAt));
     }
 
     let attempts = 0;
