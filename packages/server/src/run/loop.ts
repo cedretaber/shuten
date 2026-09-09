@@ -50,7 +50,12 @@ import type { RunStop } from "./result.ts";
 import { saveCheckUnitOutcome, saveRecheckOutcome } from "./save.ts";
 import { runStatusForStop } from "./state.ts";
 import type { RunStatus } from "./status.ts";
-import { claimRecheckUnitChecked, claimUnitChecked, finishRunChecked } from "./transitions.ts";
+import {
+  claimRecheckUnitChecked,
+  claimUnitChecked,
+  finishRunChecked,
+  reopenSuppressedRecheckUnitChecked,
+} from "./transitions.ts";
 import { executeCheckUnit, executeRecheckUnit } from "./units.ts";
 
 /** ループが必要とするもの。`createOrchestrator` が組み立てて渡す。 */
@@ -201,15 +206,31 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
 
   /**
    * 決定 34 の起票。対象の指摘のうち `recheck_units` を持たないものだけを作る（すでに持つものは
-   * 触らない）。冪等なので、起票の直前に落ちても再開時に同じ判定でやり直せる。
+   * 原則触らない）。冪等なので、起票の直前に落ちても再開時に同じ判定でやり直せる。
    * 位置特定失敗の指摘の `not-applicable(unlocated)` は保存トランザクション（`save.ts`）が
    * すでに作っているため、ここでは通常到達しない（防御的に残す）。
+   *
+   * 例外が 1 つある（決定 45-4）：すでに `not-applicable(suppressed)` の単位があっても、
+   * **抑制が外れていれば `pending` に戻して起票し直す**。失敗観点の再試行で同じ範囲・引用・
+   * 修正案の別分類の候補が加わると、`merge-store.ts` が `category` を `unclear` に変えて抑制を
+   * 解除するため、そのままにすると再確認が 1 度も実行されない。`disabled` / `unlocated` と
+   * `done` は戻さない（前者 2 つは実行中に変わらない事実、`done` は終端）。
    */
   function issueRechecks(findings: readonly FindingRecord[]): void {
     const now = context.now();
     db.transaction((tx) => {
       for (const finding of findings) {
-        if (findRecheckUnitByFinding(tx, finding.id) !== null) {
+        const existing = findRecheckUnitByFinding(tx, finding.id);
+        if (existing !== null) {
+          if (
+            existing.status === "not-applicable" &&
+            existing.notApplicableReason === "suppressed" &&
+            recheckEnabled &&
+            finding.locateStatus === "located" &&
+            finding.suppression === null
+          ) {
+            reopenSuppressedRecheckUnitChecked(tx, existing.id);
+          }
           continue;
         }
         // 理由の優先順位（決定 11）：disabled → unlocated → suppressed。

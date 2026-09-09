@@ -216,6 +216,27 @@ export function claimRecheckUnit(
   return result.changes === 1;
 }
 
+/**
+ * 抑制が外れた再確認単位を `pending` に戻す（決定 45-4）。
+ * 条件付き更新（決定 5）：`not-applicable(suppressed)` のときだけ更新する。
+ * `claimRecheckUnit` では `not_applicable_reason` と `finished_at` が消えないため専用に用意する。
+ * `disabled`（実行ごとに固定）と `unlocated`（位置特定の結果は変わらない）は `WHERE` で弾く。
+ */
+export function reopenSuppressedRecheckUnit(db: AppDatabaseLike, id: string): boolean {
+  const result = db
+    .update(recheckUnits)
+    .set({ status: "pending", notApplicableReason: null, finishedAt: null })
+    .where(
+      and(
+        eq(recheckUnits.id, id),
+        eq(recheckUnits.status, "not-applicable"),
+        eq(recheckUnits.notApplicableReason, "suppressed"),
+      ),
+    )
+    .run();
+  return result.changes === 1;
+}
+
 /** `finishRecheckUnit` の入力。 */
 export interface FinishRecheckUnitInput {
   /** この値のときだけ更新する（決定 5・PR8 必須事項 2）。 */

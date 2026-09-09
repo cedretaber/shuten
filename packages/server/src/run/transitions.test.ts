@@ -15,6 +15,7 @@ import {
   finishRecheckUnitChecked,
   finishRunChecked,
   InvalidTransitionError,
+  reopenSuppressedRecheckUnitChecked,
 } from "./transitions.ts";
 
 /** テストごとにマイグレーション適用済みのメモリ DB を作る。 */
@@ -241,7 +242,7 @@ describe("run/transitions", () => {
       close();
     });
 
-    it("finishRecheckUnitChecked: expectedStatus=not-applicable → status=pending は表にない（not-applicable は終端）", () => {
+    it("finishRecheckUnitChecked: expectedStatus=done → status=pending は表にない（done は終端）", () => {
       const { db, close } = setupDb();
       const { recheckUnit } = setupBase(db);
       insertFinding(db, {
@@ -264,8 +265,8 @@ describe("run/transitions", () => {
         runId: recheckUnit.runId,
         findingId: "f3",
         inputRange: null,
-        status: "not-applicable",
-        notApplicableReason: "disabled",
+        status: "done",
+        notApplicableReason: null,
         attempts: 0,
         failure: null,
         pendingNote: null,
@@ -283,7 +284,7 @@ describe("run/transitions", () => {
 
       expect(() =>
         finishRecheckUnitChecked(db, "ru-na", {
-          expectedStatus: "not-applicable",
+          expectedStatus: "done",
           status: "pending",
           attempts: 0,
           failure: null,
@@ -532,6 +533,104 @@ describe("run/transitions", () => {
       });
       expect(finished).toBe(true);
       expect(findRecheckUnitByFinding(db, "f1")?.status).toBe("done");
+      close();
+    });
+
+    /**
+     * 決定 45-4：抑制が外れた再確認単位を戻す専用の入口。`claimRecheckUnitChecked` では
+     * `not_applicable_reason` と `finished_at` が消えないため別関数になっている。
+     */
+    it("reopenSuppressedRecheckUnitChecked: not-applicable(suppressed) → pending は表にあり、委譲されて true を返す", () => {
+      const { db, close } = setupDb();
+      const { run, target } = setupBase(db);
+      // `recheck_units.finding_id` は一意なので、setupBase の ru1 とは別の指摘を作る。
+      insertFinding(db, {
+        id: "f-sup",
+        runId: run.id,
+        manuscriptVersionId: "mv1",
+        targetId: target.id,
+        locateStatus: "located",
+        range: { start: 2, end: 4 },
+        paragraphId: 0,
+        quote: "誤字2",
+        suggestion: "修正案2",
+        category: "notation",
+        initialVerdict: "likely-error",
+        mergeKey: null,
+        suppression: null,
+      });
+      insertRecheckUnit(db, {
+        id: "ru-sup",
+        runId: run.id,
+        findingId: "f-sup",
+        inputRange: null,
+        status: "not-applicable",
+        notApplicableReason: "suppressed",
+        attempts: 0,
+        failure: null,
+        pendingNote: null,
+        verdict: null,
+        reasonKind: null,
+        reason: null,
+        suggestionValid: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: null,
+        startedAt: null,
+        finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+      });
+
+      expect(reopenSuppressedRecheckUnitChecked(db, "ru-sup")).toBe(true);
+
+      const after = findRecheckUnitByFinding(db, "f-sup");
+      expect(after?.status).toBe("pending");
+      expect(after?.notApplicableReason).toBeNull();
+      expect(after?.finishedAt).toBeNull();
+      close();
+    });
+
+    it("reopenSuppressedRecheckUnitChecked: suppressed 以外はリポジトリの条件に合わず false（例外にしない。決定 12）", () => {
+      const { db, close } = setupDb();
+      const { run, target } = setupBase(db);
+      insertFinding(db, {
+        id: "f-dis",
+        runId: run.id,
+        manuscriptVersionId: "mv1",
+        targetId: target.id,
+        locateStatus: "located",
+        range: { start: 4, end: 6 },
+        paragraphId: 0,
+        quote: "誤字3",
+        suggestion: null,
+        category: "notation",
+        initialVerdict: "likely-error",
+        mergeKey: null,
+        suppression: null,
+      });
+      insertRecheckUnit(db, {
+        id: "ru-dis",
+        runId: run.id,
+        findingId: "f-dis",
+        inputRange: null,
+        status: "not-applicable",
+        notApplicableReason: "disabled",
+        attempts: 0,
+        failure: null,
+        pendingNote: null,
+        verdict: null,
+        reasonKind: null,
+        reason: null,
+        suggestionValid: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: null,
+        startedAt: null,
+        finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+      });
+      const before = findRecheckUnitByFinding(db, "f-dis");
+
+      expect(reopenSuppressedRecheckUnitChecked(db, "ru-dis")).toBe(false);
+      expect(findRecheckUnitByFinding(db, "f-dis")).toEqual(before);
       close();
     });
   });

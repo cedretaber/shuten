@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
-import type { CheckUnitRecord, RunRecord } from "../db/records.ts";
+import type { CheckUnitRecord, RecheckNotApplicableReason, RunRecord } from "../db/records.ts";
 import { insertCheckUnit, listCheckUnits } from "../db/repositories/check-units.ts";
 import { listDiagnostics } from "../db/repositories/diagnostics.ts";
 import {
@@ -452,6 +452,183 @@ describe("run/loop: 単位駆動ループ", () => {
 
     const rechecks = listRecheckUnits(harness.db, run.id);
     expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("suppressed");
+  });
+
+  /**
+   * 決定 45-4 の 3 本。すでに `not-applicable(suppressed)` の再確認単位が残っている状態から
+   * ループを回し、抑制が外れているときだけ `pending` に戻ることを確かめる。
+   * 「抑制が外れる」（失敗観点の再試行で別分類の候補が加わり `merge-store.ts` が
+   * `category` を `unclear` にする）過程そのものは `merge-store.test.ts` の担当なので、
+   * ここでは結果の状態（`findings.suppression === null`）を直接作って起票側だけを見る。
+   */
+  function seedSuppressedRecheck(
+    db: ReturnType<typeof setupDb>["db"],
+    input: {
+      readonly runId: string;
+      readonly recheckEnabled?: boolean;
+      readonly suppression?: { readonly word: string; readonly ruleVersion: string } | null;
+      readonly notApplicableReason: RecheckNotApplicableReason;
+    },
+  ): { readonly seeded: SeededRun; readonly recheckUnitId: string } {
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: input.runId,
+      unitStatuses: ["done", "done"],
+      recheckEnabled: input.recheckEnabled ?? true,
+    });
+    const findingRecord = insertLocatedFinding(
+      db,
+      seeded,
+      "うえ",
+      2,
+      4,
+      "ウエ",
+      input.suppression ?? null,
+    );
+    insertNotApplicableRecheck(db, seeded, findingRecord.id, "ru-na", input.notApplicableReason);
+    return { seeded, recheckUnitId: "ru-na" };
+  }
+
+  /** `not-applicable` の再確認単位を 1 件、手で作る（起票済みで終端まで書かれた状態）。 */
+  function insertNotApplicableRecheck(
+    db: ReturnType<typeof setupDb>["db"],
+    seeded: SeededRun,
+    findingId: string,
+    unitId: string,
+    notApplicableReason: RecheckNotApplicableReason,
+  ): void {
+    insertRecheckUnit(db, {
+      id: unitId,
+      runId: seeded.run.id,
+      findingId,
+      inputRange: null,
+      status: "not-applicable",
+      notApplicableReason,
+      attempts: 0,
+      failure: null,
+      pendingNote: null,
+      verdict: null,
+      reasonKind: null,
+      reason: null,
+      suggestionValid: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: null,
+      startedAt: null,
+      finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+    });
+  }
+
+  it("O18: 抑制が外れた not-applicable(suppressed) の再確認単位は pending に戻り、実際に再確認が実行される（決定 45-4）", async () => {
+    const { db } = setupDb();
+    const { seeded } = seedSuppressedRecheck(db, {
+      runId: "run-reopen",
+      // 抑制は外れている（別分類の候補が加わって category が unclear になった後の状態）。
+      suppression: null,
+      notApplicableReason: "suppressed",
+    });
+
+    const scripted = scriptedClient([() => recheckResponse()]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    // 再確認の生成要求が実際に 1 件送られている。
+    expect(scripted.requests).toHaveLength(1);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("done");
+    expect(rechecks[0]?.notApplicableReason).toBeNull();
+    expect(rechecks[0]?.verdict).toBe("keep");
+    expect(rechecks[0]?.reasonKind).toBe("error-confirmed");
+    expect(rechecks[0]?.startedAt).not.toBeNull();
+    expect(rechecks[0]?.finishedAt).not.toBeNull();
+  });
+
+  it("O18: 抑制が外れていなければ not-applicable(suppressed) のままにする（決定 45-4）", async () => {
+    const { db } = setupDb();
+    const { seeded } = seedSuppressedRecheck(db, {
+      runId: "run-still-suppressed",
+      suppression: { word: "うえ", ruleVersion: "1" },
+      notApplicableReason: "suppressed",
+    });
+
+    // 台本が空なので、生成要求を 1 件でも送れば例外になる。
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(0);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("suppressed");
+  });
+
+  it("O18: 再確認が無効な実行では、suppressed でも disabled でも pending に戻さない（決定 45-4）", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-disabled",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: false,
+    });
+    // 抑制も位置特定も再起票の条件を満たすが、この実行では再確認自体が無効。
+    const suppressedFinding = insertLocatedFinding(db, seeded, "うえ", 2, 4, "ウエ");
+    insertNotApplicableRecheck(db, seeded, suppressedFinding.id, "ru-sup", "suppressed");
+    const disabledFinding = insertLocatedFinding(db, seeded, "かき", 5, 7, "カキ");
+    insertNotApplicableRecheck(db, seeded, disabledFinding.id, "ru-dis", "disabled");
+
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(0);
+    // 並びは finding_id 昇順なので、単位 ID で引いて順序に依存しないようにする。
+    const rechecks = listRecheckUnits(db, run.id);
+    const suppressed = rechecks.find((unit) => unit.id === "ru-sup");
+    const disabled = rechecks.find((unit) => unit.id === "ru-dis");
+    expect([suppressed?.status, suppressed?.notApplicableReason]).toEqual([
+      "not-applicable",
+      "suppressed",
+    ]);
+    expect([disabled?.status, disabled?.notApplicableReason]).toEqual([
+      "not-applicable",
+      "disabled",
+    ]);
+  });
+
+  it("O18: 位置特定に失敗した指摘の suppressed な単位は pending に戻さない（決定 45-4）", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-unlocated",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: true,
+    });
+    // 位置特定に失敗した指摘（`range` は null）。位置は後から変わらないので戻さない。
+    const findingRecord = insertFinding(db, {
+      runId: seeded.run.id,
+      manuscriptVersionId: "mv1",
+      targetId: seeded.targetId,
+      locateStatus: "not-found",
+      range: null,
+      paragraphId: 0,
+      quote: "存在しない引用",
+      suggestion: null,
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: null,
+      suppression: null,
+    });
+    insertNotApplicableRecheck(db, seeded, findingRecord.id, "ru-sup", "suppressed");
+
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(0);
+    const rechecks = listRecheckUnits(db, run.id);
     expect(rechecks[0]?.status).toBe("not-applicable");
     expect(rechecks[0]?.notApplicableReason).toBe("suppressed");
   });
@@ -1273,7 +1450,7 @@ describe("run/loop: 単位駆動ループ", () => {
 /** W3（状態を書く経路は transitions.ts だけ） */
 /** ---------------------------------------------------------------------- */
 
-describe("W3: ループ・save・orchestrator はリポジトリの claim* / finish* を直接 import しない（決定 29）", () => {
+describe("W3: ループ・save・orchestrator はリポジトリの claim* / finish* / reopen* を直接 import しない（決定 29）", () => {
   const TARGET_FILES = ["loop.ts", "save.ts", "orchestrator.ts"] as const;
 
   /** `import { ... } from ".../db/repositories/xxx.ts"` の名前付き import を列挙する。 */
@@ -1316,10 +1493,13 @@ describe("W3: ループ・save・orchestrator はリポジトリの claim* / fin
     }
   });
 
-  it("claim* / finish* をリポジトリから直接 import していないこと", () => {
+  it("claim* / finish* / reopen* をリポジトリから直接 import していないこと", () => {
     for (const file of TARGET_FILES) {
       const source = readFileSync(path.resolve(import.meta.dirname, file), "utf8");
-      const forbidden = repositoryImports(source).filter((name) => /^(claim|finish)/.test(name));
+      // reopen* も状態を書く（決定 45-4 の reopenSuppressedRecheckUnit）ので同じく禁止する。
+      const forbidden = repositoryImports(source).filter((name) =>
+        /^(claim|finish|reopen)/.test(name),
+      );
       expect({ file, forbidden }).toEqual({ file, forbidden: [] });
     }
   });
@@ -1422,6 +1602,8 @@ function insertLocatedFinding(
   start: number,
   end: number,
   suggestion: string | null,
+  /** 抑制の有無（決定 45-4 の再起票条件を突くテストが非 null を渡す）。既定は抑制なし。 */
+  suppression: { readonly word: string; readonly ruleVersion: string } | null = null,
 ) {
   return insertFinding(db, {
     runId: seeded.run.id,
@@ -1435,7 +1617,7 @@ function insertLocatedFinding(
     category: "notation",
     initialVerdict: "likely-error",
     mergeKey: `${String(start)}:${String(end)}:${JSON.stringify(quote)}:${JSON.stringify(suggestion)}`,
-    suppression: null,
+    suppression,
   });
 }
 
