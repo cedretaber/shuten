@@ -440,6 +440,12 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 できない**（決定 45-1）。関門は `resumeRun` と `retryFailedUnits` の両方にある。
 
 **`stop_reason` が `settings` の実行は再開できない**（最終レビューで判明した穴への対処）。
+ただし**再試行（`retryFailedUnits`）には同じガードを置かない**。開始前の設定検証で止まった実行は
+`collectRetryTargets` が対象 0 件で弾く（単位が 0 件か、`input-too-long` の `failed` だけなので）。
+実行中に `settings` で止まった実行に無関係な `failed`（`malformed` など）が残っている場合は、
+その単位の再試行を許す。`input-too-long` の単位は `failed` のまま残るので実行は
+`partially-failed` で終わり、「失敗を指摘ゼロと誤表示しない」には反しない。`clearStopState` で
+`stop_reason` は消えるが、単位ごとの失敗（`check_units.failure_*`）は残る。
 `startRun` が決定 18・44 で作る `stopped(settings)` の実行（分割設定不正・タイムアウト設定不正・
 入力上限超過）は、検査単位が 0 件か、上限を超えた対象の単位が `failed` になっている。そのまま
 再開すると、上限を超えた対象を検査しないまま `completed` / `partially-failed` になり（対象が
@@ -719,6 +725,18 @@ PR10 は拒否理由を自前で再導出せず、必要ならこの判別子を
 executor はこの決着を、既存の「送信しなかった」経路（`blocked()` と `notSentFailure`）と同じ
 `ExecOutcome` に写す。生成要求は 1 件も送っていないので `generationUnconfirmed` は false のまま。
 
+**取り消し経路はキューの直列化の外で走るので、executor 全体の可変状態（`halt` /
+`requestCount` / `firstModelInfo`）を書いてはならない。** `halt` を書く経路は `runOne` の中だけ、
+という不変条件がこの経路で 1 度破れており（再レビューで判明）、A1 が送信中・A2 がキュー待ちの
+状態で停止すると、A2 の取り消しが先に `halt` を `generationUnconfirmed: false` にして、
+後から届く A1 の中断（`generationUnconfirmed: true`）が `halt ??= stop` に阻まれ、
+`onRecoveryRequired` が呼ばれずに復旧ゲートが開いたままになる。取り消しの `RunStop` は
+局所的に作って `blocked()` に渡し、共有の `halt` は読むだけにする。
+
+なお「送信済み要求の生成未確認を必ず優先する」形（`generationUnconfirmed` を sticky-true に
+する）は採らない。直列化の下では `halt` が立った後に `chat` を送らないので到達せず、
+「最初の halt が勝つ」という規則を崩すだけだからである。
+
 #### 45-3：CLI 経路の判別を待機時間から切り離す（決定 20・32・43 の改訂）
 
 `isPendingFailure` と `pendingNote`（`run/units.ts`）は `recoveryConfirmMs > 0` を
@@ -756,10 +774,14 @@ executor はこの決着を、既存の「送信しなかった」経路（`bloc
   られる。汎用の `claimRecheckUnitChecked` / `finishRecheckUnitChecked` は表を引く前に
   `not-applicable → pending` を `InvalidTransitionError` で弾き、`reopenSuppressedRecheckUnitChecked`
   だけが通す。
-- **逆方向（`pending` の再確認単位に後から抑制が付く）は本 PR では入れない。** 到達はしうるが
-  （起票時に 1 候補だけで、後から同分類の候補が加わって `notation` に揃う場合）、遷移
-  （`pending → not-applicable`）は表にすでにあるので追加はいつでもでき、レビューも求めていない。
-  持ち越しに記録する。
+- **逆方向（`pending` の再確認単位に後から抑制が付く）は現行の集約規則では到達しない**ので入れない。
+  当初は「到達しうるが頻度が低い」と書いていたが、外部レビューの指摘を受けて確認したところ誤りだった。
+  理由は 3 つ：(1) `aggregateCategory` はグループのメンバーを減らさず、不一致が 1 つでもあれば
+  `unclear` なので、`category` は `unclear` 方向にしか動かない。(2) 抑制の判定に使う `quote` と
+  `suggestion` は既存の指摘の値で固定である（`merge-store.ts` が `existing` から取る）。
+  (3) 許容語一覧は実行ごとに固定である。したがって `suppression` は**非 null → null にしか
+  変わらない**。遷移（`pending → not-applicable`）は表にすでにあるので、集約規則が将来変われば
+  そのとき足せばよい。
 
 ## テスト
 
@@ -1156,10 +1178,6 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 - **再開・再試行の拒否理由の判別子（PR10）。** `RunLaunchResult` は「受け付けたか」しか持たない。
   PR10 が HTTP のエラー表現を作るとき、拒否理由を自前で再導出せず（`settings` 判定や
   `hasStaleVersions` を orchestrator の外に書き写さず）、必要なら判別子を足してから使うこと。
-- **抑制が後から付いた `pending` の再確認単位（決定 45-4 の逆方向）。** 起票時に候補が 1 件だけで、
-  後から同分類の候補が加わって `category` が `notation` に揃うと、`pending` のまま抑制対象の
-  指摘を再確認してしまう。遷移（`pending → not-applicable`）は決定 3 の表にすでにあるので
-  追加はいつでもできる。頻度が低く、外部レビューも求めていないため本 PR では入れなかった。
 - `settings` 表と接続先の UI 上書き（PR10）。
 - `LmStudioClient` の `close()` / `dispose()` と graceful shutdown（PR10）。
 - `listFindings` の N+1（PR12）。
