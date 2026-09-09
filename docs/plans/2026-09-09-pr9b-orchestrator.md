@@ -380,6 +380,11 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 - それ以外 → `pending`。
 - 位置特定失敗の指摘の `not-applicable(unlocated)` は保存トランザクションの中で作り済み（決定 28）。
 
+**`not-applicable` の再確認単位を `running` に claim してはならない。** `run/save.ts` の
+`saveRecheckOutcome` は `disabled` / `suppressed` の `RecheckResult` を受け取ると例外を投げる
+（`running → not-applicable` は決定 3 の許容遷移表に無いため、状態を書けない）。ループが実行するのは
+`pending` の再確認単位だけであり、起票の時点で `not-applicable` にしたものはそのまま終端である。
+
 **この順序は必ず守る**（PR9a の持ち越し）。対象内の他の観点がまだ `pending` / `running` のうちに
 統合結果を読むと、後から集約・抑制が変わる中間状態を見て起票の可否を誤る。
 
@@ -432,6 +437,18 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 
 1 件でも違反したら `RetryTargetError` を投げ、**実行の状態も単位も 1 つも変えずに**拒否する
 （トランザクションを開いた中で投げるのでロールバックされる）。PR10 はこれを 400 に写す。
+
+**`input-too-long` で失敗した検査単位は再試行の対象から外す**（Task 6 のレビューで判明した危険への対処）。
+理由は 2 つある。(1) 分割設定は実行ごとに固定（`runs.chunk_settings`）なので、同じ実行の中で
+再試行しても必ず同じ上限超過になる。(2) より危険なのは、`startRun` が上限超過の対象について
+`run_targets.input` に**実際に試みた範囲を保存できない**ことである（`buildCheckInput` は失敗時に
+試みた範囲を返さないため、暫定値として `target.range` を入れている）。この行から
+`checkInputFromTargetRecord`（`run/persist.ts`）で入力を組み直すと、参考文脈のない**本来より狭い
+入力**ができ、上限検査を素通りして検査が「成功」してしまう。仕様 7 節「入力上限超過時に本文を
+黙って切り捨てない」に反する。
+`unitIds` で明示的に指定された場合も同じ理由で拒否する（`RetryTargetError`）。
+対処は「実際に試みた範囲を保存する」ではない（今度は上限を超える入力を送ることになる）。
+守りは消費側に置く。
 
 停止要求そのものは `setStopRequestedAt(db, runId, at)` で書く（`runs.status` は `running` のまま。決定 21）。
 
