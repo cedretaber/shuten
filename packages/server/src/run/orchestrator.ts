@@ -884,17 +884,25 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // 実行の状態も単位も 1 行も変わらない。
       return rejected(existing);
     }
-    // `resumeRun` にある `stopReason === "settings"` のガードが、ここには**無い**。現状これで
-    // 安全なのは、設定エラーで止まった実行が `collectRetryTargets` を通れないためである：
-    // 入力が上限を超えた単位は `!isInputTooLong(unit)` で対象から除かれ、他に `failed` が
-    // 無ければ対象 0 件で `RetryTargetError` が投げられ、下のトランザクションごと
-    // ロールバックされる（実行の状態も単位も 1 行も変わらない）。単位を 1 つも作らずに
-    // 止まった実行も同じく対象 0 件で弾かれる。
-    // **`collectRetryTargets` のこのフィルタを緩めるときは、ここに
-    // `stopReason === "settings"` のガードを足すこと。** 緩めたままだと `clearStopState` が
-    // 停止理由を消したうえで「1 度も検査していない実行が completed・指摘 0 件」に見える経路が
-    // 開き、`resumeRun` が明示的に塞いだ穴（`docs/reference/invariants.md`
-    // 「失敗を指摘ゼロと誤表示しない」）がこちら側から復活する。
+    // `resumeRun` にある `stopReason === "settings"` のガードが、ここには**無い**。これは
+    // `settings` の実行を一律に弾かないという意図的な差である。
+    //
+    // 弾かなければならないのは「**開始前の設定検証で止まった実行**」＝検査単位が 1 件も無いか、
+    // `input-too-long` の `failed` しか無い実行だけである。これは `collectRetryTargets` が
+    // `!isInputTooLong(unit)` で対象から除くため、どちらの形でも対象 0 件になり
+    // `RetryTargetError` が投げられて下のトランザクションごとロールバックされる
+    // （実行の状態も単位も 1 行も変わらない）。**このフィルタを緩めるときは、ここに
+    // 「単位が 0 件、または `input-too-long` の `failed` しか無い実行を拒否する」ガードを
+    // 足すこと。** 緩めたままだと `clearStopState` が停止理由を消したうえで「1 度も検査して
+    // いない実行が completed・指摘 0 件」に見える経路が開き、`resumeRun` が明示的に塞いだ穴
+    // （`docs/reference/invariants.md`「失敗を指摘ゼロと誤表示しない」）がこちら側から復活する。
+    //
+    // 一方、実行の**途中**で `input-too-long` により `settings` 停止した実行に、それとは無関係な
+    // `failed`（`malformed` など）の単位が残っている場合は、**再試行を許してよい**。
+    // `input-too-long` の単位は対象から除かれて `failed` のまま残るので、再試行が終わっても
+    // 実行は `partially-failed` になり、「失敗を指摘ゼロと誤表示しない」には反しない。
+    // ただし `clearStopState` で `stop_reason` / `stop_message` は消える（停止理由は
+    // 単位ごとの `failure` に残る）。
     const from = existing.status;
     const unitIds = options?.unitIds;
 

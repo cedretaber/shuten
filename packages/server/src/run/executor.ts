@@ -449,13 +449,24 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
         // キュー待ち中に停止した。生成要求は 1 件も送っていないので generationUnconfirmed は
         // false のまま（単位は pending に残り、再開できる）。文言は runOne 冒頭の 2 分岐
         // （halt 保持済み ／ この単位で初めて停止を見た）とそのまま同じにする。
+        //
+        // **この catch は共有 halt を書かない。** ここはキューの直列化の**外**で走る唯一の
+        // 経路であり（取り消しは順番を待たずに決着する。それが決定 45-2 の要点そのもの）、
+        // ここで halt を書くと、同じ executor で送信中だった単位より先に
+        // `aborted / generationUnconfirmed: false` が halt を占領してしまう。すると送信中
+        // だった単位が中断を処理しても `halt ??= stop` で自分の halt を反映できず、
+        // `finish()` が `onRecoveryRequired` を呼ばないため復旧ゲートが開いたままになる
+        // （決定 39 が閉じるはずの門が開く）。halt を**書く**のは `runOne` の中だけ
+        // ＝キューの直列化の下だけ、という元の性質を保つ。読むだけなら競合しない。
         if (halt !== null) {
           // すでに別の理由（settings / recovery-blocked など）で止まっている。保持している
           // halt は上書きせず、単位の失敗も「停止要求により」ではなくそちらの文言にする。
           return finish(blocked(halt, "実行が停止済みのため生成要求を送らなかった", startedAt));
         }
-        halt = makeStop("aborted", "停止要求により実行を停止した", null, false);
-        return finish(blocked(halt, "停止要求により生成要求を送らなかった", startedAt));
+        // 局所的に作って返すだけ。次の単位は runOne 冒頭の isAborted(signal) で自ら
+        // 同じ halt を立てるので、ループから見た結末は変わらない。
+        const stop = makeStop("aborted", "停止要求により実行を停止した", null, false);
+        return finish(blocked(stop, "停止要求により生成要求を送らなかった", startedAt));
       }
     }
     // キューなしの経路（runPipeline / CLI）は従来どおり、この executor 内の tail で直列化する。

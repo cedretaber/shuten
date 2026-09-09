@@ -760,6 +760,76 @@ describe("createExecutor", () => {
     expect(outcomeB.halt?.reason).toBe("recovery-blocked");
   });
 
+  it("R13b: 同じ executor でキュー待ちの単位を取り消しても、送信中だった単位の生成未確認が消えない（決定 45-2 × 39）", async () => {
+    // 45-2 の取り消しは**キューの直列化の外**（execute の catch）で走る。ここで共有の halt を
+    // 書いてしまうと、先に決着した取り消し（generationUnconfirmed: false）が halt を占領し、
+    // 後から中断を処理する送信中の単位が `halt ??= stop` で自分の halt を反映できなくなる。
+    // 結果、finish() が onRecoveryRequired を呼ばず、復旧ゲートが開いたままになる。
+    const queue = createRequestQueue();
+    const gate = createRecoveryGate();
+    const controller = new AbortController();
+
+    // A1 の chat は abort で自動的に落とさず、テストが握る deferred で落とす。
+    // 自動 reject にすると A1 と A2 の決着順がマイクロタスクの深さで揺れ、変異を当てても
+    // 落ちたり落ちなかったりする。順序をテスト側で決め切る。
+    let rejectChatA: (error: unknown) => void = () => undefined;
+    const chatA = new Promise<ChatResult>((_, reject) => {
+      rejectChatA = reject;
+    });
+    const clientA = createMockClient({ chat: async () => await chatA });
+    const executorA = createExecutor(clientA, {
+      now: createClock(),
+      queue,
+      signal: controller.signal,
+      recoveryGate: gate,
+      onRecoveryRequired: () => {
+        gate.block("run-a");
+      },
+    });
+    // 別の実行 B。ゲートが閉じていれば ensureLoaded も chat も呼ばれない。
+    const clientB = createMockClient({});
+    const executorB = createExecutor(clientB, {
+      now: createClock(),
+      queue,
+      recoveryGate: gate,
+    });
+
+    // 呼び出し順 A1 → A2 → B（Q4b と同じ、同一 executor への複数 enqueue）。
+    const promiseA1 = executorA.execute(REQUEST, parse, 1000);
+    const promiseA2 = executorA.execute(REQUEST, parse, 1000);
+    const promiseB = executorB.execute(REQUEST, parse, 1000);
+
+    // A1 が chat を送るまで進める。
+    for (let index = 0; index < 5; index += 1) {
+      await Promise.resolve();
+    }
+    expect(clientA.chat).toHaveBeenCalledTimes(1);
+
+    // 停止。A2 はキュー待ちなので、先行の A1 を待たずにその場で決着する。
+    controller.abort();
+    const outcomeA2 = await promiseA2;
+    expect(outcomeA2.ok).toBe(false);
+    if (outcomeA2.ok) return;
+    expect(outcomeA2.attempts).toBe(0);
+
+    // A2 が決着した**後**で、送信中だった A1 の chat を中断で落とす。
+    rejectChatA(new LmStudioError("aborted", "生成要求が中断された"));
+
+    const outcomeA1 = await promiseA1;
+    expect(outcomeA1.ok).toBe(false);
+    if (outcomeA1.ok) return;
+    // 送信済みの要求が中断された＝生成が走ったかどうか分からない（決定 39）。
+    expect(outcomeA1.failure.origin).toBe("chat");
+    expect(outcomeA1.attempts).toBe(1);
+    expect(outcomeA1.halt?.generationUnconfirmed).toBe(true);
+    expect(gate.blocked).toBe(true);
+
+    // ゲートが閉じているので、後続の実行 B は 1 件も送らない。
+    const outcomeB = await promiseB;
+    expect(outcomeB.ok).toBe(false);
+    expect(clientB.chat).not.toHaveBeenCalled();
+  });
+
   it("R10: generationUnconfirmed: true の halt を返す直前に onRecoveryRequired が同期的に呼ばれる（決定 39）", async () => {
     const client = createMockClient({
       chat: async () => {
