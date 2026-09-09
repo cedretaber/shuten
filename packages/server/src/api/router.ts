@@ -14,6 +14,7 @@ import type { ApiDeps } from "./deps.ts";
 import { handleApiError, respond } from "./errors.ts";
 import { registerManuscriptRoutes } from "./manuscripts.ts";
 import { registerRecoveryRoutes } from "./recovery.ts";
+import { registerRunRoutes } from "./runs.ts";
 import { registerSettingsRoutes } from "./settings.ts";
 
 /**
@@ -45,8 +46,9 @@ export function createApiRouter(deps: ApiDeps): Hono {
   registerSettingsRoutes(router, deps);
   registerRecoveryRoutes(router, deps);
   registerManuscriptRoutes(router, deps);
+  registerRunRoutes(router, deps);
 
-  // Task 7 以降がここに route を足す。
+  // Task 8 以降がここに route を足す。
 
   return router;
 }

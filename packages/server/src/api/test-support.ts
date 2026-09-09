@@ -25,9 +25,11 @@ import { afterEach } from "vitest";
 import { createApp } from "../app.ts";
 import type { ConnectionManager } from "../connection.ts";
 import { createConnectionManager } from "../connection.ts";
-import type { AppDatabase } from "../db/client.ts";
+import type { AppDatabase, AppDatabaseLike } from "../db/client.ts";
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
+import type { RunRecord } from "../db/records.ts";
+import { findRun } from "../db/repositories/runs.ts";
 import type { RunEventHub } from "../run/event-hub.ts";
 import { createRunEventHub } from "../run/event-hub.ts";
 import type { Orchestrator } from "../run/orchestrator.ts";
@@ -168,6 +170,68 @@ export function setupApi(overrides: SetupApiOverrides = {}): ApiHarness {
 
 /** JSON を送る要求に共通のヘッダー。各ルートのテストファイルで共用する。 */
 export const JSON_HEADERS = { "content-type": "application/json" };
+
+/**
+ * 実行が決着する（`status` が `running` でなくなる）まで待ち、決着後の `RunRecord` を返す。
+ *
+ * API 経由では `startRun` の戻り値（`done`）を受け取れないので、`run-settled` を購読して待つ。
+ * **先に `hub.subscribe` してから `findRun` で状態を読む**（決定 12 と同じ順序）。逆にすると、
+ * 読み取りと購読の間に決着した `run-settled` を取りこぼして永久に待つ。ループは DB を書いてから
+ * `run-settled` を出す（`run/loop.ts` の `finalizeRun`、`run/orchestrator.ts` の `settleInternalError`）
+ * ので、イベントを受けた時点で DB は決着済みであり、**状態の正本として DB を読み直す**。
+ *
+ * ハブが `closeAll()` された場合（ハーネスの `close()`）は、そのときの DB の値で解決する
+ * （待ち続けてテストをタイムアウトさせない）。決着していない値が返りうるので、
+ * 呼び出し側は「決着を待つ」用途でハーネスを閉じないこと。
+ */
+export function waitSettled(
+  hub: RunEventHub,
+  db: AppDatabaseLike,
+  runId: string,
+): Promise<RunRecord> {
+  return new Promise<RunRecord>((resolve, reject) => {
+    let unsubscribe: (() => void) | null = null;
+    let done = false;
+
+    /** DB を読み直して解決する。読めなければ reject（実行が消えるのは想定外）。 */
+    function settle(): void {
+      if (done) {
+        return;
+      }
+      done = true;
+      unsubscribe?.();
+      const current = findRun(db, runId);
+      if (current === null) {
+        reject(new Error(`決着を待っていた検査実行が見つかりません（実行 ID: ${runId}）`));
+        return;
+      }
+      resolve(current);
+    }
+
+    unsubscribe = hub.subscribe(runId, {
+      onEvent: (event) => {
+        if (event.event.type === "run-settled") {
+          settle();
+        }
+      },
+      onClose: () => {
+        settle();
+      },
+    });
+
+    // 購読より後に読む（この順序が肝）。既に決着していれば、その場で解決する。
+    const current = findRun(db, runId);
+    if (current === null) {
+      done = true;
+      unsubscribe();
+      reject(new Error(`決着を待っていた検査実行が見つかりません（実行 ID: ${runId}）`));
+      return;
+    }
+    if (current.status !== "running") {
+      settle();
+    }
+  });
+}
 
 /**
  * `setupApi` で作ったハーネスを控え、`afterEach` で必ず閉じる定型（`open`/`opened`/`afterEach` の
