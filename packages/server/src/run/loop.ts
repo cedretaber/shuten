@@ -215,6 +215,14 @@ export async function runLoop(context: RunLoopContext): Promise<RunRecord> {
    * 修正案の別分類の候補が加わると、`merge-store.ts` が `category` を `unclear` に変えて抑制を
    * 解除するため、そのままにすると再確認が 1 度も実行されない。`disabled` / `unlocated` と
    * `done` は戻さない（前者 2 つは実行中に変わらない事実、`done` は終端）。
+   *
+   * 再起票の条件のうち `recheckEnabled` と `locateStatus === "located"` は、決定 11 の優先順位
+   * （disabled → unlocated → suppressed）のもとでは**理論上つねに真**である：理由が
+   * `suppressed` の単位が存在する時点で、起票時に再確認が有効かつ位置特定済みだったことが
+   * 確定しており、どちらも実行中に変わらないためである。それでも残すのは、優先順位や起票の
+   * 条件が将来変わったときに `disabled` / `unlocated` の単位を戻さないための防御であり、
+   * **不要な条件ではない**（O18-3・O18-4 が、決定 11 のもとでは作られない状態を手で組み立てて
+   * この防御を固定している）。
    */
   function issueRechecks(findings: readonly FindingRecord[]): void {
     const now = context.now();

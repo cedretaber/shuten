@@ -398,6 +398,122 @@ describe("run/transitions", () => {
       expect(after).toEqual(before);
       close();
     });
+
+    /**
+     * 決定 45-4 で遷移表に `not-applicable → pending` を足したが、表は状態しか見ないため、
+     * 汎用の入口をそのままにすると理由を問わず（`disabled` / `unlocated` でも）復活させられる。
+     * この 1 ペアだけは専用の入口 `reopenSuppressedRecheckUnitChecked` からしか通さない。
+     */
+    it("claimRecheckUnitChecked: not-applicable → pending は専用の入口からしか通せない（例外・DB 非接触）", () => {
+      const { db, close } = setupDb();
+      const { run, target } = setupBase(db);
+      insertFinding(db, {
+        id: "f-na",
+        runId: run.id,
+        manuscriptVersionId: "mv1",
+        targetId: target.id,
+        locateStatus: "located",
+        range: { start: 6, end: 8 },
+        paragraphId: 0,
+        quote: "誤字4",
+        suggestion: null,
+        category: "notation",
+        initialVerdict: "likely-error",
+        mergeKey: null,
+        suppression: null,
+      });
+      insertRecheckUnit(db, {
+        id: "ru-dis2",
+        runId: run.id,
+        findingId: "f-na",
+        inputRange: null,
+        status: "not-applicable",
+        notApplicableReason: "disabled",
+        attempts: 0,
+        failure: null,
+        pendingNote: null,
+        verdict: null,
+        reasonKind: null,
+        reason: null,
+        suggestionValid: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: null,
+        startedAt: null,
+        finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+      });
+      const before = findRecheckUnitByFinding(db, "f-na");
+
+      expect(() => claimRecheckUnitChecked(db, "ru-dis2", "not-applicable", "pending")).toThrow(
+        InvalidTransitionError,
+      );
+
+      expect(findRecheckUnitByFinding(db, "f-na")).toEqual(before);
+      close();
+    });
+
+    it("finishRecheckUnitChecked: expectedStatus=not-applicable → status=pending も専用の入口からしか通せない（例外・DB 非接触）", () => {
+      const { db, close } = setupDb();
+      const { run, target } = setupBase(db);
+      insertFinding(db, {
+        id: "f-na2",
+        runId: run.id,
+        manuscriptVersionId: "mv1",
+        targetId: target.id,
+        locateStatus: "located",
+        range: { start: 8, end: 10 },
+        paragraphId: 0,
+        quote: "誤字5",
+        suggestion: null,
+        category: "notation",
+        initialVerdict: "likely-error",
+        mergeKey: null,
+        suppression: null,
+      });
+      insertRecheckUnit(db, {
+        id: "ru-unl",
+        runId: run.id,
+        findingId: "f-na2",
+        inputRange: null,
+        status: "not-applicable",
+        notApplicableReason: "unlocated",
+        attempts: 0,
+        failure: null,
+        pendingNote: null,
+        verdict: null,
+        reasonKind: null,
+        reason: null,
+        suggestionValid: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: null,
+        startedAt: null,
+        finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+      });
+      const before = findRecheckUnitByFinding(db, "f-na2");
+
+      expect(() =>
+        finishRecheckUnitChecked(db, "ru-unl", {
+          expectedStatus: "not-applicable",
+          status: "pending",
+          attempts: 0,
+          failure: null,
+          pendingNote: null,
+          notApplicableReason: null,
+          verdict: null,
+          reasonKind: null,
+          reason: null,
+          suggestionValid: null,
+          usage: null,
+          inputGraphemes: null,
+          elapsedMs: null,
+          finishedAt: new Date("2026-09-09T01:00:00.000Z"),
+        }),
+      ).toThrow(InvalidTransitionError);
+
+      expect(findRecheckUnitByFinding(db, "f-na2")).toEqual(before);
+      close();
+    });
   });
 
   describe("W2: 許容表にある遷移はリポジトリへそのまま委譲し、戻り値をそのまま返す", () => {

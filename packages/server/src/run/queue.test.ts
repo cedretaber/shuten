@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { LmStudioError } from "../lmstudio/errors.ts";
 import type {
@@ -462,10 +462,13 @@ describe("createRequestQueue", () => {
     expect(queue.size).toBe(0);
   });
 
-  it("Q8: ジョブが走り始めた後の abort は取り消しにならず、ジョブ自身の結果で決着する", async () => {
+  it("Q8: ジョブが走り始めた後の abort は取り消しにならず、ジョブ自身の結果で決着する。順番が来た時点で abort リスナも外す", async () => {
     const queue = createRequestQueue();
     const gate = deferred<void>();
     const controller = new AbortController();
+    // 長寿命の signal（1 実行ぶんの `gate.signal`）にリスナが溜まらないこと＝順番が来たら
+    // 必ず解除することを見る。解除しないと execute の回数ぶんリスナが残り続ける。
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
 
     let started = false;
     const job = queue.enqueue(
@@ -479,12 +482,52 @@ describe("createRequestQueue", () => {
 
     await flushMicrotasks();
     expect(started).toBe(true);
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
 
     controller.abort();
     await flushMicrotasks();
     gate.resolve();
 
     await expect(job).resolves.toBe("done");
+    removeSpy.mockRestore();
+  });
+
+  it("Q10: すでに abort 済みの signal で投入したジョブも、先行ジョブを待たずにその場で決着する", async () => {
+    const queue = createRequestQueue();
+    const gateA = deferred<void>();
+    const controller = new AbortController();
+    // 投入より **前** に abort されている経路（停止操作と execute 呼び出しが競った場合や、
+    // 停止後に残っていた execute の呼び出し）。abort イベントはもう二度と発火しないので、
+    // addEventListener だけでは早期決着せず、45-2 のバグがこの経路だけ復活する。
+    controller.abort();
+
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+    let calledB = false;
+    const jobB = queue.enqueue(
+      async () => {
+        calledB = true;
+        return "B";
+      },
+      { signal: controller.signal },
+    );
+    const observed = watch(jobB);
+    const jobC = queue.enqueue(async () => "C");
+
+    await flushMicrotasks();
+
+    // A は未解決のまま。それでも B は決着していなければならない。
+    expect(observed.settled()).toBe(true);
+    expect(observed.error()).toBeInstanceOf(QueueCancelledError);
+    expect(calledB).toBe(false);
+
+    gateA.resolve();
+    await expect(jobA).resolves.toBe("A");
+    await expect(jobC).resolves.toBe("C");
+    await expect(jobB).rejects.toBeInstanceOf(QueueCancelledError);
+    expect(calledB).toBe(false);
   });
 
   it("Q9: 共有キューで待っている実行を停止すると、先行ジョブを待たずに ok:false の ExecOutcome で決着する", async () => {
@@ -521,6 +564,54 @@ describe("createRequestQueue", () => {
     // 生成要求は 1 件も送っていない（ensureLoaded も chat も呼ばれていない）。
     expect(timeline).toEqual([]);
     expect(executor.requestCount).toBe(0);
+
+    gateA.resolve();
+    await jobA;
+  });
+
+  it("Q11: すでに halt を持つ実行がキュー待ち中に停止したら、halt と失敗の文言は「実行が停止済み」側になる", async () => {
+    const queue = createRequestQueue();
+    const controller = new AbortController();
+    let chatCalls = 0;
+    const client: LmStudioClient = {
+      listModels: async () => [],
+      // 生成に使えない種別を返して halt（settings）を立てさせる。chat は 1 度も呼ばれない。
+      ensureLoaded: async () => ({ ...model(), type: "embedding" }),
+      chat: async () => {
+        chatCalls += 1;
+        return chatResult("ok");
+      },
+    };
+    const executor = createExecutor(client, { queue, signal: controller.signal });
+
+    const first = await executor.execute(REQUEST, parse, 1000);
+    expect(first.ok).toBe(false);
+    if (first.ok) {
+      throw new Error("生成に使えない種別なのに成功している");
+    }
+    expect(first.halt?.reason).toBe("settings");
+
+    // 先行ジョブでキューを塞いだうえで、halt を持ったまま 2 度目の execute を停止させる。
+    const gateA = deferred<void>();
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+    const second = executor.execute(REQUEST, parse, 1000);
+    const observed = watch(second);
+    controller.abort();
+    await flushMicrotasks();
+
+    expect(observed.settled()).toBe(true);
+    const outcome = await second;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) {
+      throw new Error("停止したのに成功している");
+    }
+    // 保持している halt（settings）は上書きしない。文言も runOne 冒頭と同じ 2 分岐にする。
+    expect(outcome.halt?.reason).toBe("settings");
+    expect(outcome.failure.message).toBe("実行が停止済みのため生成要求を送らなかった");
+    expect(chatCalls).toBe(0);
 
     gateA.resolve();
     await jobA;

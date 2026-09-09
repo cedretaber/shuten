@@ -31,6 +31,9 @@ const RUN_TRANSITIONS: ReadonlyArray<readonly [RunStatus, RunStatus]> = [
  * あり、そのとき 1 度も実行していない再確認単位を起票し直せないと再確認が永久に行われない。
  * `disabled`（実行ごとに固定）と `unlocated`（位置特定の結果は変わらない）は戻さないが、
  * その区別は理由列を見る `reopenSuppressedRecheckUnit` の側で行う（この表は状態しか見ない）。
+ * したがって `not-applicable → pending` は「表には有るが専用の入口
+ * （`transitions.ts` の `reopenSuppressedRecheckUnitChecked`）からしか通せない」遷移である。
+ * 汎用の `claimRecheckUnitChecked` / `finishRecheckUnitChecked` は、表を引く前にこのペアを弾く。
  */
 const UNIT_TRANSITIONS: ReadonlyArray<readonly [UnitStatus, UnitStatus]> = [
   ["pending", "running"],

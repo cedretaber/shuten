@@ -566,6 +566,9 @@ describe("run/loop: 単位駆動ループ", () => {
   });
 
   it("O18: 再確認が無効な実行では、suppressed でも disabled でも pending に戻さない（決定 45-4）", async () => {
+    // 決定 11 の優先順位のもとでは「再確認が無効なのに理由が suppressed」の単位は作られない。
+    // ここで手で組み立てているのは、`recheckEnabled` の条件が防御として効いていることを
+    // 固定するためであり、この条件は不要ではない（`issueRechecks` の doc コメントを参照）。
     const { db } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
     const seeded = seedRun(db, {
@@ -599,6 +602,8 @@ describe("run/loop: 単位駆動ループ", () => {
   });
 
   it("O18: 位置特定に失敗した指摘の suppressed な単位は pending に戻さない（決定 45-4）", async () => {
+    // O18-3 と同じく、決定 11 のもとでは作られない状態を手で組み立てている。
+    // `locateStatus === "located"` の条件が防御として効いていることを固定する。
     const { db } = setupDb();
     insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
     const seeded = seedRun(db, {

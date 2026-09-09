@@ -7,6 +7,10 @@
  * リポジトリへそのまま委譲し、戻り値（条件付き更新の成否 boolean）をそのまま返す。
  *
  * 表にない遷移では **DB を 1 行も触らない**（リポジトリの呼び出し自体を行わない）。
+`not-applicable → pending`（決定 45-4）だけは「表には有るが専用の入口
+（`reopenSuppressedRecheckUnitChecked`）からしか通せない」遷移で、汎用の
+`claimRecheckUnitChecked` / `finishRecheckUnitChecked` からは同じ例外で弾く。
+表は状態しか見ないため、理由列（`suppressed` か否か）の判断をここで補う必要があるためである。
  * オーケストレーター・ループ・`save.ts`・起動時照合は、リポジトリの `claim*` / `finish*` を
  * 直接呼ばず、必ずこの 7 関数を経由する（レビューの検査項目。W3 は Task 7 でテスト化する）。
  *
@@ -58,8 +62,24 @@ export function claimUnitChecked(
 }
 
 /**
+ * 遷移表には有るが、汎用の入口（`claimRecheckUnitChecked` / `finishRecheckUnitChecked`）からは
+ * 通さない 1 ペア（決定 45-4）。表は状態しか見ないので、`not-applicable → pending` を汎用の
+ * 入口に許すと理由列を問わず（`disabled` / `unlocated` でも）単位を復活させられてしまう。
+ * この遷移は理由列まで見る `reopenSuppressedRecheckUnitChecked` からのみ通す。
+ */
+function rejectReopenOutsideDedicatedEntry(from: UnitStatus, to: UnitStatus, id: string): void {
+  if (from === "not-applicable" && to === "pending") {
+    throw new InvalidTransitionError(
+      "再確認単位の遷移 not-applicable → pending は抑制の解除に限られます。" +
+        `reopenSuppressedRecheckUnitChecked を使ってください（再確認単位 ID: ${id}）`,
+    );
+  }
+}
+
+/**
  * 再確認単位の `claimRecheckUnit` を許容遷移表で検査してから呼ぶ。検査単位・再確認単位は
  * 同じ `UnitStatus` の表を共有する（決定 3）。表にない `from → to` は `InvalidTransitionError`。
+ * 表には有る `not-applicable → pending` も、ここからは通さない（決定 45-4。上の関数を参照）。
  */
 export function claimRecheckUnitChecked(
   db: AppDatabaseLike,
@@ -68,6 +88,7 @@ export function claimRecheckUnitChecked(
   to: UnitStatus,
   options?: { readonly startedAt?: Date },
 ): boolean {
+  rejectReopenOutsideDedicatedEntry(from, to, id);
   if (!canTransitionUnit(from, to)) {
     throw new InvalidTransitionError(
       `再確認単位の遷移 ${from} → ${to} は許容表にありません（再確認単位 ID: ${id}）`,
@@ -97,12 +118,14 @@ export function finishCheckUnitChecked(
 /**
  * 再確認単位の `finishRecheckUnit` を許容遷移表で検査してから呼ぶ。`expectedStatus → status` が
  * 表にない場合は `InvalidTransitionError`。
+ * 表には有る `not-applicable → pending` も、ここからは通さない（決定 45-4）。
  */
 export function finishRecheckUnitChecked(
   db: AppDatabaseLike,
   id: string,
   input: FinishRecheckUnitInput,
 ): boolean {
+  rejectReopenOutsideDedicatedEntry(input.expectedStatus, input.status, id);
   if (!canTransitionUnit(input.expectedStatus, input.status)) {
     throw new InvalidTransitionError(
       `再確認単位の遷移 ${input.expectedStatus} → ${input.status} は許容表にありません` +
