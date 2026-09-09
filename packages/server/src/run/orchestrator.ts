@@ -307,6 +307,12 @@ function collectRetryTargets(
       }
       checkUnitIds.push(id);
     } else {
+      // 再確認単位は `input-too-long` でも除外しない（検査単位との**意図的な非対称**）。
+      // 除外の理由は「上限超過だから」ではなく「`run_targets.input` が暫定値なので、そこから
+      // 入力を組み直すと参考文脈のない狭い入力になり、上限検査を素通りする」ことにある。
+      // 再確認の入力は毎回 `buildRecheckInput` で組み直す（保存された暫定値を使わない）ので、
+      // この危険が無い。再試行しても同じ上限超過を繰り返すだけで、黙って切り詰めた入力を
+      // 送ることにはならない。
       recheckUnitIds.push(id);
     }
   }
@@ -409,14 +415,26 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * 1. その時点で `running` の検査単位・再確認単位を `pending` に戻す。**戻さないと
    *    `resumeRun` が拾えない**（`claimUnitChecked(pending → running)` が 0 行になり、
    *    起動時照合は起動時にしか走らない）。`pending_note` は定型文。
-   * 2. 実行を `stopped`（`internal-error`）で終端化する。`stop_message` も定型文のみ。
+   * 2. 実行を終端化する。`stop_reason` は `internal-error`、`stop_message` は定型文のみ。
    *    例外のメッセージには接続先 URL・API キーだけでなく**原稿の断片**が混ざりうる
    *    （`run/persist.ts` の `PersistBoundaryError` は違反した引用の先頭 20 コード単位を持つ）。
+   *
+   *    終了状態は決定 23 の規則そのままで、**復旧ゲートがこの実行を掴んでいれば
+   *    `recovery-waiting`（`generation_unconfirmed = true`）**、そうでなければ `stopped` にする。
+   *    ゲートが閉じているのは executor が「生成が LM Studio 側で走り続けている可能性がある」と
+   *    判断した後だけで、その事実は後から起きた例外とは無関係に真である。ここで `stopped` に
+   *    してしまうと、ゲートを開けられるのは `recovery-waiting` の実行を claim できたときだけ
+   *    （決定 39）なので、**プロセス全体の送信が再起動まで止まる**。
+   *    「ゲートが閉じている ⟺ その実行は `recovery-waiting`」を不変条件として保つ。
    * 3. 単位の差し戻しと終端化は 1 トランザクションにする（片方だけ書けた状態を残さない）。
-   * 4. **この後始末自体が失敗することもある**（DB が原因の例外なら 1・2 も失敗する）。その場合も
-   *    握り、`done` は最後に読めた `RunRecord` で解決する（決定 24）。
+   * 4. **この後始末自体が失敗することもある**（DB が原因の例外なら 1・2 も、その後の読み直しも
+   *    失敗する）。その場合も握り、`done` は最後に読めた `RunRecord`（読めなければ引数）で
+   *    解決する。ここで例外を漏らすと `startLoop` の `catch` の中で投げることになり、
+   *    **`done` が reject する**（決定 24 の不変条件が破れる）。
    */
   function settleInternalError(run: RunRecord): RunRecord {
+    // 決定 39：ゲートがこの実行を掴んでいるか。DB に触れないので例外にならない。
+    const unconfirmed = deps.recoveryGate.blockedRunIds.has(run.id);
     try {
       const finishedAt = now();
       deps.db.transaction((tx) => {
@@ -461,10 +479,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
         finishRunChecked(tx, run.id, {
           expectedStatus: "running",
-          status: "stopped",
+          status: unconfirmed ? "recovery-waiting" : "stopped",
           stopReason: "internal-error",
           stopMessage: INTERNAL_ERROR_RUN_MESSAGE,
-          generationUnconfirmed: false,
+          generationUnconfirmed: unconfirmed,
           finishedAt,
         });
       });
@@ -472,7 +490,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // 決定 33 の 5：後始末の失敗も握る。`done` は下で読み直した値（読めなければ引数）で解決する。
     }
 
-    const current = findRun(deps.db, run.id) ?? run;
+    // 読み直しも try の中に入れる。`findRun` は「行が無い」を null で返すが、**DB そのものが
+    // 壊れていれば例外を投げる**。決定 33 の 5 が想定しているのはまさにその場合で、ここで
+    // 例外が漏れると `startLoop` の `catch` の中で投げることになり `done` が reject する。
+    let current = run;
+    try {
+      current = findRun(deps.db, run.id) ?? run;
+    } catch {
+      // 読み直せなければ、ループに入る前に読めた値（引数）をそのまま返す。
+    }
+
     // 決定 33 の 4：例外は `done` に載せず、`run-settled` で通知する。状態は DB の実際の値を
     // 載せる（後始末に失敗していれば `running` のままでありうる。嘘を通知しない）。
     emit(run.id, {
@@ -482,7 +509,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         reason: "internal-error",
         message: INTERNAL_ERROR_RUN_MESSAGE,
         failure: null,
-        generationUnconfirmed: false,
+        generationUnconfirmed: unconfirmed,
       },
     });
     return current;

@@ -142,6 +142,11 @@ describe("runStatusForStop", () => {
       expected: "stopped",
     },
     {
+      label: "internal-error：復旧ゲートが閉じている実行の想定外の例外",
+      stop: makeStop("internal-error", true),
+      expected: "recovery-waiting",
+    },
+    {
       label: "recovery-blocked：別の実行が復旧待ちのため送信ゲートに止められた",
       stop: makeStop("recovery-blocked", false),
       expected: "stopped",
@@ -155,8 +160,8 @@ describe("runStatusForStop", () => {
     },
   );
 
-  it("S6: 表が 10 行である（決定 23 の全行を網羅していることの保証）", () => {
-    expect(TABLE).toHaveLength(10);
+  it("S6: 表が 11 行である（決定 23 の全行を網羅していることの保証）", () => {
+    expect(TABLE).toHaveLength(11);
   });
 
   it("S6: connection-lost かつ generationUnconfirmed: true は stopped ではなく recovery-waiting（生成が LM Studio 側で走り続けている可能性があるため）", () => {

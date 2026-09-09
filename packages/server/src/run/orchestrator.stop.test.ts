@@ -618,8 +618,16 @@ describe("run/orchestrator: 停止要求が届いた場所で結果が変わる�
       expect(runB.generationUnconfirmed).toBe(false);
       expect(runB.stopRequestedAt).not.toBeNull();
       expect(harness.recoveryGate.blocked).toBe(false);
-      expect(unitsOf(harness.db, runB.id).every((unit) => unit.status === "pending")).toBe(true);
       expect(scripted.requests).toHaveLength(1);
+
+      // 決定 32：送信前に止めた単位（origin: "local"）は「生成終了は未確認」ではないので、
+      // 文言は失敗メッセージそのまま。`origin === "chat"` のガードを落とすとここが
+      // 「停止操作により打ち切った。生成終了は未確認」に化ける（送っていないのに未確認と記録する）。
+      const unitB = unitsOf(harness.db, runB.id)[0];
+      expect(unitB?.status).toBe("pending");
+      expect(unitB?.failure?.reason).toBe("aborted");
+      expect(unitB?.failure?.origin).toBe("local");
+      expect(unitB?.pendingNote).toBe("停止要求により生成要求を送らなかった");
     } finally {
       vi.useRealTimers();
     }
@@ -653,7 +661,12 @@ describe("run/orchestrator: 停止要求が届いた場所で結果が変わる�
       expect(run.generationUnconfirmed).toBe(false);
       expect(scripted.requests).toHaveLength(0);
       expect(harness.recoveryGate.blocked).toBe(false);
-      expect(unitsOf(harness.db, run.id).every((unit) => unit.status === "pending")).toBe(true);
+
+      // ここも送信前に止めた単位（origin: "local"）。決定 32 の文言にしてはならない。
+      const unit = unitsOf(harness.db, run.id)[0];
+      expect(unit?.status).toBe("pending");
+      expect(unit?.failure?.origin).toBe("local");
+      expect(unit?.pendingNote).toBe("停止要求により生成要求を送らなかった");
     } finally {
       vi.useRealTimers();
     }
@@ -1426,5 +1439,164 @@ describe("run/orchestrator: 想定外の例外（決定 33）", () => {
       status: "stopped",
       stopReason: "internal-error",
     });
+  });
+
+  /**
+   * 保存の直前（`saveCheckUnitOutcome` / `saveRecheckOutcome` に渡す `now()` の評価）で
+   * 1 度だけ投げる継ぎ目。`claim` で単位を `running` にした後・保存トランザクションを開く前に
+   * 抜けるので、「`running` の単位を残したまま想定外の例外で終わった」状況が作れる。
+   * 1 度だけにするのは、決定 33 の後始末自身（`settleInternalError` の `now()`）まで
+   * 巻き込むと後始末の成否が観測できなくなるため。
+   */
+  function throwOnceNow(armed: { value: boolean }): () => Date {
+    return () => {
+      if (armed.value) {
+        armed.value = false;
+        throw new PersistBoundaryError(
+          `位置確定済みの paragraphId が本文から導いた値と一致しません（引用: "${BODY.slice(0, 20)}"）`,
+        );
+      }
+      return new Date();
+    };
+  }
+
+  it("X2: 差し戻した単位は attempts・failure・elapsed_ms を保つ（決定 20：直前に何が起きたかは捨てない）", async () => {
+    const armed = { value: false };
+    const scripted = scriptedClient([
+      () => {
+        armed.value = true;
+        return checkResponse([]);
+      },
+    ]);
+    const harness = makeHarness(scripted.client, { now: throwOnceNow(armed) });
+    // 2 回失敗している単位を個別再試行すると、`running` になった時点でも
+    // attempts: 2・failure: malformed・elapsed_ms: 1 を持っている。
+    const seeded = seedRun(harness.db, {
+      runId: "run-x2-keep",
+      status: "partially-failed",
+      unitStatuses: ["failed"],
+    });
+
+    const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
+    const run = await retried.done;
+    expect(run.stopReason).toBe("internal-error");
+
+    const unit = unitsOf(harness.db, run.id)[0];
+    expect(unit?.status).toBe("pending");
+    expect(unit?.pendingNote).toBe("想定外のエラーで実行が中断した");
+    expect(unit?.attempts).toBe(2);
+    expect(unit?.failure?.reason).toBe("malformed");
+    expect(unit?.elapsedMs).toBe(1);
+  });
+
+  it("X2: 再確認単位も running のまま残らず pending に戻り、再開が拾える（決定 33 の 1）", async () => {
+    const armed = { value: false };
+    const scripted = scriptedClient([
+      () => {
+        armed.value = true;
+        return recheckResponse();
+      },
+      () => recheckResponse(),
+    ]);
+    const harness = makeHarness(scripted.client, { now: throwOnceNow(armed) });
+    const seeded = seedRun(harness.db, {
+      runId: "run-x2-recheck",
+      status: "stopped",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: true,
+    });
+    const { recheckUnitId } = seedRecheckUnit(harness.db, seeded, "pending");
+
+    const resumed = harness.orchestrator.resumeRun(seeded.run.id);
+    const run = await resumed.done;
+
+    expect(run.stopReason).toBe("internal-error");
+    const recheck = listRecheckUnits(harness.db, run.id).find((unit) => unit.id === recheckUnitId);
+    // running のまま残ると、再開の claimRecheckUnitChecked(pending → running) が 0 行になり
+    // この再確認は二度と拾われない（検査単位と同じ危険）。
+    expect(recheck?.status).toBe("pending");
+    expect(recheck?.pendingNote).toBe("想定外のエラーで実行が中断した");
+
+    const again = harness.orchestrator.resumeRun(run.id);
+    expect(again.accepted).toBe(true);
+    expect((await again.done).status).toBe("completed");
+    expect(
+      listRecheckUnits(harness.db, run.id).find((unit) => unit.id === recheckUnitId)?.status,
+    ).toBe("done");
+  });
+
+  it("A-1: 復旧ゲートが閉じている実行の想定外の例外は recovery-waiting で終端化し、再開でゲートが開く", async () => {
+    const armed = { value: false };
+    const scripted = scriptedClient([
+      () => {
+        // 生成中に応答を受け取れずに切断（executor が同期的にゲートを閉じる）。
+        armed.value = true;
+        throw connectionLost();
+      },
+      () => checkResponse([]),
+    ]);
+    const harness = makeHarness(scripted.client, { now: throwOnceNow(armed) });
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    const run = await started.done;
+
+    // 生成が未確認であることは、後から起きた例外とは無関係に真である（決定 23 の写像）。
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.stopReason).toBe("internal-error");
+    expect(run.generationUnconfirmed).toBe(true);
+    expect(run.stopMessage).toBe("想定外のエラーで実行を停止しました");
+    expect(harness.recoveryGate.blocked).toBe(true);
+
+    const settled = harness.events.filter((entry) => entry.event.type === "run-settled");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]?.event).toMatchObject({
+      status: "recovery-waiting",
+      stop: { reason: "internal-error", generationUnconfirmed: true },
+    });
+
+    // stopped にしていると resumeRun がゲートを開けず、プロセス全体の送信が止まったままになる。
+    const resumed = harness.orchestrator.resumeRun(run.id);
+    expect(resumed.accepted).toBe(true);
+    expect(harness.recoveryGate.blocked).toBe(false);
+    expect((await resumed.done).status).toBe("completed");
+    expect(scripted.requests).toHaveLength(2);
+  });
+
+  /**
+   * DB そのものが壊れた状況。`findRun` は「行が無い」を null で返すが、DB が壊れていれば
+   * **例外を投げる**。決定 33 の 5 が想定しているのはこの場合で、読み直しを握らないと
+   * `startLoop` の `catch` の中で投げることになり `done` が reject する。
+   */
+  function breakableDb(db: Db, broken: { value: boolean }): Db {
+    const failing = ["select", "insert", "update", "delete", "transaction"];
+    return new Proxy(db, {
+      get(target, property, receiver): unknown {
+        if (broken.value && typeof property === "string" && failing.includes(property)) {
+          return () => {
+            throw new Error("DB が壊れた（テスト用）");
+          };
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  it("S-1: 後始末（単位の差し戻し・終端化・読み直し）が全部失敗しても done は reject しない（決定 33 の 5）", async () => {
+    const broken = { value: false };
+    const scripted = scriptedClient([
+      () => {
+        broken.value = true;
+        return checkResponse([]);
+      },
+    ]);
+    const db = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const harness = makeHarness(scripted.client, { db: breakableDb(db, broken) });
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+
+    // 保存も、決定 33 の後始末も、その後の読み直しも例外になる。
+    await expect(started.done).resolves.toMatchObject({ id: started.run.id });
+    // 読み直せなかったので、ループに入る前に読めた値（開始直後のレコード）で解決する。
+    expect((await started.done).status).toBe("running");
   });
 });

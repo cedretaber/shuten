@@ -1305,7 +1305,7 @@ describe("W3: ループ・save・orchestrator はリポジトリの claim* / fin
     const expected: Record<(typeof TARGET_FILES)[number], readonly string[]> = {
       "loop.ts": ["findCheckUnit", "listCandidateSourcesForFinding", "findRecheckUnitByFinding"],
       "save.ts": ["nextCandidateIndex", "insertRecheckUnit", "updateRunModelInfo"],
-      "orchestrator.ts": ["insertCheckUnit", "findManuscriptVersion", "findRun"],
+      "orchestrator.ts": ["findCheckUnit", "findManuscriptVersion", "findRecheckUnit", "findRun"],
     };
     for (const file of TARGET_FILES) {
       const source = readFileSync(path.resolve(import.meta.dirname, file), "utf8");
