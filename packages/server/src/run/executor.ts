@@ -8,6 +8,7 @@ import type {
   Usage,
 } from "../lmstudio/types.ts";
 import type { RequestQueue } from "./queue.ts";
+import type { RecoveryGate } from "./recovery-gate.ts";
 import type { RunStop, StopReason, UnitFailure } from "./result.ts";
 
 export type ExecOutcome<T> =
@@ -68,6 +69,19 @@ export interface ExecutorOptions {
    * この executor 内だけの直列化になる（`runPipeline` は渡さない）。
    */
   readonly queue?: RequestQueue | undefined;
+  /**
+   * 渡すと `runOne` の先頭（キューの順番が回ってきた時点。既存の `halt` 検査と同じ場所）で
+   * `gate.blocked` を見る。真なら `ensureLoaded` も `chat` も呼ばずに、停止理由
+   * `recovery-blocked`（決定 39）で止める。省略時は従来どおり動く（`runPipeline` / CLI は渡さない）。
+   */
+  readonly recoveryGate?: RecoveryGate | undefined;
+  /**
+   * `generationUnconfirmed: true` の `halt` を返す直前に同期的に呼ぶ（決定 39）。
+   * オーケストレーターはここで `recoveryGate.block(runId)` する。共有キューは前のジョブの
+   * Promise が解決した直後に次のジョブを始めるため、非同期に閉じると次の実行の要求が
+   * すり抜けるので、必ず同期的に呼ぶ。
+   */
+  readonly onRecoveryRequired?: (() => void) | undefined;
 }
 
 /**
@@ -188,6 +202,8 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
   const signal = options.signal;
   const now = options.now ?? Date.now;
   const queue = options.queue;
+  const recoveryGate = options.recoveryGate;
+  const onRecoveryRequired = options.onRecoveryRequired;
 
   let halt: RunStop | null = null;
   let requestCount = 0;
@@ -211,6 +227,18 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     };
   }
 
+  /**
+   * `runOne` の戻り値を返す直前に必ず通す。決定 39：`generationUnconfirmed: true` の `halt` を
+   * 返そうとしているときだけ、同期的に `onRecoveryRequired` を呼ぶ。呼び出し元の `block` は
+   * 冪等なので、複数の返り値がこの条件を満たしても害はない。
+   */
+  function finish<T>(outcome: ExecOutcome<T>): ExecOutcome<T> {
+    if (!outcome.ok && outcome.halt !== null && outcome.halt.generationUnconfirmed) {
+      onRecoveryRequired?.();
+    }
+    return outcome;
+  }
+
   async function runOne<T>(
     request: ChatRequest,
     parse: (result: ChatResult) => T,
@@ -221,11 +249,21 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
 
     // 順番が回ってきた時点で門を確認する。保持している halt は上書きしない。
     if (halt !== null) {
-      return blocked(halt, "実行が停止済みのため生成要求を送らなかった", startedAt);
+      return finish(blocked(halt, "実行が停止済みのため生成要求を送らなかった", startedAt));
     }
     if (isAborted(signal)) {
       halt = makeStop("aborted", "停止要求により実行を停止した", null, false);
-      return blocked(halt, "停止要求により生成要求を送らなかった", startedAt);
+      return finish(blocked(halt, "停止要求により生成要求を送らなかった", startedAt));
+    }
+    if (recoveryGate?.blocked === true) {
+      // 決定 39：別の実行が復旧待ちの間は、この実行も含めてプロセス全体で新しい生成要求を
+      // 送らない。ensureLoaded も chat も呼ばない。この実行自体は 1 度も送っていないので
+      // generationUnconfirmed は false のまま（単位は pending に残り、復旧が確認できれば
+      // ゲートが開いて再開できる）。
+      const message = "別の実行が復旧待ちのため生成要求を送らなかった";
+      const failure = notSentFailure(message);
+      halt = makeStop("recovery-blocked", "別の実行が復旧待ちのため実行を停止した", failure, false);
+      return finish(blocked(halt, message, startedAt));
     }
 
     let attempts = 0;
@@ -247,14 +285,14 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
         const failure = toFailure(error, "ensure-loaded");
         const stop = haltForEnsureLoadedError(error, failure);
         halt ??= stop;
-        return {
+        return finish({
           ok: false,
           attempts,
           failure,
           usage: lastUsage,
           elapsedMs: now() - startedAt,
           halt,
-        };
+        });
       }
       firstModelInfo ??= modelInfo;
 
@@ -274,27 +312,27 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
           failure,
           false,
         );
-        return {
+        return finish({
           ok: false,
           attempts,
           failure,
           usage: lastUsage,
           elapsedMs: now() - startedAt,
           halt,
-        };
+        });
       }
 
       // ensureLoaded を待つ間に中断されていたら送らない（送っていないので未確認にしない）。
       if (isAborted(signal)) {
         halt ??= makeStop("aborted", "停止要求により実行を停止した", null, false);
-        return {
+        return finish({
           ok: false,
           attempts,
           failure: notSentFailure("停止要求により生成要求を送らなかった"),
           usage: lastUsage,
           elapsedMs: now() - startedAt,
           halt,
-        };
+        });
       }
 
       let error: LmStudioError;
@@ -346,14 +384,14 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
         if (isAborted(signal)) {
           const failure = toFailure(error, "chat");
           halt ??= makeStop("aborted", "停止要求により再試行を送らなかった", failure, false);
-          return {
+          return finish({
             ok: false,
             attempts,
             failure,
             usage: lastUsage,
             elapsedMs: now() - startedAt,
             halt,
-          };
+          });
         }
         retried = true;
         continue;
@@ -363,14 +401,14 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
       if (stop !== null) {
         halt ??= stop;
       }
-      return {
+      return finish({
         ok: false,
         attempts,
         failure,
         usage: lastUsage,
         elapsedMs: now() - startedAt,
         halt,
-      };
+      });
     }
   }
 

@@ -9,6 +9,7 @@ import type {
   Usage,
 } from "../lmstudio/types.ts";
 import { createExecutor } from "./executor.ts";
+import type { RecoveryGate } from "./recovery-gate.ts";
 
 const REQUEST: ChatRequest = {
   model: "test-model",
@@ -82,6 +83,16 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+/** `blocked` を差し替えられる最小限の RecoveryGate スタブ。block/unblock は使わない。 */
+function stubRecoveryGate(blocked: boolean): RecoveryGate {
+  return {
+    blockedRunIds: new Set(blocked ? ["other-run"] : []),
+    blocked,
+    block: vi.fn(),
+    unblock: vi.fn(),
+  };
 }
 
 describe("createExecutor", () => {
@@ -657,5 +668,90 @@ describe("createExecutor", () => {
     // ここで onSend/onSettled が呼ばれてしまうため落ちる。
     expect(onSend).not.toHaveBeenCalled();
     expect(onSettled).not.toHaveBeenCalled();
+  });
+
+  it("R8: recoveryGate.blocked が真なら、ensureLoaded も chat も呼ばず recovery-blocked で止める（決定 39）", async () => {
+    const client = createMockClient({});
+    const recoveryGate = stubRecoveryGate(true);
+    const executor = createExecutor(client, { now: createClock(), recoveryGate });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.ensureLoaded).not.toHaveBeenCalled();
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.halt?.reason).toBe("recovery-blocked");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+  });
+
+  it("R9: recoveryGate を渡しても blocked が偽なら、従来どおり ensureLoaded → chat の順で呼ぶ", async () => {
+    const calls: string[] = [];
+    const client = createMockClient({ calls });
+    const recoveryGate = stubRecoveryGate(false);
+    const executor = createExecutor(client, { now: createClock(), recoveryGate });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toEqual(["ensureLoaded", "chat"]);
+  });
+
+  it("R10: generationUnconfirmed: true の halt を返す直前に onRecoveryRequired が同期的に呼ばれる（決定 39）", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const events: string[] = [];
+    const onRecoveryRequired = vi.fn(() => {
+      events.push("onRecoveryRequired");
+    });
+    const executor = createExecutor(client, { now: createClock(), onRecoveryRequired });
+
+    // execute() が返す Promise の resolve 側 .then() で 'resolved' を記録する。この .then() の
+    // コールバックは、execute() 内部（executor 側）の処理がすべて終わって Promise が解決した
+    // "あとで" マイクロタスクとして実行されるので、onRecoveryRequired が同期的に（return の
+    // 直前に）呼ばれていれば、必ず 'onRecoveryRequired' → 'resolved' の順になる。
+    // 非同期（setTimeout などマクロタスク）で呼ぶ実装に変異させると、この順序が崩れて落ちる。
+    const outcome = await executor.execute(REQUEST, parse, 1000).then((result) => {
+      events.push("resolved");
+      return result;
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.halt?.generationUnconfirmed).toBe(true);
+    expect(onRecoveryRequired).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["onRecoveryRequired", "resolved"]);
+  });
+
+  it("R11: generationUnconfirmed: false の halt では onRecoveryRequired を呼ばない", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("model-not-loaded", "アンロードされた");
+      },
+    });
+    const onRecoveryRequired = vi.fn();
+    const executor = createExecutor(client, { now: createClock(), onRecoveryRequired });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(onRecoveryRequired).not.toHaveBeenCalled();
+  });
+
+  it("R12: recoveryGate も onRecoveryRequired も渡さなければ従来どおり動く（E1 の非退行）", async () => {
+    const calls: string[] = [];
+    const client = createMockClient({ calls });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toEqual(["ensureLoaded", "chat"]);
   });
 });
