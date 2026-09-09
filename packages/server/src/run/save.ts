@@ -123,6 +123,7 @@ function saveUnlocated(
     searchRange: target.input,
     locate: candidate.locate,
     candidateId: candidate.id,
+    createdAt: now,
   });
 
   if (result.finding === null) {
@@ -272,14 +273,16 @@ function toFinishCheckUnitInput(
     };
   }
   // pending：CheckUnitResult の pending は failure / usage / inputGraphemes / elapsedMs を
-  // 持たない（result.ts）。usage / elapsedMs は取れていれば outcome 側（executor.execute が
-  // 計測した値）を使う。failure は「未完了の理由」であって「失敗」ではないので null にする
-  // （pending_note に理由の文言が入る。決定 20）。
+  // 持たない（result.ts）が、決定 20 は「pending にしても失敗の事実は捨てない」と定める
+  // （failure_reason / failure_message / failure_origin / attempts / elapsed_ms を同じ更新で
+  // 保存する）。この失敗の記録は `CheckUnitOutcome.failure`（トップレベル。pending でも
+  // 非 null になりうる）に別途保持されているので、そちらから書く。usage / elapsedMs も同じ理由
+  // で outcome 側（executor.execute が計測した値）を使う。
   return {
     expectedStatus: "running",
     status: "pending",
     attempts,
-    failure: null,
+    failure: outcome.failure !== null ? toFailureRecord(outcome.failure) : null,
     pendingNote: result.note,
     usage: outcome.usage,
     inputGraphemes: null,
@@ -369,6 +372,8 @@ function toFinishRecheckUnitInput(
       inputGraphemes: result.inputGraphemes,
       elapsedMs: result.elapsedMs,
       finishedAt,
+      // 実際に生成要求へ送った入力範囲（I6）。`done` では必ず非 null（result.ts）。
+      inputRange: result.inputRange,
     };
   }
   if (result.status === "failed") {
@@ -387,15 +392,19 @@ function toFinishRecheckUnitInput(
       inputGraphemes: null,
       elapsedMs: result.elapsedMs,
       finishedAt,
+      // `buildRecheckInput` が InputTooLongError で送信前に終わったときは null（result.ts）。
+      inputRange: result.inputRange,
     };
   }
   // pending：RecheckResult の pending は failure / usage / inputGraphemes / elapsedMs を
-  // 持たない（result.ts）。saveCheckUnitOutcome の pending 分岐と同じ理由で outcome 側の値を使う。
+  // 持たない（result.ts）が、決定 20 は pending でも失敗の事実を捨てないと定める
+  // （saveCheckUnitOutcome の pending 分岐と同じ理由）。failure / usage / elapsedMs は
+  // outcome 側（トップレベル。pending でも取れていれば入る）の値を使う。
   return {
     expectedStatus: "running",
     status: "pending",
     attempts,
-    failure: null,
+    failure: outcome.failure !== null ? toFailureRecord(outcome.failure) : null,
     pendingNote: result.note,
     notApplicableReason: null,
     verdict: null,
@@ -406,5 +415,7 @@ function toFinishRecheckUnitInput(
     inputGraphemes: null,
     elapsedMs: outcome.elapsedMs,
     finishedAt,
+    // 入力を組み立てる前に終わっていれば null（result.ts）。
+    inputRange: result.inputRange,
   };
 }

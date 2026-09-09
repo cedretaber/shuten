@@ -33,8 +33,9 @@ import {
   listRecheckUnits,
 } from "../db/repositories/rechecks.ts";
 import { findRun, insertRun, insertRunTarget } from "../db/repositories/runs.ts";
-import type { ModelInfo } from "../lmstudio/types.ts";
+import type { ModelInfo, Usage } from "../lmstudio/types.ts";
 import { PersistBoundaryError } from "./persist.ts";
+import type { UnitFailure } from "./result.ts";
 import type { SaveCheckUnitInput } from "./save.ts";
 import { saveCheckUnitOutcome, saveRecheckOutcome } from "./save.ts";
 import {
@@ -44,6 +45,13 @@ import {
   finishRecheckUnitChecked,
 } from "./transitions.ts";
 import type { CheckUnitOutcome, RecheckUnitOutcome } from "./units.ts";
+
+const USAGE: Usage = {
+  promptTokens: 10,
+  completionTokens: 5,
+  totalTokens: 15,
+  reasoningTokens: null,
+};
 
 // 単一段落（改行なし）の本文。merge-store.test.ts と同じ組み立て方。
 const BODY = "あいうえおかきくけこAねこB";
@@ -218,6 +226,116 @@ function makeCheckUnitOutcome(
     halt: null,
     elapsedMs: 100,
     usage: null,
+  };
+}
+
+/** テスト用の `UnitFailure`（`run/result.ts`）を組み立てる。既定は `timeout` / `chat` 由来。 */
+function makeUnitFailure(overrides: Partial<UnitFailure> = {}): UnitFailure {
+  return {
+    reason: "timeout",
+    message: "応答がタイムアウトした",
+    finishReason: null,
+    origin: "chat",
+    ...overrides,
+  };
+}
+
+/**
+ * `status: "pending"` の `CheckUnitOutcome` を組み立てる。決定 20：`pending` にしても
+ * `failure_*`（`failure_reason` / `failure_message` / `failure_origin`）は捨てない。
+ * `CheckUnitResult.pending` 自体は `failure` を持たないため、トップレベルの `outcome.failure`
+ * （`run/units.ts` のコメントどおり「pending でも非 null になりうる」）に持たせる。
+ */
+function makePendingCheckOutcome(
+  overrides: {
+    readonly attempts?: number;
+    readonly note?: string;
+    readonly failure?: UnitFailure | null;
+    readonly elapsedMs?: number;
+    readonly usage?: Usage | null;
+  } = {},
+): CheckUnitOutcome {
+  const failure = overrides.failure === undefined ? makeUnitFailure() : overrides.failure;
+  return {
+    unit: {
+      status: "pending",
+      targetIndex: 0,
+      perspective: "typo",
+      attempts: overrides.attempts ?? 1,
+      note: overrides.note ?? "応答が上限内に届かなかった。生成終了は未確認",
+    },
+    candidates: [],
+    failure,
+    halt: null,
+    elapsedMs: overrides.elapsedMs ?? 50,
+    usage: overrides.usage ?? null,
+  };
+}
+
+/** `status: "failed"` の `CheckUnitOutcome` を組み立てる。 */
+function makeFailedCheckOutcome(
+  overrides: {
+    readonly attempts?: number;
+    readonly failure?: UnitFailure;
+    readonly usage?: Usage | null;
+    readonly inputGraphemes?: number;
+    readonly elapsedMs?: number;
+  } = {},
+): CheckUnitOutcome {
+  const failure =
+    overrides.failure ??
+    makeUnitFailure({ reason: "malformed", message: "JSON として解析できなかった" });
+  const elapsedMs = overrides.elapsedMs ?? 80;
+  const usage = overrides.usage ?? null;
+  return {
+    unit: {
+      status: "failed",
+      targetIndex: 0,
+      perspective: "typo",
+      attempts: overrides.attempts ?? 1,
+      failure,
+      usage,
+      inputGraphemes: overrides.inputGraphemes ?? 42,
+      elapsedMs,
+    },
+    candidates: [],
+    failure,
+    halt: null,
+    elapsedMs,
+    usage,
+  };
+}
+
+/** `status: "failed"` の `RecheckUnitOutcome` を組み立てる。 */
+function makeFailedRecheckOutcome(
+  overrides: {
+    readonly attempts?: number;
+    readonly failure?: UnitFailure;
+    readonly usage?: Usage | null;
+    readonly inputRange?: Range | null;
+    readonly elapsedMs?: number | null;
+  } = {},
+): RecheckUnitOutcome {
+  const failure =
+    overrides.failure ??
+    makeUnitFailure({ reason: "malformed", message: "JSON として解析できなかった" });
+  const usage = overrides.usage ?? null;
+  const inputRange =
+    overrides.inputRange === undefined ? { start: 0, end: BODY.length } : overrides.inputRange;
+  const elapsedMs = overrides.elapsedMs === undefined ? 321 : overrides.elapsedMs;
+  return {
+    result: {
+      status: "failed",
+      attempts: overrides.attempts ?? 1,
+      failure,
+      usage,
+      inputRange,
+      elapsedMs,
+    },
+    failure,
+    halt: null,
+    elapsedMs: elapsedMs ?? 0,
+    usage,
   };
 }
 
@@ -487,6 +605,62 @@ describe("saveCheckUnitOutcome", () => {
     close();
   });
 
+  it("I1: pending でも failure_* と pending_note の両方を保存する（決定 20）", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupRun(db, "r1", "t1");
+    const unit = setupRunningCheckUnit(db, run.id, target.id, "cu1", 1);
+
+    const failure = makeUnitFailure({
+      reason: "timeout",
+      message: "応答が上限内に届かなかった",
+    });
+    const outcome = makePendingCheckOutcome({
+      attempts: 1,
+      note: "応答が上限内に届かなかった。生成終了は未確認",
+      failure,
+      elapsedMs: 12345,
+    });
+    const result = saveCheckUnitOutcome(db, baseInput({ run, target, unit, outcome }));
+
+    expect(result.rolledBack).toBe(false);
+    const saved = findCheckUnit(db, "cu1");
+    expect(saved?.status).toBe("pending");
+    expect(saved?.pendingNote).toBe("応答が上限内に届かなかった。生成終了は未確認");
+    // attempts は累積（決定 41）：既存 1 + 今回 1 = 2。
+    expect(saved?.attempts).toBe(2);
+    // 決定 20：pending にしても failure の事実は捨てない。
+    expect(saved?.failure).toEqual(failure);
+    expect(saved?.elapsedMs).toBe(12345);
+    close();
+  });
+
+  it("I2: failed の保存で failure_* / usage / inputGraphemes / elapsedMs が書かれる", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupRun(db, "r1", "t1");
+    const unit = setupRunningCheckUnit(db, run.id, target.id, "cu1");
+
+    const failure = makeUnitFailure({
+      reason: "malformed",
+      message: "応答が JSON として解析できなかった",
+    });
+    const outcome = makeFailedCheckOutcome({
+      failure,
+      usage: USAGE,
+      inputGraphemes: 42,
+      elapsedMs: 999,
+    });
+    const result = saveCheckUnitOutcome(db, baseInput({ run, target, unit, outcome }));
+
+    expect(result.rolledBack).toBe(false);
+    const saved = findCheckUnit(db, "cu1");
+    expect(saved?.status).toBe("failed");
+    expect(saved?.failure).toEqual(failure);
+    expect(saved?.usage).toEqual(USAGE);
+    expect(saved?.inputGraphemes).toBe(42);
+    expect(saved?.elapsedMs).toBe(999);
+    close();
+  });
+
   it("位置特定失敗（not-found）で指摘ができたら not-applicable(unlocated) の再確認単位を作る（recheckEnabled: true）", () => {
     const { db, close } = setupDb();
     const { run, target } = setupRun(db, "r1", "t1", { recheckEnabled: true });
@@ -596,13 +770,17 @@ describe("saveCheckUnitOutcome", () => {
 });
 
 describe("saveRecheckOutcome", () => {
-  /** 位置確定済みの指摘を 1 件作り、再確認単位（`pending`、外部から `running` へ claim 済み）を用意する。 */
+  /**
+   * 位置確定済みの指摘を 1 件作り、再確認単位（`pending`、外部から `running` へ claim 済み）を
+   * 用意する。`attempts` は claim 前の累計値（決定 41。既定 0）。
+   */
   function setupPendingRecheckUnit(
     db: ReturnType<typeof setupDb>["db"],
     run: RunRecord,
     target: RunTargetRecord,
     checkUnitId: string,
     recheckUnitId: string,
+    attempts = 0,
   ): RecheckUnitRecord {
     const unit = setupRunningCheckUnit(db, run.id, target.id, checkUnitId);
     const outcome = makeCheckUnitOutcome({
@@ -620,7 +798,7 @@ describe("saveRecheckOutcome", () => {
       inputRange: null,
       status: "pending",
       notApplicableReason: null,
-      attempts: 0,
+      attempts,
       failure: null,
       pendingNote: null,
       verdict: null,
@@ -680,8 +858,114 @@ describe("saveRecheckOutcome", () => {
     expect(saved?.verdict).toBe("keep");
     expect(saved?.reasonKind).toBe("error-confirmed");
     expect(saved?.suggestionValid).toBe(true);
+    // I6：実際に生成要求へ送った入力範囲が保存されること。
+    expect(saved?.inputRange).toEqual({ start: 0, end: BODY.length });
     close();
   });
+
+  it("I2: 再確認の failed 保存で failure_* / usage / inputRange / elapsedMs が書かれる", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupRun(db, "r1", "t1");
+    const recheckUnit = setupPendingRecheckUnit(db, run, target, "cu1", "rc1");
+
+    const failure = makeUnitFailure({
+      reason: "malformed",
+      message: "応答が JSON として解析できなかった",
+    });
+    const inputRange = { start: 0, end: BODY.length };
+    const outcome = makeFailedRecheckOutcome({
+      failure,
+      usage: USAGE,
+      inputRange,
+      elapsedMs: 321,
+    });
+
+    const result = saveRecheckOutcome(db, {
+      run,
+      unit: recheckUnit,
+      outcome,
+      now: new Date("2026-09-09T00:00:00.000Z"),
+    });
+
+    expect(result.rolledBack).toBe(false);
+    const saved = findRecheckUnitByFinding(db, recheckUnit.findingId);
+    expect(saved?.status).toBe("failed");
+    expect(saved?.failure).toEqual(failure);
+    expect(saved?.usage).toEqual(USAGE);
+    // I6：入力を組み立てた後の失敗でも入力範囲は残る。
+    expect(saved?.inputRange).toEqual(inputRange);
+    expect(saved?.elapsedMs).toBe(321);
+    close();
+  });
+
+  it("I3: 再確認の attempts も実行をまたいで累積する", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupRun(db, "r1", "t1");
+    // 最初の実行で 2 要求送って failed になった、という前提。
+    const recheckUnit = setupPendingRecheckUnit(db, run, target, "cu1", "rc1", 2);
+
+    const outcome: RecheckUnitOutcome = {
+      result: {
+        status: "done",
+        attempts: 1,
+        output: {
+          reason: "検討の結果、指摘は妥当",
+          reasonKind: "error-confirmed",
+          verdict: "keep",
+          suggestionValid: true,
+        },
+        usage: null,
+        inputRange: { start: 0, end: BODY.length },
+        inputGraphemes: 10,
+        elapsedMs: 200,
+      },
+      failure: null,
+      halt: null,
+      elapsedMs: 200,
+      usage: null,
+    };
+
+    const result = saveRecheckOutcome(db, {
+      run,
+      unit: recheckUnit,
+      outcome,
+      now: new Date("2026-09-09T00:00:00.000Z"),
+    });
+
+    expect(result.rolledBack).toBe(false);
+    // attempts は累積（決定 41）：既存 2 + 今回 1 = 3。
+    expect(findRecheckUnitByFinding(db, recheckUnit.findingId)?.attempts).toBe(3);
+    close();
+  });
+
+  it.each(["disabled", "suppressed"] as const)(
+    "I4: outcome.result.status が %s のとき saveRecheckOutcome は例外を投げ、DB には触れない（running → not-applicable は許容表に無い）",
+    (status) => {
+      const { db, close } = setupDb();
+      const { run, target } = setupRun(db, "r1", "t1");
+      const recheckUnit = setupPendingRecheckUnit(db, run, target, "cu1", "rc1");
+
+      const outcome: RecheckUnitOutcome = {
+        result: { status },
+        failure: null,
+        halt: null,
+        elapsedMs: 0,
+        usage: null,
+      };
+
+      expect(() =>
+        saveRecheckOutcome(db, {
+          run,
+          unit: recheckUnit,
+          outcome,
+          now: new Date("2026-09-09T00:00:00.000Z"),
+        }),
+      ).toThrow();
+      // DB には一切触れていない（running のまま）。
+      expect(findRecheckUnitByFinding(db, recheckUnit.findingId)?.status).toBe("running");
+      close();
+    },
+  );
 
   it("finishRecheckUnit が 0 行を返す状況では rolledBack: true が返る", () => {
     const { db, close } = setupDb();

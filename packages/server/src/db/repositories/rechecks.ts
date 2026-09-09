@@ -222,6 +222,13 @@ export interface FinishRecheckUnitInput {
   readonly inputGraphemes: number | null;
   readonly elapsedMs: number | null;
   readonly finishedAt: Date;
+  /**
+   * 実際に生成要求へ送った入力範囲（PR9b の持ち越し。再確認単位は起票時（決定 34）にはまだ
+   * 入力範囲を持たないため、`insertRecheckUnit` ではなくここで書けるようにする）。
+   * 省略時（`undefined`）は列を変更しない（`options.startedAt` と同じ「明示的に渡さない限り
+   * 触らない」規約）。渡す場合は `null`（入力を組み立てる前に終わった）か `Range` のどちらか。
+   */
+  readonly inputRange?: Range | null;
 }
 
 /**
@@ -243,6 +250,12 @@ export function finishRecheckUnit(
   input: FinishRecheckUnitInput,
 ): boolean {
   const failureColumns = toFailureColumns(input.failure);
+  // `inputRange` を省略（undefined）したときは input_start / input_end に触れない
+  // （`claimRecheckUnit` の `options.startedAt` と同じ「明示的に渡さない限り列を変えない」規約）。
+  const inputRangeColumns =
+    input.inputRange === undefined
+      ? {}
+      : { inputStart: input.inputRange?.start ?? null, inputEnd: input.inputRange?.end ?? null };
   const result = db
     .update(recheckUnits)
     .set({
@@ -262,6 +275,7 @@ export function finishRecheckUnit(
       inputGraphemes: input.inputGraphemes,
       elapsedMs: input.elapsedMs,
       finishedAt: input.finishedAt,
+      ...inputRangeColumns,
     })
     .where(and(eq(recheckUnits.id, id), eq(recheckUnits.status, input.expectedStatus)))
     .run();
