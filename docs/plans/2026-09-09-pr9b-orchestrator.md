@@ -197,7 +197,8 @@ export function createStopGate(recoveryConfirmMs: number): StopGate;
   下の 3 経路の区別が崩れる。
 - 停止から実行の終了状態への写像は**自前で持たない**。決定 23 の表がそのまま成り立つ。
   - キュー待ち・`ensureLoaded` 中に `abort()` → executor は `origin: local` / `ensure-loaded`、
-    `generationUnconfirmed: false` を返す → `stopped`。
+    `generationUnconfirmed: false` を返す → `stopped`。**この決着が先行ジョブの解決を待たずに
+    起きること**は、決定 45-2 でキュー自身に取り消しを持たせて初めて成り立つようになった。
   - `chat` 中に `abort()` → `reason: aborted`、`generationUnconfirmed: true` → `recovery-waiting`。
   - 上限内に応答が届いた → 応答を保存し、ループが
     `{ reason: "aborted", message: "停止操作により実行を停止した", failure: null, generationUnconfirmed: false }`
@@ -423,7 +424,7 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 | 入口 | 受け付ける `runs.status` | 遷移 |
 | --- | --- | --- |
 | `resumeRun` | `stopped`（**`stop_reason` が `settings` のものを除く**）、`recovery-waiting` | → `running` |
-| `retryFailedUnits` | `partially-failed`、`stopped` | → `running`（その後 `failed` 単位を `pending` に） |
+| `retryFailedUnits` | `partially-failed`、`stopped`（版が現行と違えば拒否） | → `running`（その後 `failed` 単位を `pending` に） |
 | どちらも | `running`（実行中）、`completed` | 拒否。現在のレコードを返す（例外にしない。決定 12） |
 
 再開・再試行の `claimRunChecked(..., { clearStopState: true })` は、状態と同時に次を**1 文の
@@ -435,7 +436,8 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 - `stop_reason` / `stop_message` → null（前回の停止の記録。実行中の行に残すと画面が矛盾する。
   単位ごとの失敗（`check_units.failure_*`）は消さないので「何が起きたか」は失われない）
 
-**保存済みのプロンプト版が現行と違う実行は再開できない**（決定 45-1）。
+**保存済みの版（プロンプト版・許容語規則版・診断変換版）が現行と違う実行は、再開も再試行も
+できない**（決定 45-1）。関門は `resumeRun` と `retryFailedUnits` の両方にある。
 
 **`stop_reason` が `settings` の実行は再開できない**（最終レビューで判明した穴への対処）。
 `startRun` が決定 18・44 で作る `stopped(settings)` の実行（分割設定不正・タイムアウト設定不正・
@@ -749,6 +751,11 @@ executor はこの決着を、既存の「送信しなかった」経路（`bloc
   not_applicable_reason = 'suppressed'`）で `status` / `not_applicable_reason` / `finished_at` を
   同時に戻す。`claimRecheckUnitChecked` では `not_applicable_reason` が消えないため。
   状態を書く経路は `run/transitions.ts` のままにする。
+- **この 1 ペアだけは専用の入口からしか通せない。** 遷移表は状態しか見ないので、表に足しただけでは
+  理由列（`suppressed` か否か）を問わずに戻せてしまい、`disabled` / `unlocated` の単位まで復活させ
+  られる。汎用の `claimRecheckUnitChecked` / `finishRecheckUnitChecked` は表を引く前に
+  `not-applicable → pending` を `InvalidTransitionError` で弾き、`reopenSuppressedRecheckUnitChecked`
+  だけが通す。
 - **逆方向（`pending` の再確認単位に後から抑制が付く）は本 PR では入れない。** 到達はしうるが
   （起票時に 1 候補だけで、後から同分類の候補が加わって `notation` に揃う場合）、遷移
   （`pending → not-applicable`）は表にすでにあるので追加はいつでもでき、レビューも求めていない。
