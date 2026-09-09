@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatRequest, ChatResult } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
-import type { ExecOutcome, Executor } from "./executor.ts";
+import type { ExecOutcome, ExecuteHooks, Executor } from "./executor.ts";
 import type { RunStop, UnitFailure } from "./result.ts";
 import type { CheckUnitArgs, RecheckUnitArgs } from "./units.ts";
 import { executeCheckUnit, executeRecheckUnit, localFailure } from "./units.ts";
@@ -72,7 +72,12 @@ const ABORTED_CHAT_FAILURE: UnitFailure = {
   origin: "chat",
 };
 
-/** `executor.execute` を差し替えたフェイク。渡された `timeoutMs` を記録する。 */
+/**
+ * `executor.execute` を差し替えたフェイク。渡された `timeoutMs` を記録する。
+ * キュー待ちなし（`execute` が呼ばれたら即座に送信する）を模して、呼ばれた直後に
+ * `hooks.onSend` を、解決したら `hooks.onSettled` を呼ぶ（決定 27）。キュー待ちそのものを
+ * 検査したいテストは `createQueueAwareFakeExecutor` を使う。
+ */
 function createFakeExecutor<T>(resolve: (timeoutMs: number) => Promise<ExecOutcome<T>>): {
   readonly executor: Executor;
   readonly timeoutCalls: number[];
@@ -82,12 +87,83 @@ function createFakeExecutor<T>(resolve: (timeoutMs: number) => Promise<ExecOutco
     _request: ChatRequest,
     _parse: (result: ChatResult) => U,
     timeoutMs: number,
+    hooks?: ExecuteHooks,
   ): Promise<ExecOutcome<U>> {
     timeoutCalls.push(timeoutMs);
-    return resolve(timeoutMs) as unknown as Promise<ExecOutcome<U>>;
+    hooks?.onSend?.();
+    const result = resolve(timeoutMs) as unknown as Promise<ExecOutcome<U>>;
+    void result.finally(() => {
+      hooks?.onSettled?.();
+    });
+    return result;
   }
   return { executor: { execute, requestCount: 0, modelInfo: null }, timeoutCalls };
 }
+
+/**
+ * 共有キューでの順番待ちを模したフェイク executor（決定 27 の G1・G2 用）。
+ * `execute` が呼ばれてから `queueWaitMs` 経ってはじめて `hooks.onSend` を呼び、
+ * その直後に `resolve` の結果で解決して `hooks.onSettled` を呼ぶ。
+ * 「呼ばれた時点」と「実際に送信した時点」がずれることを、遅延通知のタイマーで確かめられる。
+ */
+function createQueueAwareFakeExecutor<T>(
+  resolve: () => Promise<ExecOutcome<T>>,
+  queueWaitMs: number,
+): { readonly executor: Executor } {
+  function execute<U>(
+    _request: ChatRequest,
+    _parse: (result: ChatResult) => U,
+    _timeoutMs: number,
+    hooks?: ExecuteHooks,
+  ): Promise<ExecOutcome<U>> {
+    return new Promise((res) => {
+      setTimeout(() => {
+        hooks?.onSend?.();
+        void (resolve() as unknown as Promise<ExecOutcome<U>>).then((outcome) => {
+          hooks?.onSettled?.();
+          res(outcome);
+        });
+      }, queueWaitMs);
+    });
+  }
+  return { executor: { execute, requestCount: 0, modelInfo: null } };
+}
+
+/** `execute` に渡された hooks を記録するフェイク executor（決定 27 の G3 用）。 */
+function createHookCapturingExecutor<T>(resolve: () => Promise<ExecOutcome<T>>): {
+  readonly executor: Executor;
+  readonly hooksCalls: (ExecuteHooks | undefined)[];
+} {
+  const hooksCalls: (ExecuteHooks | undefined)[] = [];
+  function execute<U>(
+    _request: ChatRequest,
+    _parse: (result: ChatResult) => U,
+    _timeoutMs: number,
+    hooks?: ExecuteHooks,
+  ): Promise<ExecOutcome<U>> {
+    hooksCalls.push(hooks);
+    return resolve() as unknown as Promise<ExecOutcome<U>>;
+  }
+  return { executor: { execute, requestCount: 0, modelInfo: null }, hooksCalls };
+}
+
+const RECHECK_DONE_OUTCOME: ExecOutcome<{
+  reason: string;
+  reasonKind: string;
+  verdict: string;
+  suggestionValid: boolean;
+}> = {
+  ok: true,
+  value: {
+    reason: "実在する誤字である",
+    reasonKind: "error-confirmed",
+    verdict: "keep",
+    suggestionValid: true,
+  },
+  attempts: 1,
+  usage: null,
+  elapsedMs: 0,
+};
 
 /** 外から解決できる Promise。フェイクタイマーで応答到着のタイミングを制御する。 */
 function deferred<T>(): {
@@ -242,6 +318,95 @@ describe("executeCheckUnit", () => {
     }
   });
 
+  it("G1: 共有キューでの順番待ちは checkMs の計測に含まれない（起点は実際の送信時点。決定 27）", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSlow = vi.fn();
+      // checkMs（1000ms）を超えるキュー待ち（1500ms）をさせてから送信させる。
+      const { executor } = createQueueAwareFakeExecutor(() => Promise.resolve(DONE_OUTCOME), 1500);
+
+      const outcomePromise = executeCheckUnit(
+        baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500, onSlow }),
+      );
+
+      // キュー待ち（1500ms）が checkMs（1000ms）を超えて進んでも、まだ送信していないので
+      // onSlow は呼ばれない（起点が executor.execute の呼び出し時点のままだと、ここで
+      // すでに 1 回呼ばれてしまう）。
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(onSlow).not.toHaveBeenCalled();
+      // 送信後の生成自体は速い（フェイク executor がすぐ解決する）ので、そのあと
+      // checkMs 分進めても onSlow は呼ばれない。
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const outcome = await outcomePromise;
+      expect(outcome.unit.status).toBe("done");
+      expect(onSlow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("G3: 再試行（2 回目の送信）では、2 回目の onSend から改めて checkMs を測り直す（決定 27）", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSlow = vi.fn();
+      const pending = deferred<ExecOutcome<{ findings: [] }>>();
+      // 1 回目の送信は t=0 で始まり、800ms（checkMs=1000ms 未満）で終わって
+      // 2 回目の送信に切り替わる。2 回目は pending のまま待たせる。
+      //
+      // 「onSend のたびに前のタイマーを解除してから張り直す」実装でないと区別できない
+      // 変異が 3 通りある。
+      //   (a) 呼び出し時（t=0）に一度だけ張って、以降 onSend で張り直さない
+      //       → 1 回目の onSend（t=0）由来のタイマーが t=1000 で発火してしまう。
+      //   (b) onSettled で解除はするが、次の onSend で張り直さない
+      //       → t=1800 になっても一切発火しない。
+      //   (c) onSend のたびに張るが、前のタイマーを解除しない
+      //       → 1 回目由来（t=1000 発火）と 2 回目由来（t=1800 発火）の両方が生き残り、
+      //         t=1000 で（本来鳴ってはいけないのに）1 回鳴ってしまう。
+      // 正しい実装では、2 回目の onSend（t=800）で 1 回目のタイマーを解除してから
+      // 新しいタイマー（t=800+1000=1800 発火）を張るので、t=1000 では鳴らず、
+      // t=1800 でちょうど 1 回だけ鳴る。
+      function execute<U>(
+        _request: ChatRequest,
+        _parse: (result: ChatResult) => U,
+        _timeoutMs: number,
+        hooks?: ExecuteHooks,
+      ): Promise<ExecOutcome<U>> {
+        hooks?.onSend?.();
+        return new Promise((res) => {
+          setTimeout(() => {
+            hooks?.onSettled?.();
+            hooks?.onSend?.();
+            void pending.promise.then((outcome) => {
+              hooks?.onSettled?.();
+              res(outcome as unknown as ExecOutcome<U>);
+            });
+          }, 800);
+        });
+      }
+      const executor: Executor = { execute, requestCount: 0, modelInfo: null };
+
+      const outcomePromise = executeCheckUnit(
+        baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500, onSlow }),
+      );
+
+      // t=800：1 回目が終わり、2 回目の onSend でタイマーが張り直された直後。
+      await vi.advanceTimersByTimeAsync(800);
+      expect(onSlow).not.toHaveBeenCalled();
+      // t=1000（1 回目由来のタイマーが張ったままなら、ここで鳴ってしまう）。
+      await vi.advanceTimersByTimeAsync(200);
+      expect(onSlow).not.toHaveBeenCalled();
+      // t=1800（2 回目の onSend から checkMs 経過。ここで初めて 1 回だけ鳴る）。
+      await vi.advanceTimersByTimeAsync(800);
+      expect(onSlow).toHaveBeenCalledTimes(1);
+
+      pending.resolve(DONE_OUTCOME);
+      await outcomePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("応答の指摘は位置確定され、候補として返る", async () => {
     const wireFinding = {
       paragraphId: 0,
@@ -389,7 +554,7 @@ describe("executeCheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("U6: chat 由来の timeout は recoveryConfirmMs === 0 なら unit.status が failed のまま（CLI・runPipeline の非退行）", async () => {
+  it("U6: treatUnconfirmedAsPending を渡さなければ chat 由来の timeout は failed のまま（CLI・runPipeline の非退行。決定 45-3）", async () => {
     const { executor } = createFakeExecutor(() =>
       Promise.resolve<ExecOutcome<{ findings: [] }>>({
         ok: false,
@@ -406,7 +571,10 @@ describe("executeCheckUnit", () => {
       }),
     );
 
-    const outcome = await executeCheckUnit(baseCheckArgs(executor, { recoveryConfirmMs: 0 }));
+    // 待機時間を設定していても、判別子（treatUnconfirmedAsPending）を渡さない限り failed。
+    const outcome = await executeCheckUnit(
+      baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500 }),
+    );
 
     expect(outcome.unit.status).toBe("failed");
     if (outcome.unit.status === "failed") {
@@ -418,7 +586,7 @@ describe("executeCheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("U7: chat 由来の timeout は recoveryConfirmMs > 0 なら unit.status が pending になり、失敗の事実は残る（決定 20）", async () => {
+  it("U7: treatUnconfirmedAsPending が true なら chat 由来の timeout は pending になり、失敗の事実は残る（決定 20・45-3）", async () => {
     const halt: RunStop = {
       reason: "recovery-needed",
       message: "生成要求がタイムアウトしたため実行を停止した",
@@ -436,8 +604,13 @@ describe("executeCheckUnit", () => {
       }),
     );
 
+    // 待機時間が 0 でも、判別子が true なら pending にする（決定 43 の 0 は正規の設定値）。
     const outcome = await executeCheckUnit(
-      baseCheckArgs(executor, { checkMs: 1000, recoveryConfirmMs: 500 }),
+      baseCheckArgs(executor, {
+        checkMs: 1000,
+        recoveryConfirmMs: 0,
+        treatUnconfirmedAsPending: true,
+      }),
     );
 
     expect(outcome.unit.status).toBe("pending");
@@ -451,6 +624,28 @@ describe("executeCheckUnit", () => {
     expect(outcome.halt).toEqual(halt);
     expect(outcome.elapsedMs).toBe(1500);
     expect(outcome.usage).toBeNull();
+  });
+
+  it("recoveryConfirmMs の値によらず、引数の onSend/onSettled が executor に届く（決定 27）", async () => {
+    for (const recoveryConfirmMs of [0, 500]) {
+      const onSend = vi.fn();
+      const onSettled = vi.fn();
+      const { executor, hooksCalls } = createHookCapturingExecutor(() =>
+        Promise.resolve(DONE_OUTCOME),
+      );
+
+      await executeCheckUnit(baseCheckArgs(executor, { recoveryConfirmMs, onSend, onSettled }));
+
+      expect(hooksCalls).toHaveLength(1);
+      const hooks = hooksCalls[0];
+      expect(hooks).not.toBeUndefined();
+      // recoveryConfirmMs <= 0 の早期 return でも、recoveryConfirmMs > 0 の合成でも、
+      // 呼び出し元の onSend/onSettled は最終的に executor まで届く。
+      hooks?.onSend?.();
+      hooks?.onSettled?.();
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(onSettled).toHaveBeenCalledTimes(1);
+    }
   });
 });
 
@@ -677,7 +872,7 @@ describe("executeRecheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("chat 由来の timeout は recoveryConfirmMs === 0 なら result.status が failed のまま（CLI・runPipeline の非退行）", async () => {
+  it("treatUnconfirmedAsPending を渡さなければ chat 由来の timeout は failed のまま（CLI・runPipeline の非退行。決定 45-3）", async () => {
     const { executor } = createFakeExecutor(() =>
       Promise.resolve<
         ExecOutcome<{
@@ -701,7 +896,9 @@ describe("executeRecheckUnit", () => {
       }),
     );
 
-    const outcome = await executeRecheckUnit(baseRecheckArgs(executor, { recoveryConfirmMs: 0 }));
+    const outcome = await executeRecheckUnit(
+      baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 250 }),
+    );
 
     expect(outcome.result.status).toBe("failed");
     if (outcome.result.status === "failed") {
@@ -713,7 +910,7 @@ describe("executeRecheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
-  it("chat 由来の timeout は recoveryConfirmMs > 0 なら result.status が pending になり、失敗の事実は残る（決定 20）", async () => {
+  it("treatUnconfirmedAsPending が true なら chat 由来の timeout は pending になり、失敗の事実は残る（決定 20・45-3）", async () => {
     const halt: RunStop = {
       reason: "recovery-needed",
       message: "生成要求がタイムアウトしたため実行を停止した",
@@ -739,7 +936,11 @@ describe("executeRecheckUnit", () => {
     );
 
     const outcome = await executeRecheckUnit(
-      baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 250 }),
+      baseRecheckArgs(executor, {
+        recheckMs: 1000,
+        recoveryConfirmMs: 0,
+        treatUnconfirmedAsPending: true,
+      }),
     );
 
     expect(outcome.result.status).toBe("pending");
@@ -753,6 +954,31 @@ describe("executeRecheckUnit", () => {
     expect(outcome.halt).toEqual(halt);
     expect(outcome.elapsedMs).toBe(1250);
     expect(outcome.usage).toBeNull();
+  });
+
+  it("G1 相当（recheck 版）: executeRecheckUnit でも、共有キューでの順番待ちは recheckMs の計測に含まれない（決定 27）", async () => {
+    vi.useFakeTimers();
+    try {
+      const onSlow = vi.fn();
+      const { executor } = createQueueAwareFakeExecutor(
+        () => Promise.resolve(RECHECK_DONE_OUTCOME),
+        1500,
+      );
+
+      const outcomePromise = executeRecheckUnit(
+        baseRecheckArgs(executor, { recheckMs: 1000, recoveryConfirmMs: 500, onSlow }),
+      );
+
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(onSlow).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const outcome = await outcomePromise;
+      expect(outcome.result.status).toBe("done");
+      expect(onSlow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("localFailure は origin: local の UnitFailure を作る", () => {

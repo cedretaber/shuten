@@ -145,7 +145,15 @@ export function createRequestQueue(): RequestQueue;
 | `pending` | `running` / `not-applicable` |
 | `running` | `done` / `failed` / `pending`（送らずに戻す） |
 | `failed` | `pending`（個別再試行） |
-| `done` / `not-applicable` | （終端。再試行でも戻さない） |
+| `not-applicable` | `pending`（**抑制の解除だけ**。決定 45-4） |
+| `done` | （終端。再試行でも戻さない） |
+
+`not-applicable` は原則として終端で、`disabled`（実行ごとに固定）と `unlocated`（位置特定の
+結果は変わらない）は戻さない。戻すのは `suppressed` の指摘の抑制が後から外れた場合だけで、
+これは 1 度も実行していない再確認単位を起票し直すのと同じ意味である（PR9b 計画書の決定 45-4）。
+表は状態しか見ないので、この 1 ペアだけは**専用の入口 `reopenSuppressedRecheckUnitChecked` から
+しか通せない**。汎用の `claim*Checked` / `finish*Checked` は表を引く前に
+`InvalidTransitionError` にする。
 
 `state.ts` は `canTransitionRun(from, to): boolean` と `canTransitionUnit(from, to): boolean` を公開し、
 遷移を書く経路はすべてこれを通す。**状態を書くのはオーケストレーターだけ**とし、停止要求は
@@ -638,6 +646,10 @@ DB とモックだけで完結する部品を作る。オーケストレータ�
 合成できない。
 
 ### PR9b：完成したオーケストレーター（`feat/pr9b-orchestrator`）
+
+**詳細計画は `docs/plans/2026-09-09-pr9b-orchestrator.md` にある**（決定 24 以降と Task 1〜10）。
+ファイルを分けたのは、SDD の `scripts/task-brief` が見出し `Task N` で本文を抽出するため、
+同じファイルに PR9a と PR9b の `Task 1` があると両方を拾ってしまうからである。
 
 1. **オーケストレーター（開始と実行）**：`startRun`（決定 18）、単位駆動ループ、決定 15 の保存
    トランザクション、位置特定失敗の再確認単位、再確認の発火条件（決定 19）、想定外例外

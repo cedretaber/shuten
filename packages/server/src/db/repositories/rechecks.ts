@@ -140,6 +140,19 @@ function rowToRecheckUnitRecord(row: typeof recheckUnits.$inferSelect): RecheckU
   };
 }
 
+/**
+ * 再確認単位を ID で 1 件探す。見つからなければ null。
+ * 個別再試行（決定 36）の対象検証が、渡された ID が `check_units` と `recheck_units` の
+ * どちらの表に属するかを引くために使う（`run_id` の一致も呼び出し側で確かめる）。
+ */
+export function findRecheckUnit(db: AppDatabaseLike, id: string): RecheckUnitRecord | null {
+  const row = db.select().from(recheckUnits).where(eq(recheckUnits.id, id)).get();
+  if (!row) {
+    return null;
+  }
+  return rowToRecheckUnitRecord(row);
+}
+
 /** 再確認単位を指摘 ID で 1 件探す。`finding_id` に一意制約があるため高々 1 件。見つからなければ null。 */
 export function findRecheckUnitByFinding(
   db: AppDatabaseLike,
@@ -203,6 +216,27 @@ export function claimRecheckUnit(
   return result.changes === 1;
 }
 
+/**
+ * 抑制が外れた再確認単位を `pending` に戻す（決定 45-4）。
+ * 条件付き更新（決定 5）：`not-applicable(suppressed)` のときだけ更新する。
+ * `claimRecheckUnit` では `not_applicable_reason` と `finished_at` が消えないため専用に用意する。
+ * `disabled`（実行ごとに固定）と `unlocated`（位置特定の結果は変わらない）は `WHERE` で弾く。
+ */
+export function reopenSuppressedRecheckUnit(db: AppDatabaseLike, id: string): boolean {
+  const result = db
+    .update(recheckUnits)
+    .set({ status: "pending", notApplicableReason: null, finishedAt: null })
+    .where(
+      and(
+        eq(recheckUnits.id, id),
+        eq(recheckUnits.status, "not-applicable"),
+        eq(recheckUnits.notApplicableReason, "suppressed"),
+      ),
+    )
+    .run();
+  return result.changes === 1;
+}
+
 /** `finishRecheckUnit` の入力。 */
 export interface FinishRecheckUnitInput {
   /** この値のときだけ更新する（決定 5・PR8 必須事項 2）。 */
@@ -222,6 +256,13 @@ export interface FinishRecheckUnitInput {
   readonly inputGraphemes: number | null;
   readonly elapsedMs: number | null;
   readonly finishedAt: Date;
+  /**
+   * 実際に生成要求へ送った入力範囲（PR9b の持ち越し。再確認単位は起票時（決定 34）にはまだ
+   * 入力範囲を持たないため、`insertRecheckUnit` ではなくここで書けるようにする）。
+   * 省略時（`undefined`）は列を変更しない（`options.startedAt` と同じ「明示的に渡さない限り
+   * 触らない」規約）。渡す場合は `null`（入力を組み立てる前に終わった）か `Range` のどちらか。
+   */
+  readonly inputRange?: Range | null;
 }
 
 /**
@@ -243,6 +284,12 @@ export function finishRecheckUnit(
   input: FinishRecheckUnitInput,
 ): boolean {
   const failureColumns = toFailureColumns(input.failure);
+  // `inputRange` を省略（undefined）したときは input_start / input_end に触れない
+  // （`claimRecheckUnit` の `options.startedAt` と同じ「明示的に渡さない限り列を変えない」規約）。
+  const inputRangeColumns =
+    input.inputRange === undefined
+      ? {}
+      : { inputStart: input.inputRange?.start ?? null, inputEnd: input.inputRange?.end ?? null };
   const result = db
     .update(recheckUnits)
     .set({
@@ -262,6 +309,7 @@ export function finishRecheckUnit(
       inputGraphemes: input.inputGraphemes,
       elapsedMs: input.elapsedMs,
       finishedAt: input.finishedAt,
+      ...inputRangeColumns,
     })
     .where(and(eq(recheckUnits.id, id), eq(recheckUnits.status, input.expectedStatus)))
     .run();

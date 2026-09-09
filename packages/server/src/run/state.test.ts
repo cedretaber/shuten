@@ -19,7 +19,10 @@ const RUN_TABLE: ReadonlyArray<readonly [RunStatus, RunStatus]> = [
   ["partially-failed", "running"],
 ];
 
-/** 決定 3 の「単位（UnitStatus）」表そのもの。`done` / `not-applicable` からの遷移はない（終端）。 */
+/**
+ * 決定 3 の「単位（UnitStatus）」表そのもの。`done` は終端。`not-applicable` も原則終端だが、
+ * 抑制が外れた再確認単位を戻す 1 本（`not-applicable` → `pending`）だけがある（決定 45-4）。
+ */
 const UNIT_TABLE: ReadonlyArray<readonly [UnitStatus, UnitStatus]> = [
   ["pending", "running"],
   ["pending", "not-applicable"],
@@ -27,6 +30,7 @@ const UNIT_TABLE: ReadonlyArray<readonly [UnitStatus, UnitStatus]> = [
   ["running", "failed"],
   ["running", "pending"],
   ["failed", "pending"],
+  ["not-applicable", "pending"],
 ];
 
 function tableHas<T extends string>(
@@ -72,11 +76,19 @@ describe("canTransitionUnit", () => {
     }
   });
 
-  it("S2: done / not-applicable からの遷移はすべて false（終端。再試行でも戻さない）", () => {
-    for (const from of ["done", "not-applicable"] as const) {
-      for (const to of UNIT_STATUSES) {
-        expect(canTransitionUnit(from, to)).toBe(false);
+  it("S2: done からの遷移はすべて false（終端。再試行でも戻さない）", () => {
+    for (const to of UNIT_STATUSES) {
+      expect(canTransitionUnit("done", to)).toBe(false);
+    }
+  });
+
+  it("S2: not-applicable から戻せるのは pending だけ（抑制の解除。決定 45-4）", () => {
+    expect(canTransitionUnit("not-applicable", "pending")).toBe(true);
+    for (const to of UNIT_STATUSES) {
+      if (to === "pending") {
+        continue;
       }
+      expect(canTransitionUnit("not-applicable", to)).toBe(false);
     }
   });
 });
@@ -90,7 +102,7 @@ function makeStop(
 }
 
 describe("runStatusForStop", () => {
-  // 決定 23 の写像表 9 行。
+  // 決定 23 の写像表 10 行。
   const TABLE: ReadonlyArray<{
     readonly label: string;
     readonly stop: RunStop;
@@ -137,17 +149,18 @@ describe("runStatusForStop", () => {
       expected: "recovery-waiting",
     },
     {
-      // "internal-error" は決定 14（PR9b でオーケストレーターが足す予定）の値で、本 PR（PR9a）
-      // 時点の StopReason にはまだ存在しない。runStatusForStop の規則は reason を見ず
-      // generationUnconfirmed だけで決まる（決定 23 本文の 1 行規則）ので、型アサーションで
-      // 未追加の値を渡しても検証として成立する。決定 14 実装後は通常の StopReason 値に置き換える。
       label: "internal-error：想定外の例外",
-      stop: {
-        reason: "internal-error" as StopReason,
-        message: "test",
-        failure: null,
-        generationUnconfirmed: false,
-      },
+      stop: makeStop("internal-error", false),
+      expected: "stopped",
+    },
+    {
+      label: "internal-error：復旧ゲートが閉じている実行の想定外の例外",
+      stop: makeStop("internal-error", true),
+      expected: "recovery-waiting",
+    },
+    {
+      label: "recovery-blocked：別の実行が復旧待ちのため送信ゲートに止められた",
+      stop: makeStop("recovery-blocked", false),
       expected: "stopped",
     },
   ];
@@ -159,8 +172,8 @@ describe("runStatusForStop", () => {
     },
   );
 
-  it("S6: 表が 9 行である（決定 23 の全行を網羅していることの保証）", () => {
-    expect(TABLE).toHaveLength(9);
+  it("S6: 表が 11 行である（決定 23 の全行を網羅していることの保証）", () => {
+    expect(TABLE).toHaveLength(11);
   });
 
   it("S6: connection-lost かつ generationUnconfirmed: true は stopped ではなく recovery-waiting（生成が LM Studio 側で走り続けている可能性があるため）", () => {

@@ -1,0 +1,1713 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+import type {
+  ChunkSettings,
+  FindingCategory,
+  InitialVerdict,
+  LlmFinding,
+  LocatedCandidate,
+  Perspective,
+} from "@shuten/shared";
+import { mergeCandidates } from "@shuten/shared";
+import { describe, expect, it, vi } from "vitest";
+
+import { createDatabase } from "../db/client.ts";
+import { applyMigrations } from "../db/migrate.ts";
+import type { CheckUnitRecord, RecheckNotApplicableReason, RunRecord } from "../db/records.ts";
+import { insertCheckUnit, listCheckUnits } from "../db/repositories/check-units.ts";
+import { listDiagnostics } from "../db/repositories/diagnostics.ts";
+import {
+  findFindingByMergeKey,
+  insertFinding,
+  listCandidates,
+  listCandidatesForFinding,
+  listFindings,
+} from "../db/repositories/findings.ts";
+import { listJudgments } from "../db/repositories/judgments.ts";
+import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
+import { insertRecheckUnit, listRecheckUnits } from "../db/repositories/rechecks.ts";
+import { insertRun, insertRunTarget } from "../db/repositories/runs.ts";
+import { LmStudioError } from "../lmstudio/errors.ts";
+import type {
+  ChatRequest,
+  ChatResult,
+  LmStudioClient,
+  ModelInfo,
+  Usage,
+} from "../lmstudio/types.ts";
+import type { OrchestratorEvent, PipelineEvent, RunEvent } from "./events.ts";
+import { runLoop } from "./loop.ts";
+import type { OrchestratorDeps, StartRunInput } from "./orchestrator.ts";
+import { createOrchestrator } from "./orchestrator.ts";
+import { createRequestQueue } from "./queue.ts";
+import type { StopGate } from "./recovery.ts";
+import { createStopGate } from "./recovery.ts";
+import type { RecoveryGate } from "./recovery-gate.ts";
+import { createRecoveryGate } from "./recovery-gate.ts";
+import { finishCheckUnitChecked, finishRecheckUnitChecked } from "./transitions.ts";
+
+/** ---------------------------------------------------------------------- */
+/** 素材 */
+/** ---------------------------------------------------------------------- */
+
+/**
+ * 20 書記素・1 段落の本文。同じ文字が 2 度出ないので、どの部分文字列を引用しても
+ * `locateQuote` の完全一致が高々 1 件になり、位置確定が決定的になる。
+ */
+const BODY = "あいうえおかきくけこさしすせそたちつてと";
+
+/**
+ * `targetGraphemes: 10`・`roundingTolerance: 0` で `[0,10)` `[10,20)` の 2 対象に割れる設定。
+ * `contextGraphemes: 0` にしてあるので入力範囲は検査対象の範囲そのもの（引用の位置を
+ * 目で追えるようにするため）。
+ */
+const CHUNK_TWO_TARGETS: ChunkSettings = {
+  targetGraphemes: 10,
+  contextGraphemes: 0,
+  recheckContextGraphemes: 0,
+  roundingTolerance: 0,
+  maxInputGraphemes: 50,
+};
+
+/** 本文全体（20 書記素）が 1 対象になる設定。 */
+const CHUNK_ONE_TARGET: ChunkSettings = { ...CHUNK_TWO_TARGETS, targetGraphemes: 20 };
+
+const PERSPECTIVES: readonly Perspective[] = ["typo", "naturalness"];
+
+const USAGE: Usage = {
+  promptTokens: 10,
+  completionTokens: 5,
+  totalTokens: 15,
+  reasoningTokens: null,
+};
+
+const LOADED_MODEL: ModelInfo = {
+  id: "model-a",
+  type: "llm",
+  state: "loaded",
+  quantization: null,
+  maxContextLength: 4096,
+  loadedContextLength: 2048,
+};
+
+/** テストごとにマイグレーション適用済みのメモリ DB を作る。 */
+function setupDb() {
+  const { db, close } = createDatabase(":memory:");
+  applyMigrations(db);
+  return { db, close };
+}
+
+/** LLM の指摘 1 件。段落は 1 つだけなので `paragraphId` は常に 0。 */
+function finding(
+  quote: string,
+  suggestion: string | null,
+  category: FindingCategory,
+  verdict: InitialVerdict,
+): LlmFinding {
+  return {
+    paragraphId: 0,
+    quote,
+    before: "",
+    after: "",
+    category,
+    reason: "理由",
+    suggestion,
+    verdict,
+  };
+}
+
+function chatResult(content: string): ChatResult {
+  return { content, reasoningContent: null, finishReason: "stop", usage: USAGE, raw: {} };
+}
+
+/** 初回検査の応答。 */
+function checkResponse(findings: readonly LlmFinding[]): ChatResult {
+  return chatResult(JSON.stringify({ findings }));
+}
+
+/** 再確認の応答（`keep` / `error-confirmed`）。 */
+function recheckResponse(): ChatResult {
+  return chatResult(
+    JSON.stringify({
+      reason: "誤りである",
+      reasonKind: "error-confirmed",
+      verdict: "keep",
+      suggestionValid: true,
+    }),
+  );
+}
+
+/** 1 回の生成要求への応答を決める関数。`index` は 0 始まりの通し番号。 */
+type ChatStep = (request: ChatRequest, index: number) => ChatResult | Promise<ChatResult>;
+
+interface ScriptedClient {
+  readonly client: LmStudioClient;
+  /** 送った要求（再試行を含む）。 */
+  readonly requests: ChatRequest[];
+  readonly ensureLoadedCalls: string[];
+}
+
+/**
+ * 台本どおりに応答するモック。台本を使い切ったあとに要求が来たら例外にする
+ * （想定外の生成要求を黙って成功させない）。
+ */
+function scriptedClient(
+  steps: readonly ChatStep[],
+  options: { readonly ensureLoaded?: () => Promise<ModelInfo> } = {},
+): ScriptedClient {
+  const requests: ChatRequest[] = [];
+  const ensureLoadedCalls: string[] = [];
+  const client: LmStudioClient = {
+    listModels: () => Promise.resolve([LOADED_MODEL]),
+    ensureLoaded: (modelId) => {
+      ensureLoadedCalls.push(modelId);
+      return options.ensureLoaded?.() ?? Promise.resolve(LOADED_MODEL);
+    },
+    chat: async (request) => {
+      const index = requests.length;
+      requests.push(request);
+      const step = steps[index];
+      if (step === undefined) {
+        throw new Error(`台本にない生成要求（${String(index)} 件目）`);
+      }
+      return await step(request, index);
+    },
+  };
+  return { client, requests, ensureLoadedCalls };
+}
+
+interface Harness {
+  readonly db: ReturnType<typeof setupDb>["db"];
+  readonly events: RunEvent[];
+  readonly deps: OrchestratorDeps;
+}
+
+/** `createId` を「先に決めた列 → 使い切ったら連番」にする（N3 が対象 ID を作り分けるために使う）。 */
+function idSequence(preset: readonly string[] = []): () => string {
+  let count = 0;
+  return () => {
+    const preselected = preset[count];
+    count += 1;
+    return preselected ?? `id-${String(count)}`;
+  };
+}
+
+function makeHarness(
+  client: LmStudioClient,
+  overrides: Partial<OrchestratorDeps> = {},
+  body = BODY,
+): Harness {
+  const { db } = setupDb();
+  insertManuscriptVersion(db, { id: "mv1", name: "原稿", body });
+  const events: RunEvent[] = [];
+  const deps: OrchestratorDeps = {
+    db,
+    client,
+    queue: createRequestQueue(),
+    recoveryGate: createRecoveryGate(),
+    endpointUrl: "http://127.0.0.1:1234",
+    recoveryConfirmMs: 0,
+    createId: idSequence(),
+    onEvent: (event) => events.push(event),
+    ...overrides,
+  };
+  return { db, events, deps };
+}
+
+function baseInput(overrides: Partial<StartRunInput> = {}): StartRunInput {
+  return {
+    startOperationId: "op-1",
+    manuscriptVersionId: "mv1",
+    modelId: "model-a",
+    generation: { maxTokens: 512, temperature: 0 },
+    chunkSettings: CHUNK_TWO_TARGETS,
+    timeouts: { checkMs: 60_000, recheckMs: 60_000 },
+    perspectives: PERSPECTIVES,
+    recheckEnabled: false,
+    allowedWordsRaw: "",
+    ...overrides,
+  };
+}
+
+/** `startRun` して `done` を待つ。 */
+async function runToCompletion(
+  harness: Harness,
+  input: StartRunInput,
+): Promise<{ readonly run: RunRecord }> {
+  const orchestrator = createOrchestrator(harness.deps);
+  const started = orchestrator.startRun(input);
+  const run = await started.done;
+  return { run };
+}
+
+/** 外から解決できる Promise（`units.test.ts` の同名ヘルパーと同じ形）。 */
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve: (value) => resolve(value) };
+}
+
+/** 進捗イベントの `type` だけを並べる。 */
+function eventTypes(events: readonly RunEvent[]): string[] {
+  return events.map((entry) => entry.event.type);
+}
+
+/** ---------------------------------------------------------------------- */
+/** O1〜O3・O14・O17 */
+/** ---------------------------------------------------------------------- */
+
+describe("run/loop: 単位駆動ループ", () => {
+  it("O1: 初回実行で runs・run_targets・check_units・candidates・findings・judgments・recheck_units・diagnostics に期待どおりの行が残る", async () => {
+    const harness = makeHarness(
+      scriptedClient([
+        // 対象 0 / typo：位置確定する 1 件。
+        () => checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]),
+        // 対象 0 / naturalness：同じ引用・同じ修正案なので mergeKey が一致し、統合される。
+        () => checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]),
+        // 対象 0 の再確認（統合後の 1 指摘ぶん）。
+        () => recheckResponse(),
+        // 対象 1 / typo：修正案なしの 1 件と、本文に存在しない引用 1 件（not-found）。
+        () =>
+          checkResponse([
+            finding("たち", null, "grammar", "confirm-with-author"),
+            finding("ぬ", "ヌ", "notation", "likely-error"),
+          ]),
+        // 対象 1 / naturalness：指摘なし。
+        () => checkResponse([]),
+        // 対象 1 の再確認（位置確定済みの 1 指摘ぶん。not-found の指摘は not-applicable）。
+        () => recheckResponse(),
+      ]).client,
+    );
+
+    const { run } = await runToCompletion(harness, baseInput({ recheckEnabled: true }));
+    const { db } = harness;
+
+    expect(run.status).toBe("completed");
+    expect(run.stopReason).toBeNull();
+    expect(run.finishedAt).not.toBeNull();
+    // 決定 30：最初の ensureLoaded 成功でモデル情報が書かれる。
+    expect(run.modelInfo?.id).toBe("model-a");
+
+    const units = listCheckUnits(db, run.id);
+    expect(units).toHaveLength(4);
+    expect(units.every((unit) => unit.status === "done")).toBe(true);
+    expect(units.every((unit) => unit.startedAt !== null && unit.finishedAt !== null)).toBe(true);
+
+    expect(listCandidates(db, run.id)).toHaveLength(4);
+    const findings = listFindings(db, run.id);
+    // 「うえ」（2 候補が統合）・「たち」・「ぬ」（not-found）の 3 件。
+    expect(findings).toHaveLength(3);
+    expect(listJudgments(db, run.id)).toHaveLength(3);
+    expect(listDiagnostics(db, run.id)).toHaveLength(1);
+
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks).toHaveLength(3);
+    expect(rechecks.filter((unit) => unit.status === "done")).toHaveLength(2);
+    const notApplicable = rechecks.filter((unit) => unit.status === "not-applicable");
+    expect(notApplicable).toHaveLength(1);
+    expect(notApplicable[0]?.notApplicableReason).toBe("unlocated");
+
+    // 候補が統合された指摘は 2 候補を持つ。
+    const merged = findings.find((entry) => entry.quote === "うえ");
+    expect(merged).toBeDefined();
+    expect(listCandidatesForFinding(db, merged?.id ?? "")).toHaveLength(2);
+
+    // イベントは pipeline.ts と同じ位置で出る。
+    expect(eventTypes(harness.events)).toEqual([
+      "target-planned",
+      "target-planned",
+      "check-started",
+      "check-finished",
+      "check-started",
+      "check-finished",
+      "target-merged",
+      "recheck-started",
+      "recheck-finished",
+      "check-started",
+      "check-finished",
+      "check-started",
+      "check-finished",
+      "target-merged",
+      "recheck-started",
+      "recheck-finished",
+      "run-settled",
+    ]);
+  });
+
+  it("O2: 観点の一部が失敗しても成功分で統合に進み、実行は partially-failed になる", async () => {
+    const scripted = scriptedClient([
+      // typo：JSON として解析できない応答。executor が 1 回だけ再試行する。
+      () => chatResult("これは JSON ではない"),
+      () => chatResult("これは JSON ではない"),
+      // naturalness：正常な応答。
+      () => checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]),
+    ]);
+    const harness = makeHarness(scripted.client);
+
+    const { run } = await runToCompletion(harness, baseInput({ chunkSettings: CHUNK_ONE_TARGET }));
+    const { db } = harness;
+
+    expect(run.status).toBe("partially-failed");
+    expect(run.stopReason).toBeNull();
+    expect(scripted.requests).toHaveLength(3);
+
+    const units = listCheckUnits(db, run.id);
+    const typo = units.find((unit) => unit.perspective === "typo");
+    const naturalness = units.find((unit) => unit.perspective === "naturalness");
+    expect(typo?.status).toBe("failed");
+    expect(typo?.failure?.reason).toBe("malformed");
+    expect(typo?.attempts).toBe(2);
+    expect(naturalness?.status).toBe("done");
+
+    // 失敗した観点があっても、成功した観点の候補は統合されて残る。
+    expect(listFindings(db, run.id)).toHaveLength(1);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("disabled");
+  });
+
+  it("O3: モデルが未ロードなら当該単位は pending のまま、実行は stopped（model-not-loaded）になる", async () => {
+    const scripted = scriptedClient([], {
+      ensureLoaded: () =>
+        Promise.reject(
+          new LmStudioError("model-not-loaded", "モデルがロードされていない", { raw: null }),
+        ),
+    });
+    const harness = makeHarness(scripted.client);
+
+    const { run } = await runToCompletion(harness, baseInput({ chunkSettings: CHUNK_ONE_TARGET }));
+    const { db } = harness;
+
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("model-not-loaded");
+    expect(run.generationUnconfirmed).toBe(false);
+    // 生成要求は 1 件も送っていない。
+    expect(scripted.requests).toHaveLength(0);
+
+    const units = listCheckUnits(db, run.id);
+    expect(units).toHaveLength(2);
+    expect(units.every((unit) => unit.status === "pending")).toBe(true);
+    // 2 観点目は claim すらしない（停止した時点でループを抜ける）。
+    expect(units.filter((unit) => unit.startedAt !== null)).toHaveLength(1);
+    expect(listRecheckUnits(db, run.id)).toHaveLength(0);
+  });
+
+  it("O14: 位置特定に失敗した指摘には not-applicable の再確認単位が作られ、理由は unlocated になる", async () => {
+    const harness = makeHarness(
+      scriptedClient([
+        () => checkResponse([finding("ぬ", "ヌ", "notation", "likely-error")]),
+        () => checkResponse([]),
+      ]).client,
+    );
+
+    const { run } = await runToCompletion(
+      harness,
+      baseInput({ chunkSettings: CHUNK_ONE_TARGET, recheckEnabled: true }),
+    );
+
+    const rechecks = listRecheckUnits(harness.db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("unlocated");
+  });
+
+  it("O14: 再確認が無効なら、位置特定に失敗した指摘の理由は disabled が優先される（決定 11）", async () => {
+    const harness = makeHarness(
+      scriptedClient([
+        () => checkResponse([finding("ぬ", "ヌ", "notation", "likely-error")]),
+        () => checkResponse([]),
+      ]).client,
+    );
+
+    const { run } = await runToCompletion(
+      harness,
+      baseInput({ chunkSettings: CHUNK_ONE_TARGET, recheckEnabled: false }),
+    );
+
+    const rechecks = listRecheckUnits(harness.db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.notApplicableReason).toBe("disabled");
+  });
+
+  it("O14: 抑制された指摘の再確認単位は not-applicable（suppressed）になる", async () => {
+    const harness = makeHarness(
+      scriptedClient([
+        () => checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]),
+        () => checkResponse([]),
+      ]).client,
+    );
+
+    const { run } = await runToCompletion(
+      harness,
+      baseInput({
+        chunkSettings: CHUNK_ONE_TARGET,
+        recheckEnabled: true,
+        allowedWordsRaw: "うえ",
+      }),
+    );
+
+    const rechecks = listRecheckUnits(harness.db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("suppressed");
+  });
+
+  /**
+   * 決定 45-4 の 3 本。すでに `not-applicable(suppressed)` の再確認単位が残っている状態から
+   * ループを回し、抑制が外れているときだけ `pending` に戻ることを確かめる。
+   * 「抑制が外れる」（失敗観点の再試行で別分類の候補が加わり `merge-store.ts` が
+   * `category` を `unclear` にする）過程そのものは `merge-store.test.ts` の担当なので、
+   * ここでは結果の状態（`findings.suppression === null`）を直接作って起票側だけを見る。
+   */
+  function seedSuppressedRecheck(
+    db: ReturnType<typeof setupDb>["db"],
+    input: {
+      readonly runId: string;
+      readonly recheckEnabled?: boolean;
+      readonly suppression?: { readonly word: string; readonly ruleVersion: string } | null;
+      readonly notApplicableReason: RecheckNotApplicableReason;
+    },
+  ): { readonly seeded: SeededRun; readonly recheckUnitId: string } {
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: input.runId,
+      unitStatuses: ["done", "done"],
+      recheckEnabled: input.recheckEnabled ?? true,
+    });
+    const findingRecord = insertLocatedFinding(
+      db,
+      seeded,
+      "うえ",
+      2,
+      4,
+      "ウエ",
+      input.suppression ?? null,
+    );
+    insertNotApplicableRecheck(db, seeded, findingRecord.id, "ru-na", input.notApplicableReason);
+    return { seeded, recheckUnitId: "ru-na" };
+  }
+
+  /** `not-applicable` の再確認単位を 1 件、手で作る（起票済みで終端まで書かれた状態）。 */
+  function insertNotApplicableRecheck(
+    db: ReturnType<typeof setupDb>["db"],
+    seeded: SeededRun,
+    findingId: string,
+    unitId: string,
+    notApplicableReason: RecheckNotApplicableReason,
+  ): void {
+    insertRecheckUnit(db, {
+      id: unitId,
+      runId: seeded.run.id,
+      findingId,
+      inputRange: null,
+      status: "not-applicable",
+      notApplicableReason,
+      attempts: 0,
+      failure: null,
+      pendingNote: null,
+      verdict: null,
+      reasonKind: null,
+      reason: null,
+      suggestionValid: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: null,
+      startedAt: null,
+      finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+    });
+  }
+
+  it("O18: 抑制が外れた not-applicable(suppressed) の再確認単位は pending に戻り、実際に再確認が実行される（決定 45-4）", async () => {
+    const { db } = setupDb();
+    const { seeded } = seedSuppressedRecheck(db, {
+      runId: "run-reopen",
+      // 抑制は外れている（別分類の候補が加わって category が unclear になった後の状態）。
+      suppression: null,
+      notApplicableReason: "suppressed",
+    });
+
+    const scripted = scriptedClient([() => recheckResponse()]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    // 再確認の生成要求が実際に 1 件送られている。
+    expect(scripted.requests).toHaveLength(1);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("done");
+    expect(rechecks[0]?.notApplicableReason).toBeNull();
+    expect(rechecks[0]?.verdict).toBe("keep");
+    expect(rechecks[0]?.reasonKind).toBe("error-confirmed");
+    expect(rechecks[0]?.startedAt).not.toBeNull();
+    expect(rechecks[0]?.finishedAt).not.toBeNull();
+  });
+
+  it("O18: 抑制が外れていなければ not-applicable(suppressed) のままにする（決定 45-4）", async () => {
+    const { db } = setupDb();
+    const { seeded } = seedSuppressedRecheck(db, {
+      runId: "run-still-suppressed",
+      suppression: { word: "うえ", ruleVersion: "1" },
+      notApplicableReason: "suppressed",
+    });
+
+    // 台本が空なので、生成要求を 1 件でも送れば例外になる。
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(0);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("suppressed");
+  });
+
+  it("O18: 再確認が無効な実行では、suppressed でも disabled でも pending に戻さない（決定 45-4）", async () => {
+    // 決定 11 の優先順位のもとでは「再確認が無効なのに理由が suppressed」の単位は作られない。
+    // ここで手で組み立てているのは、`recheckEnabled` の条件が防御として効いていることを
+    // 固定するためであり、この条件は不要ではない（`issueRechecks` の doc コメントを参照）。
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-disabled",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: false,
+    });
+    // 抑制も位置特定も再起票の条件を満たすが、この実行では再確認自体が無効。
+    const suppressedFinding = insertLocatedFinding(db, seeded, "うえ", 2, 4, "ウエ");
+    insertNotApplicableRecheck(db, seeded, suppressedFinding.id, "ru-sup", "suppressed");
+    const disabledFinding = insertLocatedFinding(db, seeded, "かき", 5, 7, "カキ");
+    insertNotApplicableRecheck(db, seeded, disabledFinding.id, "ru-dis", "disabled");
+
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(0);
+    // 並びは finding_id 昇順なので、単位 ID で引いて順序に依存しないようにする。
+    const rechecks = listRecheckUnits(db, run.id);
+    const suppressed = rechecks.find((unit) => unit.id === "ru-sup");
+    const disabled = rechecks.find((unit) => unit.id === "ru-dis");
+    expect([suppressed?.status, suppressed?.notApplicableReason]).toEqual([
+      "not-applicable",
+      "suppressed",
+    ]);
+    expect([disabled?.status, disabled?.notApplicableReason]).toEqual([
+      "not-applicable",
+      "disabled",
+    ]);
+  });
+
+  it("O18: 位置特定に失敗した指摘の suppressed な単位は pending に戻さない（決定 45-4）", async () => {
+    // O18-3 と同じく、決定 11 のもとでは作られない状態を手で組み立てている。
+    // `locateStatus === "located"` の条件が防御として効いていることを固定する。
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-unlocated",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: true,
+    });
+    // 位置特定に失敗した指摘（`range` は null）。位置は後から変わらないので戻さない。
+    const findingRecord = insertFinding(db, {
+      runId: seeded.run.id,
+      manuscriptVersionId: "mv1",
+      targetId: seeded.targetId,
+      locateStatus: "not-found",
+      range: null,
+      paragraphId: 0,
+      quote: "存在しない引用",
+      suggestion: null,
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: null,
+      suppression: null,
+    });
+    insertNotApplicableRecheck(db, seeded, findingRecord.id, "ru-sup", "suppressed");
+
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(0);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks[0]?.status).toBe("not-applicable");
+    expect(rechecks[0]?.notApplicableReason).toBe("suppressed");
+  });
+
+  it("O17: 1 観点が pending の間は recheck_units が 0 件で、対象の全単位が決着した瞬間に作られる（決定 19・34）", async () => {
+    // DB とハーネスは台本より後に作るので、観測は遅延評価する。
+    let observe: () => number = () => {
+      throw new Error("観測の準備前に生成要求が来た");
+    };
+    /** 各生成要求の時点での recheck_units の件数。 */
+    const recheckCountsAtRequest: number[] = [];
+
+    const scripted = scriptedClient([
+      () => {
+        recheckCountsAtRequest.push(observe());
+        return checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]);
+      },
+      () => {
+        // 決定 34 を守っていれば、この時点（2 観点目の要求）でも再確認単位は 1 件も無い。
+        recheckCountsAtRequest.push(observe());
+        return checkResponse([]);
+      },
+      () => {
+        recheckCountsAtRequest.push(observe());
+        return recheckResponse();
+      },
+    ]);
+    const harness = makeHarness(scripted.client);
+
+    const orchestrator = createOrchestrator(harness.deps);
+    const started = orchestrator.startRun(
+      baseInput({ chunkSettings: CHUNK_ONE_TARGET, recheckEnabled: true }),
+    );
+    const startedRunId = started.run.id;
+    observe = () => listRecheckUnits(harness.db, startedRunId).length;
+    const run = await started.done;
+
+    expect(run.status).toBe("completed");
+    // 1 観点目・2 観点目の要求時点ではまだ 0 件。再確認の要求時点では作られている。
+    expect(recheckCountsAtRequest).toEqual([0, 0, 1]);
+
+    const rechecks = listRecheckUnits(harness.db, run.id);
+    expect(rechecks).toHaveLength(1);
+    expect(rechecks[0]?.status).toBe("done");
+    expect(rechecks[0]?.verdict).toBe("keep");
+    expect(rechecks[0]?.inputRange).not.toBeNull();
+  });
+
+  it("O17: 前回セッションで pending のまま残った再確認だけを進める（検査単位は 1 つも実行しない）", async () => {
+    // 検査単位はすべて done、指摘と pending の再確認単位だけが残っている状態を作る。
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-resume",
+      unitStatuses: ["done", "done"],
+      recheckEnabled: true,
+    });
+    const findingRecord = insertLocatedFinding(db, seeded, "うえ", 2, 4, "ウエ");
+    insertRecheckUnit(db, {
+      id: "ru-1",
+      runId: seeded.run.id,
+      findingId: findingRecord.id,
+      inputRange: null,
+      status: "pending",
+      notApplicableReason: null,
+      attempts: 0,
+      failure: null,
+      pendingNote: null,
+      verdict: null,
+      reasonKind: null,
+      reason: null,
+      suggestionValid: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: null,
+      startedAt: null,
+      finishedAt: null,
+    });
+
+    const scripted = scriptedClient([() => recheckResponse()]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(run.status).toBe("completed");
+    expect(scripted.requests).toHaveLength(1);
+    const rechecks = listRecheckUnits(db, run.id);
+    expect(rechecks[0]?.status).toBe("done");
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** R1 */
+  /** ---------------------------------------------------------------------- */
+
+  it("R1: checkMs を超えても上限内に応答が届けば結果として採用され、実行が続く（generation-slow が出る）", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = deferred<ChatResult>();
+      const scripted = scriptedClient([() => pending.promise]);
+      const harness = makeHarness(scripted.client, { recoveryConfirmMs: 500 });
+
+      const orchestrator = createOrchestrator(harness.deps);
+      const started = orchestrator.startRun(
+        baseInput({
+          chunkSettings: CHUNK_ONE_TARGET,
+          perspectives: ["typo"],
+          timeouts: { checkMs: 1000, recheckMs: 1000 },
+        }),
+      );
+
+      // checkMs（1000ms）は超えたが、ハード上限（1500ms）にはまだ達していない。
+      await vi.advanceTimersByTimeAsync(1200);
+      const slow = harness.events.filter((entry) => entry.event.type === "generation-slow");
+      expect(slow).toHaveLength(1);
+      expect(slow[0]?.event).toMatchObject({ elapsedMs: 1000 });
+
+      pending.resolve(checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]));
+      const run = await started.done;
+
+      expect(run.status).toBe("completed");
+      const units = listCheckUnits(harness.db, run.id);
+      expect(units[0]?.status).toBe("done");
+      expect(listFindings(harness.db, run.id)).toHaveLength(1);
+      // ハード上限は checkMs + recoveryConfirmMs（決定 20・44）。
+      expect(scripted.requests).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** M1〜M3（統合の同値） */
+  /** ---------------------------------------------------------------------- */
+
+  /**
+   * M1 のオラクル用の候補列。1 対象・2 観点で次を含める。
+   * - 同じ mergeKey で category が食い違う組（統合後は unclear）
+   * - 同じ mergeKey で verdict が食い違う組（統合後は confirm-with-author）
+   * - 修正案なし（mergeKey が null）の同一引用 2 件（常に別の指摘。M2）
+   * - どの組にも属さない単独の候補
+   */
+  const ORACLE_TYPO: readonly LlmFinding[] = [
+    finding("うえ", "ウエ", "notation", "likely-error"),
+    finding("かき", null, "grammar", "likely-error"),
+    finding("さし", "サシ", "particle", "likely-error"),
+    finding("たち", "タチ", "notation", "likely-error"),
+  ];
+  const ORACLE_NATURALNESS: readonly LlmFinding[] = [
+    finding("うえ", "ウエ", "grammar", "likely-error"),
+    finding("かき", null, "grammar", "likely-error"),
+    finding("さし", "サシ", "particle", "confirm-with-author"),
+  ];
+
+  async function runOracle(): Promise<{ readonly harness: Harness; readonly run: RunRecord }> {
+    const harness = makeHarness(
+      scriptedClient([() => checkResponse(ORACLE_TYPO), () => checkResponse(ORACLE_NATURALNESS)])
+        .client,
+    );
+    const { run } = await runToCompletion(harness, baseInput({ chunkSettings: CHUNK_ONE_TARGET }));
+    return { harness, run };
+  }
+
+  it("M1: 一括統合（mergeCandidates）と、ループが保存した増分統合の結果が、グルーピング・category・initialVerdict で一致する", async () => {
+    const { harness, run } = await runOracle();
+    const { db } = harness;
+
+    // 保存された候補（candidate_index 昇順＝LLM が返した順）から LocatedCandidate を組み立て、
+    // CLI 経路が使う一括統合にかける。
+    const saved = listCandidates(db, run.id);
+    expect(saved).toHaveLength(ORACLE_TYPO.length + ORACLE_NATURALNESS.length);
+    const located: LocatedCandidate[] = saved.map((candidate) => {
+      if (candidate.range === null) {
+        throw new Error("この素材では全候補が位置確定するはず");
+      }
+      return {
+        id: candidate.id,
+        // 観点は統合規則に影響しないので、オラクル側では固定でよい。
+        perspective: "typo",
+        llm: candidate.llm,
+        locate: { status: "located", range: candidate.range },
+      };
+    });
+    let counter = 0;
+    const oracle = mergeCandidates(located, () => {
+      counter += 1;
+      return `oracle-${String(counter)}`;
+    });
+
+    const savedFindings = listFindings(db, run.id);
+    expect(savedFindings).toHaveLength(oracle.length);
+
+    // グルーピング（元候補 ID の集合）で対応付け、category と initialVerdict を突き合わせる。
+    const savedGroups = savedFindings.map((entry) => ({
+      members: listCandidatesForFinding(db, entry.id)
+        .map((candidate) => candidate.id)
+        .sort(),
+      category: entry.category,
+      initialVerdict: entry.initialVerdict,
+    }));
+    const oracleGroups = oracle.map((entry) => ({
+      members: entry.sources.map((source) => source.id).sort(),
+      category: entry.category,
+      initialVerdict: entry.verdict,
+    }));
+    const byMembers = (a: { members: string[] }, b: { members: string[] }): number =>
+      a.members.join(",").localeCompare(b.members.join(","));
+    expect([...savedGroups].sort(byMembers)).toEqual([...oracleGroups].sort(byMembers));
+
+    // 素材が「食い違いを含む」ことを念のため確認する（全員一致なら差分を検出できないため）。
+    expect(oracleGroups.some((group) => group.category === "unclear")).toBe(true);
+    expect(oracleGroups.some((group) => group.initialVerdict === "confirm-with-author")).toBe(true);
+    expect(oracleGroups.some((group) => group.members.length === 2)).toBe(true);
+  });
+
+  it("M2: 修正案なし（mergeKey が null）の候補は、引用が同じでも常に別の指摘になる", async () => {
+    const { harness, run } = await runOracle();
+    const noSuggestion = listFindings(harness.db, run.id).filter((entry) => entry.quote === "かき");
+    expect(noSuggestion).toHaveLength(2);
+    expect(noSuggestion[0]?.id).not.toBe(noSuggestion[1]?.id);
+    expect(noSuggestion.every((entry) => entry.mergeKey === null)).toBe(true);
+    expect(
+      noSuggestion.every((entry) => listCandidatesForFinding(harness.db, entry.id).length === 1),
+    ).toBe(true);
+  });
+
+  it("M3: 実行 ID が違えば、同じ mergeKey の候補でも別の指摘になる（仕様 6.4）", async () => {
+    const scripted = scriptedClient([
+      () => checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]),
+      () => checkResponse([]),
+      () => checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]),
+      () => checkResponse([]),
+    ]);
+    const harness = makeHarness(scripted.client);
+    const orchestrator = createOrchestrator(harness.deps);
+
+    const first = orchestrator.startRun(
+      baseInput({ startOperationId: "op-1", chunkSettings: CHUNK_ONE_TARGET }),
+    );
+    const runA = await first.done;
+    const second = orchestrator.startRun(
+      baseInput({ startOperationId: "op-2", chunkSettings: CHUNK_ONE_TARGET }),
+    );
+    const runB = await second.done;
+
+    expect(runA.id).not.toBe(runB.id);
+    const findingsA = listFindings(harness.db, runA.id);
+    const findingsB = listFindings(harness.db, runB.id);
+    expect(findingsA).toHaveLength(1);
+    expect(findingsB).toHaveLength(1);
+    expect(findingsA[0]?.id).not.toBe(findingsB[0]?.id);
+
+    const key = findingsA[0]?.mergeKey ?? "";
+    expect(key).not.toBe("");
+    expect(findFindingByMergeKey(harness.db, runA.id, key)?.id).toBe(findingsA[0]?.id);
+    expect(findFindingByMergeKey(harness.db, runB.id, key)?.id).toBe(findingsB[0]?.id);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** N3（走査順） */
+  /** ---------------------------------------------------------------------- */
+
+  it("N3: 走査順は target_index 昇順・runs.perspectives の順で、対象 ID の UUID 順に依存しない（決定 25）", async () => {
+    /**
+     * `startRun` が `createId` を呼ぶ順は 実行 → 対象 0 → 対象 0 の単位 ×2 → 対象 1 →
+     * 対象 1 の単位 ×2。対象 ID だけを昇順・降順に作り分ける。
+     */
+    async function collectOrder(
+      target0Id: string,
+      target1Id: string,
+    ): Promise<Array<{ targetIndex: number; perspective: string }>> {
+      const harness = makeHarness(
+        scriptedClient([
+          () => checkResponse([]),
+          () => checkResponse([]),
+          () => checkResponse([]),
+          () => checkResponse([]),
+        ]).client,
+        {
+          createId: idSequence([
+            "run-x",
+            target0Id,
+            "cu-0-0",
+            "cu-0-1",
+            target1Id,
+            "cu-1-0",
+            "cu-1-1",
+          ]),
+        },
+      );
+      await runToCompletion(harness, baseInput());
+      return harness.events.flatMap((entry) =>
+        entry.event.type === "check-started"
+          ? [{ targetIndex: entry.event.targetIndex, perspective: entry.event.perspective }]
+          : [],
+      );
+    }
+
+    const expected = [
+      { targetIndex: 0, perspective: "typo" },
+      { targetIndex: 0, perspective: "naturalness" },
+      { targetIndex: 1, perspective: "typo" },
+      { targetIndex: 1, perspective: "naturalness" },
+    ];
+    // 対象 ID が昇順のときも降順のときも同じ順序になること。
+    expect(await collectOrder("t-aaa", "t-zzz")).toEqual(expected);
+    expect(await collectOrder("t-zzz", "t-aaa")).toEqual(expected);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** 決定 26・27（停止ゲートの出入りは executor のフック経由だけ） */
+  /** ---------------------------------------------------------------------- */
+
+  it("決定 26: beginRequest / endRequest は client.chat の直前・直後だけで呼ばれる（ensureLoaded を挟まない）", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-gate", unitStatuses: ["pending"] });
+
+    const trace: string[] = [];
+    const client: LmStudioClient = {
+      listModels: () => Promise.resolve([LOADED_MODEL]),
+      ensureLoaded: () => {
+        trace.push("ensureLoaded");
+        return Promise.resolve(LOADED_MODEL);
+      },
+      chat: () => {
+        trace.push("chat");
+        return Promise.resolve(checkResponse([]));
+      },
+    };
+
+    const inner = createStopGate(0);
+    const gate = {
+      ...inner,
+      get signal() {
+        return inner.signal;
+      },
+      get stopRequested() {
+        return inner.stopRequested;
+      },
+      beginRequest: () => {
+        trace.push("beginRequest");
+        inner.beginRequest();
+      },
+      endRequest: () => {
+        trace.push("endRequest");
+        inner.endRequest();
+      },
+    };
+
+    await runLoopDirect(db, seeded.run.id, client, { gate });
+
+    // ループが executeCheckUnit の前後で呼んでいると "beginRequest" が "ensureLoaded" より
+    // 前に来る（キュー待ちと ensureLoaded が「実行中の生成」に含まれてしまう）。
+    expect(trace).toEqual(["ensureLoaded", "beginRequest", "chat", "endRequest"]);
+    inner.dispose();
+  });
+
+  it("決定 26: 停止要求の後、上限内に応答が届いたらループが aborted を合成し、次の単位には手を付けない", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-stop", unitStatuses: ["pending", "pending"] });
+
+    const gate = createStopGate(60_000);
+    const scripted = scriptedClient([
+      () => {
+        // 1 単位目の生成中に停止操作を受け、応答は上限内に届く（決定 26 の 3 番目の経路）。
+        gate.requestStop();
+        return checkResponse([]);
+      },
+    ]);
+
+    const events: Array<{ type: string }> = [];
+    const run = await runLoop({
+      db,
+      client: scripted.client,
+      queue: createRequestQueue(),
+      recoveryGate: createRecoveryGate(),
+      gate,
+      runId: seeded.run.id,
+      now: () => new Date(),
+      createId: idSequence(),
+      emit: (event) => events.push(event),
+    });
+    gate.dispose();
+
+    // 2 単位目には生成要求を送らない（台本は 1 件しか用意していない）。
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("aborted");
+    expect(run.generationUnconfirmed).toBe(false);
+
+    const units = listCheckUnits(db, run.id);
+    const first = units.find((unit) => unit.perspective === "typo");
+    const second = units.find((unit) => unit.perspective === "naturalness");
+    // 1 単位目は応答が届いたので done。2 単位目は claim すらしていない。
+    expect(first?.status).toBe("done");
+    expect(second?.status).toBe("pending");
+    expect(second?.startedAt).toBeNull();
+
+    const settled = events.filter((event) => event.type === "run-settled");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({
+      status: "stopped",
+      stop: { reason: "aborted", generationUnconfirmed: false },
+    });
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-1：決定 25 の 3 番目（対象内の再確認順） */
+  /** ---------------------------------------------------------------------- */
+
+  /**
+   * 1 対象に `pending` な再確認単位を 2 件並べ、**本文の位置順**と**`finding_id` の昇順**を
+   * わざと食い違わせる。
+   * - 指摘 A：引用「たち」（start 15）、ID `f-aaa`
+   * - 指摘 B：引用「うえ」（start 2）、ID `f-zzz`
+   * `listFindingsForTarget`（start 昇順）の順は B → A。`listRecheckUnits`（`finding_id` 昇順）や
+   * 単純な作成順に差し替えると A → B になり、逆転が検出できる。
+   */
+  function seedTwoPendingRechecks(): {
+    readonly db: ReturnType<typeof setupDb>["db"];
+    readonly runId: string;
+  } {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, {
+      runId: "run-order",
+      unitStatuses: ["done"],
+      recheckEnabled: true,
+    });
+    // 作成順も位置順と逆にする（作成順に頼る実装も落とせるようにする）。
+    seedPendingRecheck(db, seeded, {
+      findingId: "f-aaa",
+      recheckUnitId: "ru-aaa",
+      quote: "たち",
+      start: 15,
+      end: 17,
+    });
+    seedPendingRecheck(db, seeded, {
+      findingId: "f-zzz",
+      recheckUnitId: "ru-zzz",
+      quote: "うえ",
+      start: 2,
+      end: 4,
+    });
+    return { db, runId: seeded.run.id };
+  }
+
+  it("決定 25: 対象内の再確認は listFindingsForTarget の並び（本文の位置順）で走る。finding_id 順にも作成順にも依存しない", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+    const scripted = scriptedClient([() => recheckResponse(), () => recheckResponse()]);
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+
+    await runLoopDirect(db, runId, scripted.client, { emit: (event) => events.push(event) });
+
+    const startedOrder = events.flatMap((event) =>
+      event.type === "recheck-started" ? [event.findingId] : [],
+    );
+    // 位置順（うえ: start 2 → たち: start 15）。finding_id 昇順なら ["f-aaa", "f-zzz"] になる。
+    expect(startedOrder).toEqual(["f-zzz", "f-aaa"]);
+    expect(scripted.requests).toHaveLength(2);
+    expect(listRecheckUnits(db, runId).every((unit) => unit.status === "done")).toBe(true);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-2：決定 39（復旧ゲートの配線）と recovery-waiting */
+  /** ---------------------------------------------------------------------- */
+
+  /** 生成中に応答を受け取れずに切断した（`generationUnconfirmed: true` になる唯一の作り方）。 */
+  function connectionLostDuringChat(): never {
+    throw new LmStudioError("connection", "応答を受け取れずに切断した", { status: null });
+  }
+
+  it("決定 39: 生成終了を確認できない停止では recovery-waiting になり、executor が（ループの終了を待たずに）復旧ゲートを閉じる", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-unconfirmed", unitStatuses: ["pending", "pending"] });
+
+    // block の呼び出し位置を、イベントの並びの中で観測する。
+    const trace: string[] = [];
+    const inner = createRecoveryGate();
+    const recoveryGate: RecoveryGate = {
+      get blockedRunIds() {
+        return inner.blockedRunIds;
+      },
+      get blocked() {
+        return inner.blocked;
+      },
+      block: (id) => {
+        trace.push("block");
+        inner.block(id);
+      },
+      unblock: (id) => inner.unblock(id),
+    };
+
+    const scripted = scriptedClient([() => connectionLostDuringChat()]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client, {
+      recoveryGate,
+      emit: (event) => trace.push(event.type),
+    });
+
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.stopReason).toBe("connection-lost");
+    expect(run.generationUnconfirmed).toBe(true);
+    expect(inner.blocked).toBe(true);
+    expect([...inner.blockedRunIds]).toEqual([seeded.run.id]);
+
+    // 決定 39：門を閉じるのは executor（キューのジョブの内側）。ループ終了時の block は
+    // 冪等な安全網でしかないので、**check-finished より前**に閉じていなければならない
+    // （onRecoveryRequired を落とすと、安全網の block が finalizeRun まで遅れてここが逆転する）。
+    expect(trace.indexOf("block")).toBeGreaterThanOrEqual(0);
+    expect(trace.indexOf("block")).toBeLessThan(trace.indexOf("check-finished"));
+    expect(trace).toContain("run-settled");
+  });
+
+  it("決定 39: 別の実行が復旧待ちの間は生成要求を 1 件も送らず、stopped（recovery-blocked）で終わる", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-blocked", unitStatuses: ["pending", "pending"] });
+
+    const recoveryGate = createRecoveryGate();
+    recoveryGate.block("別の実行");
+
+    // 台本は空。生成要求が 1 件でも送られたら「台本にない生成要求」で落ちる。
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client, { recoveryGate });
+
+    expect(scripted.requests).toHaveLength(0);
+    expect(scripted.ensureLoadedCalls).toHaveLength(0);
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("recovery-blocked");
+    expect(run.generationUnconfirmed).toBe(false);
+    // 単位は pending のまま残る（ゲートが開けば再開できる）。
+    expect(listCheckUnits(db, run.id).every((unit) => unit.status === "pending")).toBe(true);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-3：再確認側の停止経路とゲート配線 */
+  /** ---------------------------------------------------------------------- */
+
+  it("決定 26: 再確認でも beginRequest / endRequest は client.chat の直前・直後だけで呼ばれる", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    const trace: string[] = [];
+    let chatCount = 0;
+    const client: LmStudioClient = {
+      listModels: () => Promise.resolve([LOADED_MODEL]),
+      ensureLoaded: () => {
+        trace.push("ensureLoaded");
+        return Promise.resolve(LOADED_MODEL);
+      },
+      chat: () => {
+        chatCount += 1;
+        trace.push("chat");
+        return Promise.resolve(recheckResponse());
+      },
+    };
+
+    const inner = createStopGate(0);
+    const gate: StopGate = {
+      get signal() {
+        return inner.signal;
+      },
+      get stopRequested() {
+        return inner.stopRequested;
+      },
+      requestStop: () => inner.requestStop(),
+      beginRequest: () => {
+        trace.push("beginRequest");
+        inner.beginRequest();
+      },
+      endRequest: () => {
+        trace.push("endRequest");
+        inner.endRequest();
+      },
+      dispose: () => inner.dispose(),
+    };
+
+    await runLoopDirect(db, runId, client, { gate });
+    inner.dispose();
+
+    expect(chatCount).toBe(2);
+    // 検査単位は 1 件も走らない（すべて done）ので、この並びは再確認 2 件ぶんそのもの。
+    expect(trace).toEqual([
+      "ensureLoaded",
+      "beginRequest",
+      "chat",
+      "endRequest",
+      "ensureLoaded",
+      "beginRequest",
+      "chat",
+      "endRequest",
+    ]);
+  });
+
+  it("決定 26: 再確認の途中で停止要求を受けたら、次の再確認は claim せずに stopped（aborted）で終わる（仕様 8.2）", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    const gate = createStopGate(60_000);
+    const scripted = scriptedClient([
+      () => {
+        // 1 件目の再確認の生成中に停止操作を受け、応答は上限内に届く。
+        gate.requestStop();
+        return recheckResponse();
+      },
+    ]);
+
+    const run = await runLoopDirect(db, runId, scripted.client, { gate });
+    gate.dispose();
+
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("stopped");
+    expect(run.stopReason).toBe("aborted");
+    expect(run.generationUnconfirmed).toBe(false);
+
+    const rechecks = listRecheckUnits(db, runId);
+    const first = rechecks.find((unit) => unit.findingId === "f-zzz");
+    const second = rechecks.find((unit) => unit.findingId === "f-aaa");
+    expect(first?.status).toBe("done");
+    expect(second?.status).toBe("pending");
+    expect(second?.startedAt).toBeNull();
+  });
+
+  it("決定 26: 再確認が停止を伴う失敗で終わったら、次の再確認には手を付けない（stop の早期 return）", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    // 1 件目で「応答を受け取れずに切断」→ generationUnconfirmed: true の停止。
+    const scripted = scriptedClient([() => connectionLostDuringChat()]);
+    const run = await runLoopDirect(db, runId, scripted.client);
+
+    expect(scripted.requests).toHaveLength(1);
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.generationUnconfirmed).toBe(true);
+
+    const rechecks = listRecheckUnits(db, runId);
+    const second = rechecks.find((unit) => unit.findingId === "f-aaa");
+    // 2 件目は claim すらしていない（gate.stopRequested は立っていないので、
+    // 早期 return が無いとここが running → pending に書き換わり started_at が付く）。
+    expect(second?.status).toBe("pending");
+    expect(second?.startedAt).toBeNull();
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q-4：保存のロールバック（決定 15） */
+  /** ---------------------------------------------------------------------- */
+
+  it("決定 15: 検査単位の保存がロールバックしたら check-finished ではなく save-rolled-back を出す", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-rollback", unitStatuses: ["pending"] });
+    const unitId = seeded.units[0]?.id ?? "";
+
+    const scripted = scriptedClient([
+      () => {
+        // 生成中に別の経路（停止処理など）が先にこの単位を決着させた状況を作る。
+        // これで保存トランザクションの条件付き更新が 0 行になり、全体がロールバックする。
+        finishCheckUnitChecked(db, unitId, {
+          expectedStatus: "running",
+          status: "done",
+          attempts: 0,
+          failure: null,
+          pendingNote: null,
+          usage: null,
+          inputGraphemes: null,
+          elapsedMs: 0,
+          finishedAt: new Date(),
+        });
+        return checkResponse([finding("うえ", "ウエ", "notation", "likely-error")]);
+      },
+    ]);
+
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+    await runLoopDirect(db, seeded.run.id, scripted.client, {
+      emit: (event) => events.push(event),
+    });
+
+    const types = events.map((event) => event.type);
+    expect(types).toContain("save-rolled-back");
+    expect(types).not.toContain("check-finished");
+    expect(events.find((event) => event.type === "save-rolled-back")).toEqual({
+      type: "save-rolled-back",
+      unitId,
+      kind: "check",
+    });
+    // ロールバックしたので候補も指摘も 1 行も残らない（決定 15）。
+    expect(listCandidates(db, seeded.run.id)).toHaveLength(0);
+    expect(listFindings(db, seeded.run.id)).toHaveLength(0);
+  });
+
+  it("決定 15: 再確認の保存がロールバックしたら recheck-finished ではなく save-rolled-back を出す", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+
+    const scripted = scriptedClient([
+      () => {
+        finishRecheckUnitChecked(db, "ru-zzz", {
+          expectedStatus: "running",
+          status: "done",
+          attempts: 0,
+          failure: null,
+          pendingNote: null,
+          notApplicableReason: null,
+          verdict: "keep",
+          reasonKind: "error-confirmed",
+          reason: "別の経路が先に決着させた",
+          suggestionValid: true,
+          usage: null,
+          inputGraphemes: null,
+          elapsedMs: 0,
+          finishedAt: new Date(),
+        });
+        return recheckResponse();
+      },
+      () => recheckResponse(),
+    ]);
+
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+    await runLoopDirect(db, runId, scripted.client, { emit: (event) => events.push(event) });
+
+    const rolledBack = events.filter((event) => event.type === "save-rolled-back");
+    expect(rolledBack).toEqual([{ type: "save-rolled-back", unitId: "ru-zzz", kind: "recheck" }]);
+    // 2 件目（f-aaa）は正常に決着するので recheck-finished が 1 件だけ出る。
+    const finished = events.filter((event) => event.type === "recheck-finished");
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ findingId: "f-aaa" });
+  });
+
+  it("決定 15: ロールバックが起きなければ save-rolled-back は出ず、finished が出る", async () => {
+    const { db, runId } = seedTwoPendingRechecks();
+    const scripted = scriptedClient([() => recheckResponse(), () => recheckResponse()]);
+
+    const events: Array<PipelineEvent | OrchestratorEvent> = [];
+    await runLoopDirect(db, runId, scripted.client, { emit: (event) => events.push(event) });
+
+    const types = events.map((event) => event.type);
+    expect(types).not.toContain("save-rolled-back");
+    expect(types.filter((type) => type === "recheck-finished")).toHaveLength(2);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** 決定 35（終了状態は DB を読み直して決める） */
+  /** ---------------------------------------------------------------------- */
+
+  it("決定 35: ループが実行しなかった failed の検査単位も終了状態に反映される（DB を読み直す）", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    // 1 観点はすでに failed（前回セッションの結果）。もう 1 観点だけを今回のループが進める。
+    const seeded = seedRun(db, { runId: "run-mixed", unitStatuses: ["failed", "pending"] });
+
+    const scripted = scriptedClient([() => checkResponse([])]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(scripted.requests).toHaveLength(1);
+    // 今回のループが処理した単位だけを数えると completed になってしまう。
+    expect(run.status).toBe("partially-failed");
+  });
+
+  it("決定 35: ループが 1 単位も実行しなくても、failed の再確認単位があれば partially-failed になる", async () => {
+    const { db } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: BODY });
+    const seeded = seedRun(db, { runId: "run-recheck-failed", unitStatuses: ["done", "done"] });
+    const findingRecord = insertLocatedFinding(db, seeded, "うえ", 2, 4, "ウエ");
+    insertRecheckUnit(db, {
+      id: "ru-failed",
+      runId: seeded.run.id,
+      findingId: findingRecord.id,
+      inputRange: null,
+      status: "failed",
+      notApplicableReason: null,
+      attempts: 1,
+      failure: {
+        reason: "malformed",
+        message: "解析できなかった",
+        finishReason: null,
+        origin: "chat",
+      },
+      pendingNote: null,
+      verdict: null,
+      reasonKind: null,
+      reason: null,
+      suggestionValid: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: 1,
+      startedAt: null,
+      finishedAt: new Date(),
+    });
+
+    const scripted = scriptedClient([]);
+    const run = await runLoopDirect(db, seeded.run.id, scripted.client);
+
+    expect(scripted.requests).toHaveLength(0);
+    expect(run.status).toBe("partially-failed");
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** 決定 24（done は reject しない） */
+  /** ---------------------------------------------------------------------- */
+
+  it("done は想定外の例外でも reject しない（決定 24）", async () => {
+    const scripted = scriptedClient([
+      () => {
+        // LmStudioError ではない例外は executor を素通りしてループの外まで抜ける。
+        throw new TypeError("想定外の例外");
+      },
+    ]);
+    const harness = makeHarness(scripted.client);
+
+    const orchestrator = createOrchestrator(harness.deps);
+    const started = orchestrator.startRun(
+      baseInput({ chunkSettings: CHUNK_ONE_TARGET, perspectives: ["typo"] }),
+    );
+    const run = await started.done;
+
+    // 決定 33 の完全な処理（pending への差し戻しと internal-error での終端化）は Task 8。
+    // ここで確かめるのは「reject しない」ことだけ。
+    expect(run.id).toBe(started.run.id);
+  });
+});
+
+/** ---------------------------------------------------------------------- */
+/** W3（状態を書く経路は transitions.ts だけ） */
+/** ---------------------------------------------------------------------- */
+
+describe("W3: ループ・save・orchestrator はリポジトリの claim* / finish* / reopen* を直接 import しない（決定 29）", () => {
+  const TARGET_FILES = ["loop.ts", "save.ts", "orchestrator.ts"] as const;
+
+  /** `import { ... } from ".../db/repositories/xxx.ts"` の名前付き import を列挙する。 */
+  function repositoryImports(source: string): string[] {
+    // 波括弧の中に `{` `}` を許さない（`[\s\S]*?` だけだと、直前の import 文をまたいで
+    // 「最初の `{` から repositories を指す `}` まで」を 1 つの塊として飲み込んでしまい、
+    // 先頭に並んだ名前が検査から漏れる）。
+    const pattern = /import\s+(?:type\s+)?\{([^{}]*?)\}\s*from\s*"[^"]*db\/repositories\/[^"]+"/g;
+    const names: string[] = [];
+    for (const match of source.matchAll(pattern)) {
+      const body = match[1] ?? "";
+      for (const raw of body.split(",")) {
+        const name = raw
+          .trim()
+          .replace(/^type\s+/, "")
+          .split(/\s+as\s+/)[0]
+          ?.trim();
+        if (name !== undefined && name !== "") {
+          names.push(name);
+        }
+      }
+    }
+    return names;
+  }
+
+  it("検査対象のファイルの import を実際に読めていること（正規表現が空振り・取りこぼしをしていない）", () => {
+    // 各ファイルの import ブロックの**先頭の名前**を含める。取りこぼしがあると、
+    // 禁止名が先頭に並んだときに検査をすり抜けてしまうため。
+    const expected: Record<(typeof TARGET_FILES)[number], readonly string[]> = {
+      "loop.ts": ["findCheckUnit", "listCandidateSourcesForFinding", "findRecheckUnitByFinding"],
+      "save.ts": ["nextCandidateIndex", "insertRecheckUnit", "updateRunModelInfo"],
+      "orchestrator.ts": ["findCheckUnit", "findManuscriptVersion", "findRecheckUnit", "findRun"],
+    };
+    for (const file of TARGET_FILES) {
+      const source = readFileSync(path.resolve(import.meta.dirname, file), "utf8");
+      const names = repositoryImports(source);
+      for (const name of expected[file]) {
+        expect({ file, name, found: names.includes(name) }).toEqual({ file, name, found: true });
+      }
+    }
+  });
+
+  it("claim* / finish* / reopen* をリポジトリから直接 import していないこと", () => {
+    for (const file of TARGET_FILES) {
+      const source = readFileSync(path.resolve(import.meta.dirname, file), "utf8");
+      // reopen* も状態を書く（決定 45-4 の reopenSuppressedRecheckUnit）ので同じく禁止する。
+      const forbidden = repositoryImports(source).filter((name) =>
+        /^(claim|finish|reopen)/.test(name),
+      );
+      expect({ file, forbidden }).toEqual({ file, forbidden: [] });
+    }
+  });
+});
+
+/** ---------------------------------------------------------------------- */
+/** ヘルパー（DB を手で組み立てて runLoop を直接呼ぶ経路） */
+/** ---------------------------------------------------------------------- */
+
+interface SeededRun {
+  readonly run: RunRecord;
+  readonly targetId: string;
+  readonly units: readonly CheckUnitRecord[];
+}
+
+/**
+ * `running` の実行・1 対象・観点ぶんの検査単位を手で作る。`startRun` を経由せずに
+ * 「途中まで進んだ実行」を再現するために使う。
+ */
+function seedRun(
+  db: ReturnType<typeof setupDb>["db"],
+  input: {
+    readonly runId: string;
+    /** `PERSPECTIVES` の順に対応する検査単位の状態。 */
+    readonly unitStatuses: readonly CheckUnitRecord["status"][];
+    readonly recheckEnabled?: boolean;
+  },
+): SeededRun {
+  const run = insertRun(db, {
+    id: input.runId,
+    manuscriptVersionId: "mv1",
+    modelId: "model-a",
+    modelInfo: null,
+    endpointUrl: "http://127.0.0.1:1234",
+    generationSettings: { maxTokens: 512, temperature: 0 },
+    chunkSettings: CHUNK_ONE_TARGET,
+    timeouts: { checkMs: 60_000, recheckMs: 60_000 },
+    // 観点の数は検査単位の数に合わせる（`runs.perspectives` は走査順の正本なので、
+    // 単位を作っていない観点を載せるとループが「単位が見つからない」で落ちる）。
+    perspectives: PERSPECTIVES.slice(0, input.unitStatuses.length),
+    recheckEnabled: input.recheckEnabled ?? false,
+    allowedWords: [],
+    allowedWordRuleVersion: "1",
+    promptVersion: "1",
+    diagnosticTransformVersion: "1",
+    status: "running",
+    stopReason: null,
+    stopMessage: null,
+    generationUnconfirmed: false,
+    startOperationId: null,
+    finishedAt: null,
+  });
+  const target = insertRunTarget(db, {
+    id: `${input.runId}-t0`,
+    runId: run.id,
+    targetIndex: 0,
+    target: { start: 0, end: BODY.length },
+    contextBefore: null,
+    contextAfter: null,
+    input: { start: 0, end: BODY.length },
+    paragraphIds: [0],
+  });
+  const units = input.unitStatuses.map((status, index) => {
+    const perspective = PERSPECTIVES[index];
+    if (perspective === undefined) {
+      throw new Error("unitStatuses が perspectives より長い");
+    }
+    return insertCheckUnit(db, {
+      id: `${input.runId}-cu${String(index)}`,
+      runId: run.id,
+      targetId: target.id,
+      perspective,
+      status,
+      attempts: status === "pending" ? 0 : 1,
+      failure:
+        status === "failed"
+          ? {
+              reason: "malformed",
+              message: "解析できなかった",
+              finishReason: null,
+              origin: "chat",
+            }
+          : null,
+      pendingNote: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: status === "pending" ? null : 1,
+      startedAt: null,
+      finishedAt: status === "pending" ? null : new Date(),
+    });
+  });
+  return { run, targetId: target.id, units };
+}
+
+/** 位置確定済みの指摘を 1 件、手で作る（`insertFinding` は judgments も同時に作る）。 */
+function insertLocatedFinding(
+  db: ReturnType<typeof setupDb>["db"],
+  seeded: SeededRun,
+  quote: string,
+  start: number,
+  end: number,
+  suggestion: string | null,
+  /** 抑制の有無（決定 45-4 の再起票条件を突くテストが非 null を渡す）。既定は抑制なし。 */
+  suppression: { readonly word: string; readonly ruleVersion: string } | null = null,
+) {
+  return insertFinding(db, {
+    runId: seeded.run.id,
+    manuscriptVersionId: "mv1",
+    targetId: seeded.targetId,
+    locateStatus: "located",
+    range: { start, end },
+    paragraphId: 0,
+    quote,
+    suggestion,
+    category: "notation",
+    initialVerdict: "likely-error",
+    mergeKey: `${String(start)}:${String(end)}:${JSON.stringify(quote)}:${JSON.stringify(suggestion)}`,
+    suppression,
+  });
+}
+
+/**
+ * 位置確定済みの指摘 1 件と、その `pending` な再確認単位を手で作る。
+ * 指摘 ID を明示できるので、「本文の位置順」と「`finding_id` の昇順」を**わざと食い違わせた**
+ * フィクスチャが組める（決定 25 の 3 番目＝対象内の再確認順の検査に要る）。
+ */
+function seedPendingRecheck(
+  db: ReturnType<typeof setupDb>["db"],
+  seeded: SeededRun,
+  input: {
+    readonly findingId: string;
+    readonly recheckUnitId: string;
+    readonly quote: string;
+    readonly start: number;
+    readonly end: number;
+  },
+): void {
+  insertFinding(db, {
+    id: input.findingId,
+    runId: seeded.run.id,
+    manuscriptVersionId: "mv1",
+    targetId: seeded.targetId,
+    locateStatus: "located",
+    range: { start: input.start, end: input.end },
+    paragraphId: 0,
+    quote: input.quote,
+    suggestion: `${input.quote}の修正案`,
+    category: "notation",
+    initialVerdict: "likely-error",
+    mergeKey: `${String(input.start)}:${String(input.end)}:${JSON.stringify(input.quote)}`,
+    suppression: null,
+  });
+  insertRecheckUnit(db, {
+    id: input.recheckUnitId,
+    runId: seeded.run.id,
+    findingId: input.findingId,
+    inputRange: null,
+    status: "pending",
+    notApplicableReason: null,
+    attempts: 0,
+    failure: null,
+    pendingNote: null,
+    verdict: null,
+    reasonKind: null,
+    reason: null,
+    suggestionValid: null,
+    usage: null,
+    inputGraphemes: null,
+    elapsedMs: null,
+    startedAt: null,
+    finishedAt: null,
+  });
+}
+
+interface RunLoopDirectOptions {
+  readonly gate?: StopGate;
+  readonly recoveryGate?: RecoveryGate;
+  readonly emit?: (event: PipelineEvent | OrchestratorEvent) => void;
+}
+
+/** `runLoop` を直接呼ぶ（オーケストレーターを介さない）。 */
+async function runLoopDirect(
+  db: ReturnType<typeof setupDb>["db"],
+  runId: string,
+  client: LmStudioClient,
+  options: RunLoopDirectOptions = {},
+): Promise<RunRecord> {
+  const gate = options.gate ?? createStopGate(0);
+  try {
+    return await runLoop({
+      db,
+      client,
+      queue: createRequestQueue(),
+      recoveryGate: options.recoveryGate ?? createRecoveryGate(),
+      gate,
+      runId,
+      now: () => new Date(),
+      createId: idSequence(),
+      emit: options.emit ?? (() => undefined),
+    });
+  } finally {
+    if (options.gate === undefined) {
+      gate.dispose();
+    }
+  }
+}

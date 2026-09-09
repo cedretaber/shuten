@@ -24,7 +24,17 @@ const RUN_TRANSITIONS: ReadonlyArray<readonly [RunStatus, RunStatus]> = [
   ["partially-failed", "running"],
 ];
 
-/** 検査単位・再確認単位の許容遷移（決定 3 の表）。`done` / `not-applicable` は終端で、再試行でも戻さない。 */
+/**
+ * 検査単位・再確認単位の許容遷移（決定 3 の表）。`done` は終端で、再試行でも戻さない。
+ * `not-applicable` も原則終端だが、**抑制の解除だけは `pending` に戻せる**（決定 45-4）：
+ * 失敗観点の再試行で別分類の候補が加わると統合結果の `category` が変わって抑制が外れることが
+ * あり、そのとき 1 度も実行していない再確認単位を起票し直せないと再確認が永久に行われない。
+ * `disabled`（実行ごとに固定）と `unlocated`（位置特定の結果は変わらない）は戻さないが、
+ * その区別は理由列を見る `reopenSuppressedRecheckUnit` の側で行う（この表は状態しか見ない）。
+ * したがって `not-applicable → pending` は「表には有るが専用の入口
+ * （`transitions.ts` の `reopenSuppressedRecheckUnitChecked`）からしか通せない」遷移である。
+ * 汎用の `claimRecheckUnitChecked` / `finishRecheckUnitChecked` は、表を引く前にこのペアを弾く。
+ */
 const UNIT_TRANSITIONS: ReadonlyArray<readonly [UnitStatus, UnitStatus]> = [
   ["pending", "running"],
   ["pending", "not-applicable"],
@@ -32,6 +42,7 @@ const UNIT_TRANSITIONS: ReadonlyArray<readonly [UnitStatus, UnitStatus]> = [
   ["running", "failed"],
   ["running", "pending"],
   ["failed", "pending"],
+  ["not-applicable", "pending"],
 ];
 
 /**
@@ -77,5 +88,16 @@ export function canTransitionUnit(from: UnitStatus, to: UnitStatus): boolean {
 export function runStatusForStop(
   stop: RunStop,
 ): Extract<RunStatus, "stopped" | "recovery-waiting"> {
-  return stop.generationUnconfirmed ? "recovery-waiting" : "stopped";
+  return runStatusForUnconfirmed(stop.generationUnconfirmed);
+}
+
+/**
+ * 決定 23 の規則そのもの。`RunStop` を作らない経路（`run/orchestrator.ts` の
+ * `settleInternalError` と起動時照合）から、同じ規則を書き直さずに使うための入口。
+ * 判断材料は「生成が LM Studio 側で走り続けている可能性があるか」の 1 つだけである。
+ */
+export function runStatusForUnconfirmed(
+  generationUnconfirmed: boolean,
+): Extract<RunStatus, "stopped" | "recovery-waiting"> {
+  return generationUnconfirmed ? "recovery-waiting" : "stopped";
 }

@@ -9,6 +9,8 @@ import type {
   Usage,
 } from "../lmstudio/types.ts";
 import { createExecutor } from "./executor.ts";
+import { createRequestQueue } from "./queue.ts";
+import { createRecoveryGate, type RecoveryGate } from "./recovery-gate.ts";
 
 const REQUEST: ChatRequest = {
   model: "test-model",
@@ -82,6 +84,16 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+/** `blocked` を差し替えられる最小限の RecoveryGate スタブ。block/unblock は使わない。 */
+function stubRecoveryGate(blocked: boolean): RecoveryGate {
+  return {
+    blockedRunIds: new Set(blocked ? ["other-run"] : []),
+    blocked,
+    block: vi.fn(),
+    unblock: vi.fn(),
+  };
 }
 
 describe("createExecutor", () => {
@@ -532,6 +544,85 @@ describe("createExecutor", () => {
     expect(client.chat).toHaveBeenCalledTimes(1);
   });
 
+  it("E23: onSend/onSettled は client.chat 呼び出しのたびに 1 往復ずつ呼ばれる", async () => {
+    let count = 0;
+    const client = createMockClient({
+      chat: async () => {
+        count += 1;
+        if (count === 1) {
+          throw new LmStudioError("malformed", "解析できなかった");
+        }
+        return chatResult("ok");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+    const order: string[] = [];
+    const onSend = vi.fn(() => order.push("onSend"));
+    const onSettled = vi.fn(() => order.push("onSettled"));
+
+    const outcome = await executor.execute(REQUEST, parse, 1000, { onSend, onSettled });
+
+    expect(outcome.ok).toBe(true);
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenCalledTimes(2);
+    expect(order).toEqual(["onSend", "onSettled", "onSend", "onSettled"]);
+  });
+
+  it("E24: client.chat が例外を投げても onSettled は onSend と同数呼ばれる", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new Error("想定外の例外");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+    const onSend = vi.fn();
+    const onSettled = vi.fn();
+
+    await expect(executor.execute(REQUEST, parse, 1000, { onSend, onSettled })).rejects.toThrow(
+      "想定外の例外",
+    );
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it("E25: hooks を渡さなくても（既存の 3 引数のモックと同じ形でも）従来どおり動く", async () => {
+    const client = createMockClient({});
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("E26: signal が中断されていたら再試行の chat を送らず、届いていた失敗内容を残す", async () => {
+    const controller = new AbortController();
+    const client = createMockClient({
+      chat: async () => {
+        // 1 回目の応答が届いた直後（malformed の解析中）に停止要求が来た状況を模す。
+        controller.abort();
+        throw new LmStudioError("malformed", "解析できなかった");
+      },
+    });
+    const executor = createExecutor(client, { signal: controller.signal, now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    // chat が 1 回しか呼ばれない点は、signal 未確認のままでも ensureLoaded 経由の
+    // isAborted チェックで結局止まるので変わらない。ここで確かめたいのは、
+    // 届いた応答の失敗内容（malformed）が ensure-loaded 由来の aborted に
+    // 置き換わらずに残ること（failure.reason・halt.message が本質）。
+    expect(client.chat).toHaveBeenCalledTimes(1);
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.failure.reason).toBe("malformed");
+    expect(outcome.failure.origin).toBe("chat");
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.message).toBe("停止要求により再試行を送らなかった");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(outcome.halt?.failure?.reason).toBe("malformed");
+  });
+
   it("E22: 再試行前の ensureLoaded が model-not-loaded でも attempts は 1 のまま", async () => {
     let loads = 0;
     const client = createMockClient({
@@ -556,5 +647,243 @@ describe("createExecutor", () => {
     expect(client.chat).toHaveBeenCalledTimes(1);
     expect(outcome.failure.origin).toBe("ensure-loaded");
     expect(outcome.halt?.reason).toBe("model-not-loaded");
+  });
+
+  it("E27: ensureLoaded が失敗して chat を送らなければ、onSend/onSettled は 0 回のまま（フックは ensureLoaded の周りでは呼ばない）", async () => {
+    const client = createMockClient({
+      ensureLoaded: async () => {
+        throw new LmStudioError("model-not-loaded", "未ロード");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+    const onSend = vi.fn();
+    const onSettled = vi.fn();
+
+    const outcome = await executor.execute(REQUEST, parse, 1000, { onSend, onSettled });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    // onSend/onSettled を ensureLoaded の前後（あるいは execute 全体）に張ってしまう変異は、
+    // ここで onSend/onSettled が呼ばれてしまうため落ちる。
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+
+  it("R8: recoveryGate.blocked が真なら、ensureLoaded も chat も呼ばず recovery-blocked で止める（決定 39）", async () => {
+    const client = createMockClient({});
+    const recoveryGate = stubRecoveryGate(true);
+    const executor = createExecutor(client, { now: createClock(), recoveryGate });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(client.ensureLoaded).not.toHaveBeenCalled();
+    expect(client.chat).not.toHaveBeenCalled();
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.halt?.reason).toBe("recovery-blocked");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    // RunStop.failure はこの実行自身の失敗ではないので null（result.ts のコメントに倣う。
+    // 停止要求＝aborted の halt.failure と同じ扱い）。単位側の outcome.failure は
+    // 「送らなかった」という単位の事実として非 null（notSentFailure、origin: "local"）で
+    // pending に写るための材料になる。
+    expect(outcome.halt?.failure).toBeNull();
+    expect(outcome.failure.origin).toBe("local");
+  });
+
+  it("R9: recoveryGate を渡しても blocked が偽なら、従来どおり ensureLoaded → chat の順で呼ぶ", async () => {
+    const calls: string[] = [];
+    const client = createMockClient({ calls });
+    const recoveryGate = stubRecoveryGate(false);
+    const executor = createExecutor(client, { now: createClock(), recoveryGate });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toEqual(["ensureLoaded", "chat"]);
+  });
+
+  it("R13: recoveryGate.blocked は「投入時」ではなく「共有キューで順番が回ってきた時点」で見る（決定 39 の本題）", async () => {
+    // 本物の RequestQueue と RecoveryGate を使う。R8/R9 は blocked を定数で固定したスタブ
+    // だったため、「execute() を呼んだ時点（queue.enqueue の手前）で recoveryGate.blocked を
+    // 読んでしまう」という決定 39 が禁じている実装でも通ってしまっていた。ここでは A が
+    // まだ未確認になっていない時点（B の execute() を呼んだ直後）ではゲートは開いており、
+    // A の実行が recovery-waiting に決着してはじめて（＝共有キューで B の順番が回ってきた
+    // 時点までに）閉じることを、実際のキュー・ゲートの組み合わせで固定する。
+    const queue = createRequestQueue();
+    const gate = createRecoveryGate();
+
+    const clientA = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const executorA = createExecutor(clientA, {
+      now: createClock(),
+      queue,
+      recoveryGate: gate,
+      onRecoveryRequired: () => {
+        gate.block("run-a");
+      },
+    });
+
+    const clientB = createMockClient({});
+    const executorB = createExecutor(clientB, {
+      now: createClock(),
+      queue,
+      recoveryGate: gate,
+    });
+
+    // A と B の execute() を同期的に続けて呼ぶ。この時点では A の chat はまだ 1 ステップも
+    // 進んでいない（Promise が作られただけ）ので、gate.blocked は依然として false。
+    // B がここで「投入時」に blocked を読んでしまう実装なら、B は素通りしてしまう。
+    const promiseA = executorA.execute(REQUEST, parse, 1000);
+    expect(gate.blocked).toBe(false);
+    const promiseB = executorB.execute(REQUEST, parse, 1000);
+
+    const [outcomeA, outcomeB] = await Promise.all([promiseA, promiseB]);
+
+    expect(outcomeA.ok).toBe(false);
+    if (outcomeA.ok) return;
+    expect(outcomeA.halt?.reason).toBe("recovery-needed");
+    expect(outcomeA.halt?.generationUnconfirmed).toBe(true);
+    expect(gate.blocked).toBe(true);
+
+    expect(outcomeB.ok).toBe(false);
+    if (outcomeB.ok) return;
+    // B は共有キューで自分の番が回ってきた時点でゲートを見るので、A が未確認になった
+    // あとに送信しようとした B は、ensureLoaded すら呼ばずに recovery-blocked で止まる。
+    expect(clientB.ensureLoaded).not.toHaveBeenCalled();
+    expect(clientB.chat).not.toHaveBeenCalled();
+    expect(outcomeB.halt?.reason).toBe("recovery-blocked");
+  });
+
+  it("R13b: 同じ executor でキュー待ちの単位を取り消しても、送信中だった単位の生成未確認が消えない（決定 45-2 × 39）", async () => {
+    // 45-2 の取り消しは**キューの直列化の外**（execute の catch）で走る。ここで共有の halt を
+    // 書いてしまうと、先に決着した取り消し（generationUnconfirmed: false）が halt を占領し、
+    // 後から中断を処理する送信中の単位が `halt ??= stop` で自分の halt を反映できなくなる。
+    // 結果、finish() が onRecoveryRequired を呼ばず、復旧ゲートが開いたままになる。
+    const queue = createRequestQueue();
+    const gate = createRecoveryGate();
+    const controller = new AbortController();
+
+    // A1 の chat は abort で自動的に落とさず、テストが握る deferred で落とす。
+    // 自動 reject にすると A1 と A2 の決着順がマイクロタスクの深さで揺れ、変異を当てても
+    // 落ちたり落ちなかったりする。順序をテスト側で決め切る。
+    let rejectChatA: (error: unknown) => void = () => undefined;
+    const chatA = new Promise<ChatResult>((_, reject) => {
+      rejectChatA = reject;
+    });
+    const clientA = createMockClient({ chat: async () => await chatA });
+    const executorA = createExecutor(clientA, {
+      now: createClock(),
+      queue,
+      signal: controller.signal,
+      recoveryGate: gate,
+      onRecoveryRequired: () => {
+        gate.block("run-a");
+      },
+    });
+    // 別の実行 B。ゲートが閉じていれば ensureLoaded も chat も呼ばれない。
+    const clientB = createMockClient({});
+    const executorB = createExecutor(clientB, {
+      now: createClock(),
+      queue,
+      recoveryGate: gate,
+    });
+
+    // 呼び出し順 A1 → A2 → B（Q4b と同じ、同一 executor への複数 enqueue）。
+    const promiseA1 = executorA.execute(REQUEST, parse, 1000);
+    const promiseA2 = executorA.execute(REQUEST, parse, 1000);
+    const promiseB = executorB.execute(REQUEST, parse, 1000);
+
+    // A1 が chat を送るまで進める。
+    for (let index = 0; index < 5; index += 1) {
+      await Promise.resolve();
+    }
+    expect(clientA.chat).toHaveBeenCalledTimes(1);
+
+    // 停止。A2 はキュー待ちなので、先行の A1 を待たずにその場で決着する。
+    controller.abort();
+    const outcomeA2 = await promiseA2;
+    expect(outcomeA2.ok).toBe(false);
+    if (outcomeA2.ok) return;
+    expect(outcomeA2.attempts).toBe(0);
+
+    // A2 が決着した**後**で、送信中だった A1 の chat を中断で落とす。
+    rejectChatA(new LmStudioError("aborted", "生成要求が中断された"));
+
+    const outcomeA1 = await promiseA1;
+    expect(outcomeA1.ok).toBe(false);
+    if (outcomeA1.ok) return;
+    // 送信済みの要求が中断された＝生成が走ったかどうか分からない（決定 39）。
+    expect(outcomeA1.failure.origin).toBe("chat");
+    expect(outcomeA1.attempts).toBe(1);
+    expect(outcomeA1.halt?.generationUnconfirmed).toBe(true);
+    expect(gate.blocked).toBe(true);
+
+    // ゲートが閉じているので、後続の実行 B は 1 件も送らない。
+    const outcomeB = await promiseB;
+    expect(outcomeB.ok).toBe(false);
+    expect(clientB.chat).not.toHaveBeenCalled();
+  });
+
+  it("R10: generationUnconfirmed: true の halt を返す直前に onRecoveryRequired が同期的に呼ばれる（決定 39）", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const events: string[] = [];
+    const onRecoveryRequired = vi.fn(() => {
+      events.push("onRecoveryRequired");
+    });
+    const executor = createExecutor(client, { now: createClock(), onRecoveryRequired });
+
+    // execute() が返す Promise の resolve 側 .then() で 'resolved' を記録する。この .then() の
+    // コールバックは、execute() 内部（executor 側）の処理がすべて終わって Promise が解決した
+    // "あとで" マイクロタスクとして実行されるので、onRecoveryRequired が同期的に（return の
+    // 直前に）呼ばれていれば、必ず 'onRecoveryRequired' → 'resolved' の順になる。
+    // 非同期（setTimeout などマクロタスク）で呼ぶ実装に変異させると、この順序が崩れて落ちる。
+    const outcome = await executor.execute(REQUEST, parse, 1000).then((result) => {
+      events.push("resolved");
+      return result;
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.halt?.generationUnconfirmed).toBe(true);
+    expect(onRecoveryRequired).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(["onRecoveryRequired", "resolved"]);
+  });
+
+  it("R11: generationUnconfirmed: false の halt では onRecoveryRequired を呼ばない", async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("model-not-loaded", "アンロードされた");
+      },
+    });
+    const onRecoveryRequired = vi.fn();
+    const executor = createExecutor(client, { now: createClock(), onRecoveryRequired });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    expect(onRecoveryRequired).not.toHaveBeenCalled();
+  });
+
+  it("R12: recoveryGate も onRecoveryRequired も渡さなければ従来どおり動く（E1 の非退行）", async () => {
+    const calls: string[] = [];
+    const client = createMockClient({ calls });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const outcome = await executor.execute(REQUEST, parse, 1000);
+
+    expect(outcome.ok).toBe(true);
+    expect(calls).toEqual(["ensureLoaded", "chat"]);
   });
 });

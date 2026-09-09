@@ -15,6 +15,7 @@ import {
   type InsertRecheckUnitInput,
   insertRecheckUnit,
   listRecheckUnits,
+  reopenSuppressedRecheckUnit,
 } from "./rechecks.ts";
 import { insertRun, insertRunTarget } from "./runs.ts";
 
@@ -380,6 +381,107 @@ describe("db/repositories/rechecks", () => {
     expect(found?.suggestionValid).toBeNull();
     expect(found?.usage).toBeNull();
     expect(found?.finishedAt).toBeNull();
+    close();
+  });
+
+  /** ------------------------------------------------------------------ */
+  /** R14（決定 45-4：抑制が外れた再確認単位を pending に戻す） */
+  /** ------------------------------------------------------------------ */
+
+  /** `not-applicable` の再確認単位を 1 件作る。 */
+  function insertNotApplicable(
+    db: ReturnType<typeof setupDb>["db"],
+    run: { readonly id: string },
+    findingId: string,
+    unitId: string,
+    reason: RecheckNotApplicableReason,
+  ): void {
+    insertRecheckUnit(
+      db,
+      basePendingInput({
+        id: unitId,
+        runId: run.id,
+        findingId,
+        status: "not-applicable",
+        notApplicableReason: reason,
+        finishedAt: new Date("2026-09-09T00:00:00.000Z"),
+      }),
+    );
+  }
+
+  it("R14: not-applicable(suppressed) を pending に戻し、not_applicable_reason と finished_at を同時に消す", () => {
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f1");
+    insertNotApplicable(db, run, finding.id, "rc-sup", "suppressed");
+
+    expect(reopenSuppressedRecheckUnit(db, "rc-sup")).toBe(true);
+
+    const after = findRecheckUnitByFinding(db, finding.id);
+    expect(after?.status).toBe("pending");
+    expect(after?.notApplicableReason).toBeNull();
+    expect(after?.finishedAt).toBeNull();
+    close();
+  });
+
+  it("R14: suppressed 以外の not-applicable（disabled / unlocated）は 1 列も変えずに false を返す", () => {
+    for (const reason of ["disabled", "unlocated"] as const) {
+      const { db, close } = setupDb();
+      const { run, target } = setupBase(db);
+      const finding = makeFinding(db, run, target, "f1");
+      insertNotApplicable(db, run, finding.id, "rc-na", reason);
+      const before = findRecheckUnitByFinding(db, finding.id);
+
+      expect(reopenSuppressedRecheckUnit(db, "rc-na")).toBe(false);
+      expect(findRecheckUnitByFinding(db, finding.id)).toEqual(before);
+      close();
+    }
+  });
+
+  it("R14: not-applicable 以外（pending / running / done / failed）は 1 列も変えずに false を返す", () => {
+    for (const status of ["pending", "running", "done", "failed"] as const) {
+      const { db, close } = setupDb();
+      const { run, target } = setupBase(db);
+      const finding = makeFinding(db, run, target, "f1");
+      insertRecheckUnit(
+        db,
+        basePendingInput({ id: "rc-x", runId: run.id, findingId: finding.id, status }),
+      );
+      const before = findRecheckUnitByFinding(db, finding.id);
+
+      expect(reopenSuppressedRecheckUnit(db, "rc-x")).toBe(false);
+      expect(findRecheckUnitByFinding(db, finding.id)).toEqual(before);
+      close();
+    }
+  });
+
+  it("R14: 理由列が suppressed でも status が not-applicable でなければ 1 列も変えずに false を返す", () => {
+    // 本来ありえない組み合わせ（理由列は not-applicable のときだけ非 null）だが、
+    // 条件付き更新（決定 5）が status も見ていることを固定する。
+    const { db, close } = setupDb();
+    const { run, target } = setupBase(db);
+    const finding = makeFinding(db, run, target, "f1");
+    insertRecheckUnit(
+      db,
+      basePendingInput({
+        id: "rc-odd",
+        runId: run.id,
+        findingId: finding.id,
+        status: "done",
+        notApplicableReason: "suppressed",
+      }),
+    );
+    const before = findRecheckUnitByFinding(db, finding.id);
+
+    expect(reopenSuppressedRecheckUnit(db, "rc-odd")).toBe(false);
+    expect(findRecheckUnitByFinding(db, finding.id)).toEqual(before);
+    close();
+  });
+
+  it("R14: 存在しない ID では false を返す", () => {
+    const { db, close } = setupDb();
+    setupBase(db);
+    expect(reopenSuppressedRecheckUnit(db, "存在しない単位")).toBe(false);
     close();
   });
 });

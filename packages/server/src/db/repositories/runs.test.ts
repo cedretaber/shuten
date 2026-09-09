@@ -15,8 +15,11 @@ import {
   type InsertRunInput,
   insertRun,
   insertRunTarget,
+  listRunsByStatus,
   listRunTargets,
+  setStopRequestedAt,
   toGenerationSettings,
+  updateRunModelInfo,
 } from "./runs.ts";
 
 /** テストごとにマイグレーション適用済みのメモリ DB を作る。 */
@@ -322,6 +325,199 @@ describe("db/repositories/runs", () => {
     expect(found?.id).toBe("r1");
 
     expect(findRunByStartOperationId(db, "no-such-op")).toBeNull();
+    close();
+  });
+
+  it("N1: updateRunModelInfo は model_info が null の行だけ更新し、2度目の呼び出しでは上書きしない（決定 30）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", modelInfo: null }));
+    expect(run.modelInfo).toBeNull();
+    // 2 件目の実行。**`model_info` は null で作る**：ここに値を入れてしまうと
+    // `WHERE model_info IS NULL` に阻まれ、`WHERE id = ?` を落とす変異を検出できない。
+    const other = insertRun(db, baseRunInput({ id: "r2", modelInfo: null }));
+    expect(other.modelInfo).toBeNull();
+
+    const firstInfo: ModelInfo = MODEL_INFO;
+    updateRunModelInfo(db, "r1", firstInfo);
+    expect(findRun(db, "r1")?.modelInfo).toEqual(firstInfo);
+    // 対象外の実行は書き換わらない（`WHERE id = ?` が効いている）。
+    expect(findRun(db, "r2")?.modelInfo).toBeNull();
+
+    // 2度目の呼び出し（既に model_info が非 null）は無視され、最初の値のまま。
+    const secondInfo: ModelInfo = { ...MODEL_INFO, id: "model-b", loadedContextLength: 2048 };
+    updateRunModelInfo(db, "r1", secondInfo);
+    expect(findRun(db, "r1")?.modelInfo).toEqual(firstInfo);
+    expect(findRun(db, "r2")?.modelInfo).toBeNull();
+    close();
+  });
+
+  it("setStopRequestedAt は stop_requested_at だけを書き、status には触れない（決定 21・36）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    insertRun(db, baseRunInput({ id: "r1", status: "running" }));
+    // 2 件目の実行。`stop_requested_at` は null で作り、書き換わらないことを断定する
+    // （`WHERE id = ?` を落とす変異を検出するため）。
+    const other = insertRun(db, baseRunInput({ id: "r2", status: "running" }));
+    expect(other.stopRequestedAt).toBeNull();
+
+    const at = new Date("2026-09-09T05:00:00.000Z");
+    setStopRequestedAt(db, "r1", at);
+
+    const found = findRun(db, "r1");
+    expect(found?.stopRequestedAt).toEqual(at);
+    expect(found?.status).toBe("running");
+    const untouched = findRun(db, "r2");
+    expect(untouched?.stopRequestedAt).toBeNull();
+    expect(untouched?.status).toBe("running");
+    close();
+  });
+
+  it("N2a: claimRun の options.clearStopState は状態と同時に stop_requested_at・generation_unconfirmed・finished_at・stop_reason・stop_message を消す（決定 36）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", status: "running" }));
+    setStopRequestedAt(db, "r1", new Date("2026-09-09T05:00:00.000Z"));
+    finishRun(db, run.id, {
+      expectedStatus: "running",
+      status: "stopped",
+      stopReason: "aborted",
+      stopMessage: "ユーザーが停止しました",
+      generationUnconfirmed: true,
+      finishedAt: new Date("2026-09-09T06:00:00.000Z"),
+    });
+    const stopped = findRun(db, "r1");
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.stopRequestedAt).not.toBeNull();
+    expect(stopped?.generationUnconfirmed).toBe(true);
+    expect(stopped?.finishedAt).not.toBeNull();
+    expect(stopped?.stopReason).toBe("aborted");
+    expect(stopped?.stopMessage).toBe("ユーザーが停止しました");
+
+    const resumed = claimRun(db, "r1", "stopped", "running", { clearStopState: true });
+    expect(resumed).toBe(true);
+
+    const after = findRun(db, "r1");
+    expect(after?.status).toBe("running");
+    expect(after?.stopRequestedAt).toBeNull();
+    expect(after?.generationUnconfirmed).toBe(false);
+    expect(after?.finishedAt).toBeNull();
+    expect(after?.stopReason).toBeNull();
+    expect(after?.stopMessage).toBeNull();
+    close();
+  });
+
+  it("N2b: claimRun の options.clearStopState は runs への UPDATE を1回しか発行しない（同じ1文であること）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", status: "running" }));
+    finishRun(db, run.id, {
+      expectedStatus: "running",
+      status: "stopped",
+      stopReason: "aborted",
+      stopMessage: "ユーザーが停止しました",
+      generationUnconfirmed: true,
+      finishedAt: new Date("2026-09-09T06:00:00.000Z"),
+    });
+
+    // runs への UPDATE の発行回数を、行レベルの AFTER UPDATE トリガーで数える
+    // （`check-units.test.ts` の S3c と同じ手法）。WHERE が対象行1件にちょうど一致する構成なので、
+    // トリガーの発火回数 = 実際に発行された UPDATE 文の本数になる（2文に分けて status →
+    // 停止関連の列の順に書けば2回発火する）。
+    db.run(sql`CREATE TEMP TABLE run_update_log (n integer)`);
+    db.run(sql`
+      CREATE TEMP TRIGGER t_runs_update AFTER UPDATE ON runs
+      BEGIN
+        INSERT INTO run_update_log VALUES (1);
+      END
+    `);
+
+    const resumed = claimRun(db, "r1", "stopped", "running", { clearStopState: true });
+    expect(resumed).toBe(true);
+
+    const count = db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM run_update_log`);
+    expect(count.n).toBe(1);
+    close();
+  });
+
+  it("claimRun はオプション無しでは従来どおり status 以外の列を変えない（既存の呼び出しの挙動は変えない）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    const run = insertRun(db, baseRunInput({ id: "r1", status: "running" }));
+    setStopRequestedAt(db, "r1", new Date("2026-09-09T05:00:00.000Z"));
+    finishRun(db, run.id, {
+      expectedStatus: "running",
+      status: "stopped",
+      stopReason: "aborted",
+      stopMessage: "ユーザーが停止しました",
+      generationUnconfirmed: true,
+      finishedAt: new Date("2026-09-09T06:00:00.000Z"),
+    });
+
+    const resumed = claimRun(db, "r1", "stopped", "running");
+    expect(resumed).toBe(true);
+
+    const after = findRun(db, "r1");
+    expect(after?.status).toBe("running");
+    // clearStopState を渡していないので、停止関連の列はそのまま残る。
+    expect(after?.stopRequestedAt).not.toBeNull();
+    expect(after?.generationUnconfirmed).toBe(true);
+    expect(after?.finishedAt).not.toBeNull();
+    expect(after?.stopReason).toBe("aborted");
+    expect(after?.stopMessage).toBe("ユーザーが停止しました");
+    close();
+  });
+
+  it("listRunsByStatus は指定した状態のいずれかに一致する実行を started_at 昇順で列挙する（決定 39・40）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, { id: "mv1", name: "原稿", body: "本文" });
+    // id の辞書順（r-running-a < r-running-z）と started_at の時系列順（z が先、a が後）を
+    // わざと逆にする（`listCandidates` のテストと同じ姿勢：orderBy の取り違えを検出できるように）。
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-running-a",
+        status: "running",
+        startedAt: new Date("2026-09-09T02:00:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-running-z",
+        status: "running",
+        startedAt: new Date("2026-09-09T01:00:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-recovery",
+        status: "recovery-waiting",
+        generationUnconfirmed: true,
+        startedAt: new Date("2026-09-09T00:30:00.000Z"),
+      }),
+    );
+    insertRun(
+      db,
+      baseRunInput({
+        id: "r-completed",
+        status: "completed",
+        startedAt: new Date("2026-09-09T00:00:00.000Z"),
+      }),
+    );
+
+    const running = listRunsByStatus(db, ["running"]);
+    // started_at 昇順（01:00 の r-running-z が先）。id の辞書順（a < z）とは逆になる。
+    expect(running.map((r) => r.id)).toEqual(["r-running-z", "r-running-a"]);
+
+    const recovering = listRunsByStatus(db, ["recovery-waiting"]);
+    expect(recovering.map((r) => r.id)).toEqual(["r-recovery"]);
+
+    const both = listRunsByStatus(db, ["running", "recovery-waiting"]);
+    expect(both.map((r) => r.id)).toEqual(["r-recovery", "r-running-z", "r-running-a"]);
+
+    expect(listRunsByStatus(db, ["stopped"])).toEqual([]);
     close();
   });
 });

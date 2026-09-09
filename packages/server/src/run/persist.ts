@@ -7,10 +7,19 @@
  * （PR9b のオーケストレーター、`run/merge-store.ts`）は DB へ書く直前に必ずこれを通す。
  */
 
-import type { CheckInput, ContextWindow, LlmFinding, Paragraph, TargetRange } from "@shuten/shared";
+import type {
+  CheckInput,
+  ContextWindow,
+  LlmFinding,
+  LocatedCandidate,
+  MergedFinding,
+  Paragraph,
+  Perspective,
+  TargetRange,
+} from "@shuten/shared";
 
 import { assertWellFormedBody } from "../db/errors.ts";
-import type { FindingRecord, RunTargetRecord } from "../db/records.ts";
+import type { CandidateRecord, FindingRecord, RunTargetRecord } from "../db/records.ts";
 
 /**
  * 境界検証違反（決定 17）。接続先 URL・API キー・本文全体はメッセージに含めない
@@ -167,4 +176,63 @@ export function checkInputFromTargetRecord(record: RunTargetRecord): CheckInput 
     after: record.contextAfter,
   };
   return { target, context, inputRange: record.input };
+}
+
+/**
+ * `listCandidateSourcesForFinding`（決定 38）の 1 件を `LocatedCandidate` にする。
+ * 統合先が `located` の指摘に紐づく候補は必ず位置確定済みのはず（`mergeCandidates` は位置確定済み
+ * 候補だけを統合する。仕様書 6.4）だが、DB から読み直した値を無条件に信用せず、`range` が
+ * null の行（不変条件が壊れている）は `PersistBoundaryError` にする
+ * （`docs/reference/invariants.md`「失敗・形式不正を正常な値に置き換えない」）。
+ */
+function toLocatedCandidate(source: {
+  readonly candidate: CandidateRecord;
+  readonly perspective: Perspective;
+}): LocatedCandidate {
+  const { candidate, perspective } = source;
+  if (candidate.range === null) {
+    throw new PersistBoundaryError(
+      `位置未確定の候補は MergedFinding の sources に含められません（候補 ID: ${candidate.id}）`,
+    );
+  }
+  return {
+    id: candidate.id,
+    perspective,
+    llm: candidate.llm,
+    locate: { status: "located", range: candidate.range },
+  };
+}
+
+/**
+ * 保存済みの `FindingRecord` と候補（`listCandidateSourcesForFinding`）から `MergedFinding` を
+ * 組み立てる（決定 38）。再確認要求（`buildRecheckRequest` → `renderFindingBlock`）が要求する形に
+ * するだけで、保存済みの集約値（`category`・`initialVerdict`・`quote`・`suggestion`・`range`）は
+ * そのまま使い、再計算しない（再確認は保存された指摘を見るのであって、統合をやり直さない）。
+ *
+ * `finding.locateStatus !== "located"` または `finding.range === null`（位置未確定）の指摘には
+ * 使えない。再確認は位置確定済みの指摘だけを対象にするため（仕様書 6.5・8.1 節）、
+ * `PersistBoundaryError` を投げる。
+ */
+export function mergedFindingFromRecords(
+  finding: FindingRecord,
+  sources: ReadonlyArray<{
+    readonly candidate: CandidateRecord;
+    readonly perspective: Perspective;
+  }>,
+): MergedFinding {
+  if (finding.locateStatus !== "located" || finding.range === null) {
+    throw new PersistBoundaryError(
+      `位置未確定の指摘（locateStatus: "${finding.locateStatus}"）から MergedFinding は組み立てられません` +
+        `（指摘 ID: ${finding.id}）`,
+    );
+  }
+  return {
+    id: finding.id,
+    range: finding.range,
+    quote: finding.quote,
+    category: finding.category,
+    suggestion: finding.suggestion,
+    verdict: finding.initialVerdict,
+    sources: sources.map(toLocatedCandidate),
+  };
 }

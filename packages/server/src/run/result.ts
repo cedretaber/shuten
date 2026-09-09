@@ -132,7 +132,11 @@ export type StopReason =
   | "recovery-needed"
   | "connection-lost"
   | "settings"
-  | "aborted";
+  | "aborted"
+  /** 想定外の例外で停止した（決定 14・決定 33）。 */
+  | "internal-error"
+  /** 別の実行が復旧待ちのため、プロセス全体の送信ゲートに止められた（決定 39）。 */
+  | "recovery-blocked";
 
 export interface RunStop {
   readonly reason: StopReason;
@@ -181,6 +185,13 @@ export interface RunConditions {
   /** 最初の ensureLoaded が返した ModelInfo。取れなければ null。 */
   readonly model: ModelInfo | null;
   readonly chunkSettings: ChunkSettings;
+  /**
+   * `recoveryConfirmMs`（`runs.recovery_confirm_ms`）が 0 より大きいときは、`checkMs` / `recheckMs` は
+   * 打ち切りの上限ではなく、超えた時点で遅延として通知する閾値であり、実際のハード上限は
+   * これに `recoveryConfirmMs` を加えた値になる（決定 7）。0 のとき（`runPipeline`（CLI）と、
+   * 決定 43 が正規の設定値として認める `SHUTEN_RECOVERY_CONFIRM_MS = 0`）は `checkMs` / `recheckMs`
+   * がそのままハード上限になる。これは待機時間の話で、経路の判別ではない（決定 45-3）。
+   */
   readonly timeouts: { readonly checkMs: number; readonly recheckMs: number };
   readonly allowedWords: readonly string[];
   readonly versions: {

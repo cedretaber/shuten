@@ -90,6 +90,9 @@ const RUN_STOP_REASONS = [
   "connection-lost",
   "settings",
   "aborted",
+  "internal-error",
+  "recovery-blocked",
+  "backend-restarted",
 ] as const satisfies readonly RunStopReason[];
 
 /** `diagnostics.reason`。`LocateFailureReason`（shared）は `located` を含まない 3 値。 */

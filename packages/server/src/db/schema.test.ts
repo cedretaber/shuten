@@ -1,7 +1,9 @@
 import type { ChunkSettings, LlmFinding } from "@shuten/shared";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { createDatabase } from "./client.ts";
 import { applyMigrations } from "./migrate.ts";
+import type { RunStopReason } from "./records.ts";
 import {
   candidates,
   checkUnits,
@@ -52,13 +54,14 @@ function insertManuscriptVersion(db: ReturnType<typeof setupDb>["db"], id: strin
     .run();
 }
 
-/** runs に 1 行入れる。start_operation_id は省略可能（null）。 */
+/** runs に 1 行入れる。start_operation_id・stop_reason は省略可能（null）。 */
 function insertRun(
   db: ReturnType<typeof setupDb>["db"],
   args: {
     readonly id: string;
     readonly manuscriptVersionId: string;
     readonly startOperationId?: string;
+    readonly stopReason?: RunStopReason;
   },
 ): void {
   db.insert(runs)
@@ -76,7 +79,8 @@ function insertRun(
       allowedWordRuleVersion: "1",
       promptVersion: "1",
       diagnosticTransformVersion: "1",
-      status: "running",
+      status: args.stopReason === undefined ? "running" : "stopped",
+      stopReason: args.stopReason ?? null,
       startOperationId: args.startOperationId ?? null,
       startedAt: new Date(0),
     })
@@ -305,6 +309,18 @@ describe("db/schema", () => {
     ).toThrow();
     expect(() => insertRun(db, { id: "r3", manuscriptVersionId: "mv1" })).not.toThrow();
     expect(() => insertRun(db, { id: "r4", manuscriptVersionId: "mv1" })).not.toThrow();
+    close();
+  });
+
+  it("S6c: stop_reason に internal-error・recovery-blocked を入れて読み戻せる（決定 14・決定 39）", () => {
+    const { db, close } = setupDb();
+    insertManuscriptVersion(db, "mv1");
+    insertRun(db, { id: "r1", manuscriptVersionId: "mv1", stopReason: "internal-error" });
+    insertRun(db, { id: "r2", manuscriptVersionId: "mv1", stopReason: "recovery-blocked" });
+    const found1 = db.select().from(runs).where(eq(runs.id, "r1")).get();
+    const found2 = db.select().from(runs).where(eq(runs.id, "r2")).get();
+    expect(found1?.stopReason).toBe("internal-error");
+    expect(found2?.stopReason).toBe("recovery-blocked");
     close();
   });
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { LmStudioError } from "../lmstudio/errors.ts";
 import type {
@@ -9,7 +9,7 @@ import type {
   Usage,
 } from "../lmstudio/types.ts";
 import { createExecutor } from "./executor.ts";
-import { createRequestQueue } from "./queue.ts";
+import { createRequestQueue, QueueCancelledError } from "./queue.ts";
 
 const REQUEST: ChatRequest = {
   model: "test-model",
@@ -48,6 +48,36 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
     resolve = r;
   });
   return { promise, resolve };
+}
+
+/**
+ * マイクロタスクを数回流す。キューの連鎖（`tail.then(...)`）と早期取り消しの
+ * `Promise.race` が進むのを待つためだけに使う。実時間は 1 ミリ秒も進めない。
+ */
+async function flushMicrotasks(times = 10): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+/**
+ * Promise の決着を「待たずに」観測する。先行ジョブを未解決に保ったまま
+ * 「もう決着しているか」を確かめるために使う（`await` で待つと、実装が壊れているとき
+ * テストがタイムアウトするまで固まり、何が失敗したのか分からなくなる）。
+ */
+function watch<T>(promise: Promise<T>): { settled: () => boolean; error: () => unknown } {
+  let settled = false;
+  let error: unknown = null;
+  void promise.then(
+    () => {
+      settled = true;
+    },
+    (caught: unknown) => {
+      settled = true;
+      error = caught;
+    },
+  );
+  return { settled: () => settled, error: () => error };
 }
 
 /**
@@ -329,5 +359,261 @@ describe("createRequestQueue", () => {
     ]);
 
     expect(maxActive).toBe(1);
+  });
+
+  /** ---------------------------------------------------------------------- */
+  /** Q5〜Q9（45-2：キュー待ち中の停止をただちに決着させる） */
+  /** ---------------------------------------------------------------------- */
+
+  it("Q5: キュー待ち中に abort すると、先行ジョブの解決を待たずに QueueCancelledError で決着する", async () => {
+    const queue = createRequestQueue();
+    const gateA = deferred<void>();
+    const controller = new AbortController();
+
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+    let calledB = false;
+    const jobB = queue.enqueue(
+      async () => {
+        calledB = true;
+        return "B";
+      },
+      { signal: controller.signal },
+    );
+    const observed = watch(jobB);
+
+    controller.abort();
+    await flushMicrotasks();
+
+    // A はまだ未解決。それでも B は決着していなければならない。
+    expect(observed.settled()).toBe(true);
+    expect(observed.error()).toBeInstanceOf(QueueCancelledError);
+    expect(calledB).toBe(false);
+
+    gateA.resolve();
+    await expect(jobA).resolves.toBe("A");
+    await expect(jobB).rejects.toBeInstanceOf(QueueCancelledError);
+  });
+
+  it("Q6: 取り消したジョブは順番が来ても実行されず、後続ジョブは投入順に実行される（連鎖が切れない）", async () => {
+    const queue = createRequestQueue();
+    const order: string[] = [];
+    const gateA = deferred<void>();
+    const controller = new AbortController();
+
+    const jobA = queue.enqueue(async () => {
+      order.push("A");
+      await gateA.promise;
+      return "A";
+    });
+    let calledB = false;
+    const jobB = queue.enqueue(
+      async () => {
+        calledB = true;
+        order.push("B");
+        return "B";
+      },
+      { signal: controller.signal },
+    );
+    const jobC = queue.enqueue(async () => {
+      order.push("C");
+      return "C";
+    });
+
+    controller.abort();
+    await flushMicrotasks();
+
+    // A を解決させて B の順番を回す。B のジョブ関数は呼ばれず、C まで連鎖が続く。
+    gateA.resolve();
+    await expect(jobA).resolves.toBe("A");
+    await expect(jobC).resolves.toBe("C");
+    await expect(jobB).rejects.toBeInstanceOf(QueueCancelledError);
+
+    expect(calledB).toBe(false);
+    expect(order).toEqual(["A", "C"]);
+  });
+
+  it("Q7: 取り消したジョブがあっても size は 0 に戻る（二重減算・減算漏れがない）", async () => {
+    const queue = createRequestQueue();
+    const gateA = deferred<void>();
+    const controller = new AbortController();
+
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+    const jobB = queue.enqueue(async () => "B", { signal: controller.signal });
+    const jobC = queue.enqueue(async () => "C");
+    expect(queue.size).toBe(3);
+
+    controller.abort();
+    await flushMicrotasks();
+    // 早期に決着しても、キューの席が空くのは順番が来たときなので A・C はまだ残っている。
+    expect(queue.size).toBe(3);
+
+    gateA.resolve();
+    await jobA;
+    await jobC;
+    await expect(jobB).rejects.toBeInstanceOf(QueueCancelledError);
+    await flushMicrotasks();
+
+    expect(queue.size).toBe(0);
+  });
+
+  it("Q8: ジョブが走り始めた後の abort は取り消しにならず、ジョブ自身の結果で決着する。順番が来た時点で abort リスナも外す", async () => {
+    const queue = createRequestQueue();
+    const gate = deferred<void>();
+    const controller = new AbortController();
+    // 長寿命の signal（1 実行ぶんの `gate.signal`）にリスナが溜まらないこと＝順番が来たら
+    // 必ず解除することを見る。解除しないと execute の回数ぶんリスナが残り続ける。
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    let started = false;
+    const job = queue.enqueue(
+      async () => {
+        started = true;
+        await gate.promise;
+        return "done";
+      },
+      { signal: controller.signal },
+    );
+
+    await flushMicrotasks();
+    expect(started).toBe(true);
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+
+    controller.abort();
+    await flushMicrotasks();
+    gate.resolve();
+
+    await expect(job).resolves.toBe("done");
+    removeSpy.mockRestore();
+  });
+
+  it("Q10: すでに abort 済みの signal で投入したジョブも、先行ジョブを待たずにその場で決着する", async () => {
+    const queue = createRequestQueue();
+    const gateA = deferred<void>();
+    const controller = new AbortController();
+    // 投入より **前** に abort されている経路（停止操作と execute 呼び出しが競った場合や、
+    // 停止後に残っていた execute の呼び出し）。abort イベントはもう二度と発火しないので、
+    // addEventListener だけでは早期決着せず、45-2 のバグがこの経路だけ復活する。
+    controller.abort();
+
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+    let calledB = false;
+    const jobB = queue.enqueue(
+      async () => {
+        calledB = true;
+        return "B";
+      },
+      { signal: controller.signal },
+    );
+    const observed = watch(jobB);
+    const jobC = queue.enqueue(async () => "C");
+
+    await flushMicrotasks();
+
+    // A は未解決のまま。それでも B は決着していなければならない。
+    expect(observed.settled()).toBe(true);
+    expect(observed.error()).toBeInstanceOf(QueueCancelledError);
+    expect(calledB).toBe(false);
+
+    gateA.resolve();
+    await expect(jobA).resolves.toBe("A");
+    await expect(jobC).resolves.toBe("C");
+    await expect(jobB).rejects.toBeInstanceOf(QueueCancelledError);
+    expect(calledB).toBe(false);
+  });
+
+  it("Q9: 共有キューで待っている実行を停止すると、先行ジョブを待たずに ok:false の ExecOutcome で決着する", async () => {
+    const queue = createRequestQueue();
+    const timeline: string[] = [];
+    const gateA = deferred<void>();
+    // 先行ジョブ（別の実行の生成）が未解決のままキューを占有している状態を作る。
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+
+    const controller = new AbortController();
+    const client = createTrackingClient("B", timeline, { gates: [], outcomes: ["ok"] });
+    const executor = createExecutor(client, { queue, signal: controller.signal });
+    const promise = executor.execute(REQUEST, parse, 1000);
+    const observed = watch(promise);
+
+    controller.abort();
+    await flushMicrotasks();
+
+    // 先行ジョブ（A）は未解決のまま。それでも execute は決着していなければならない。
+    expect(observed.settled()).toBe(true);
+    const outcome = await promise;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) {
+      throw new Error("停止したのに成功している");
+    }
+    expect(outcome.attempts).toBe(0);
+    expect(outcome.failure.reason).toBe("aborted");
+    expect(outcome.failure.message).toBe("停止要求により生成要求を送らなかった");
+    expect(outcome.halt?.reason).toBe("aborted");
+    expect(outcome.halt?.generationUnconfirmed).toBe(false);
+    // 生成要求は 1 件も送っていない（ensureLoaded も chat も呼ばれていない）。
+    expect(timeline).toEqual([]);
+    expect(executor.requestCount).toBe(0);
+
+    gateA.resolve();
+    await jobA;
+  });
+
+  it("Q11: すでに halt を持つ実行がキュー待ち中に停止したら、halt と失敗の文言は「実行が停止済み」側になる", async () => {
+    const queue = createRequestQueue();
+    const controller = new AbortController();
+    let chatCalls = 0;
+    const client: LmStudioClient = {
+      listModels: async () => [],
+      // 生成に使えない種別を返して halt（settings）を立てさせる。chat は 1 度も呼ばれない。
+      ensureLoaded: async () => ({ ...model(), type: "embedding" }),
+      chat: async () => {
+        chatCalls += 1;
+        return chatResult("ok");
+      },
+    };
+    const executor = createExecutor(client, { queue, signal: controller.signal });
+
+    const first = await executor.execute(REQUEST, parse, 1000);
+    expect(first.ok).toBe(false);
+    if (first.ok) {
+      throw new Error("生成に使えない種別なのに成功している");
+    }
+    expect(first.halt?.reason).toBe("settings");
+
+    // 先行ジョブでキューを塞いだうえで、halt を持ったまま 2 度目の execute を停止させる。
+    const gateA = deferred<void>();
+    const jobA = queue.enqueue(async () => {
+      await gateA.promise;
+      return "A";
+    });
+    const second = executor.execute(REQUEST, parse, 1000);
+    const observed = watch(second);
+    controller.abort();
+    await flushMicrotasks();
+
+    expect(observed.settled()).toBe(true);
+    const outcome = await second;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) {
+      throw new Error("停止したのに成功している");
+    }
+    // 保持している halt（settings）は上書きしない。文言も runOne 冒頭と同じ 2 分岐にする。
+    expect(outcome.halt?.reason).toBe("settings");
+    expect(outcome.failure.message).toBe("実行が停止済みのため生成要求を送らなかった");
+    expect(chatCalls).toBe(0);
+
+    gateA.resolve();
+    await jobA;
   });
 });

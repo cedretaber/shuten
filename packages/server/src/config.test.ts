@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig, parseLmStudioApiKey, parseLmStudioUrl, parsePort } from "./config.ts";
+import {
+  loadConfig,
+  parseLmStudioApiKey,
+  parseLmStudioUrl,
+  parsePort,
+  parseRecoveryConfirmMs,
+} from "./config.ts";
 
 describe("parsePort", () => {
   it("十進の整数表記を受け付ける", () => {
@@ -123,5 +129,50 @@ describe("parseLmStudioApiKey", () => {
     }
     expect(thrown).toBeDefined();
     expect(String(thrown)).not.toContain("sk-secret-xyz");
+  });
+});
+
+describe("parseRecoveryConfirmMs（決定 43）", () => {
+  it("C3a: 未指定なら既定 120000", () => {
+    expect(parseRecoveryConfirmMs(undefined)).toBe(120_000);
+  });
+
+  it("C3b: 0 を許可する（checkMs がそのままハード上限という意味。決定 8）", () => {
+    expect(parseRecoveryConfirmMs("0")).toBe(0);
+  });
+
+  it("C3c: 前後の空白を trim して受け付ける", () => {
+    expect(parseRecoveryConfirmMs(" 100 ")).toBe(100);
+  });
+
+  it("C3d: setTimeout の実用上限（2147483647）を受け付ける", () => {
+    expect(parseRecoveryConfirmMs("2147483647")).toBe(2_147_483_647);
+  });
+
+  it("C3e: 実用上限を 1 でも超えたら拒否する", () => {
+    expect(() => parseRecoveryConfirmMs("2147483648")).toThrow(/上限/);
+  });
+
+  it.each(["-1", "1.5", "1e3", "3000oops", " ", "+80", "0x1f"])(
+    "C3f: 整数表記でない %j を拒否する",
+    (raw) => {
+      expect(() => parseRecoveryConfirmMs(raw)).toThrow(/不正/);
+    },
+  );
+
+  it("C3g: 空文字は既定値に丸めず例外にする（`undefined` の未指定と違い、失敗を正常な値に置き換えない）", () => {
+    expect(() => parseRecoveryConfirmMs("")).toThrow(/不正/);
+  });
+
+  it("C3h: loadConfig は未指定で既定 120000 を使う", () => {
+    expect(loadConfig({}).recoveryConfirmMs).toBe(120_000);
+  });
+
+  it("C3i: loadConfig は SHUTEN_RECOVERY_CONFIRM_MS の不正値で例外を投げる", () => {
+    expect(() => loadConfig({ SHUTEN_RECOVERY_CONFIRM_MS: "-1" })).toThrow();
+  });
+
+  it("C3j: loadConfig は SHUTEN_RECOVERY_CONFIRM_MS を正しく読む", () => {
+    expect(loadConfig({ SHUTEN_RECOVERY_CONFIRM_MS: "500" }).recoveryConfirmMs).toBe(500);
   });
 });

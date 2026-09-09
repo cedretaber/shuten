@@ -18,7 +18,7 @@ import type { ChatRequest, ChatResult, Usage } from "../lmstudio/types.ts";
 import { buildCheckRequest, buildRecheckRequest } from "../prompts/build.ts";
 import { parseCheckResponse, parseRecheckResponse } from "../prompts/parse.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
-import type { ExecOutcome, Executor } from "./executor.ts";
+import type { ExecOutcome, ExecuteHooks, Executor } from "./executor.ts";
 import type { CheckUnitResult, RecheckResult, RunStop, UnitFailure } from "./result.ts";
 
 /**
@@ -38,42 +38,72 @@ export function localFailure(reason: UnitFailure["reason"], message: string): Un
  *   決定 5(b) のとおり当該単位は未完了のまま残す。
  * - `chat` 由来でも `model-not-loaded`（実行中のアンロード）と `aborted`（停止操作）は
  *   失敗ではない（仕様書 7 節・8.2 節）。
- * - `chat` 由来の `timeout` は、`recoveryConfirmMs > 0`（オーケストレーター経路）のときだけ
- *   `pending` にする（決定 20）。ハード上限（`budgetMs + recoveryConfirmMs`）に達しても
- *   「生成終了を確認できない」だけで、応答が実際に来ないと決まったわけではないため、
- *   停止からの打ち切り（`aborted`）と同じ扱いにする。`recoveryConfirmMs === 0`
- *   （CLI と `runPipeline` の経路）では従来どおり `failed`。
+ * - `chat` 由来の `timeout` は、`treatUnconfirmedAsPending` が true のときだけ `pending` にする
+ *   （決定 20）。ハード上限に達しても「生成終了を確認できない」だけで、応答が実際に来ないと
+ *   決まったわけではないため、停止からの打ち切り（`aborted`）と同じ扱いにする。
+ *
+ * `treatUnconfirmedAsPending` は**呼び出し元が経路を明示するフラグ**である（決定 45-3）。
+ * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない
+ * （既定 false で従来どおり `failed`）。待機時間（`recoveryConfirmMs`）を判別子に使ってはならない：
+ * 決定 43 は `SHUTEN_RECOVERY_CONFIRM_MS = 0` を正規の設定値として認めており、0 のときに
+ * タイムアウトすると実行は `recovery-waiting` になるのに単位は `failed` になって、
+ * 手動再開がその単位を拾えなくなる。
  */
-function isPendingFailure(failure: UnitFailure, recoveryConfirmMs: number): boolean {
+function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boolean): boolean {
   if (failure.origin !== "chat") {
     return true;
   }
   if (failure.reason === "model-not-loaded" || failure.reason === "aborted") {
     return true;
   }
-  return recoveryConfirmMs > 0 && failure.reason === "timeout";
+  return treatUnconfirmedAsPending && failure.reason === "timeout";
 }
 
 /**
- * `pending` にする失敗の `note`（DB では `pending_note`）に入れる文言（決定 20）。
- * ハード上限超過によるタイムアウトだけは、既存の失敗メッセージ（「生成要求がタイムアウトした」等）
- * ではなく、決定 20 が定める「生成終了は未確認」の趣旨の文言に差し替える。他の理由（未送信、
- * 実行中のアンロード、停止操作）は従来どおり失敗メッセージそのものを使う。
+ * `pending` にする失敗の `note`（DB では `pending_note`）に入れる文言（決定 20・32）。
+ *
+ * 「生成要求を送った後に打ち切られた」2 つの経路だけは、既存の失敗メッセージ（「生成要求が
+ * タイムアウトした」等）ではなく、決定 20 が定める「生成終了は未確認」の趣旨の文言に差し替える。
+ *
+ * - ハード上限超過（`timeout`）→「応答が上限内に届かなかった。生成終了は未確認」
+ * - 停止操作による打ち切り（`aborted`）→「停止操作により打ち切った。生成終了は未確認」（決定 32）
+ *
+ * どちらも `origin === "chat"`（実際に送った）に限る。送信前に止めた `origin: "local"` の
+ * `aborted`（キュー待ち・`ensureLoaded` 中の停止、門で止めた単位）は生成終了が未確認では
+ * ないので、従来どおり失敗メッセージそのものを使う。`treatUnconfirmedAsPending` を条件に
+ * 含めるのは、`runPipeline`（CLI）が `signal` を渡して中断したときの文言を変えないため（E1）。
+ * `isPendingFailure` と同じく、判別子は待機時間ではなく呼び出し元が渡すフラグである（決定 45-3）。
  */
-function pendingNote(failure: UnitFailure, recoveryConfirmMs: number): string {
-  if (recoveryConfirmMs > 0 && failure.origin === "chat" && failure.reason === "timeout") {
-    return "応答が上限内に届かなかった。生成終了は未確認";
+function pendingNote(failure: UnitFailure, treatUnconfirmedAsPending: boolean): string {
+  if (treatUnconfirmedAsPending && failure.origin === "chat") {
+    if (failure.reason === "timeout") {
+      return "応答が上限内に届かなかった。生成終了は未確認";
+    }
+    if (failure.reason === "aborted") {
+      return "停止操作により打ち切った。生成終了は未確認";
+    }
   }
   return failure.message;
 }
 
 /**
- * `executor.execute` を、遅延通知（`onSlow`）付きで呼ぶ。
+ * `executor.execute` を、遅延通知（`onSlow`）付きで呼ぶ（決定 27）。
+ *
+ * 起点は「実際に生成要求を送った時点」（executor が `client.chat` を呼ぶ直前に呼ぶ `onSend`）。
+ * `executor.execute` を呼んだ時点で張ると、共有キュー（`run/queue.ts`）での順番待ちの時間が
+ * `checkMs`／`recheckMs` の計測に食い込んでしまうため。
  *
  * `recoveryConfirmMs` が 0 以下（既定）なら、従来どおり `budgetMs` をそのままタイムアウトとして渡す
- * （`onSlow` は使わない）。`recoveryConfirmMs > 0` なら、ハード上限は `budgetMs + recoveryConfirmMs` にし、
- * `budgetMs` 経過時点で `onSlow` を 1 回だけ呼ぶ。応答が返る（成功・失敗を問わない）か例外が出たら、
- * このタイマーは必ず解除する。
+ * （`onSlow` 用のタイマーは張らない）。`recoveryConfirmMs > 0` なら、ハード上限は
+ * `budgetMs + recoveryConfirmMs` にし、送信のたびに（再試行を含む）タイマーを張り直して、
+ * `budgetMs` 経過時点で `onSlow` を呼ぶ。応答が返る（成功・失敗を問わない）か例外が出たら、
+ * そのタイマーは必ず解除する。
+ *
+ * `onSend` / `onSettled` は呼び出し元（ループの停止ゲート。決定 26）から渡される任意のフックで、
+ * 自分の遅延通知タイマーと合成して executor に渡す。`recoveryConfirmMs` の値によらず、
+ * 渡されていれば必ず executor に届ける（停止ゲートは CLI 経路では使われないが、
+ * 渡す・渡さないの分岐を `recoveryConfirmMs` に結び付けると、停止ゲートを持たない
+ * オーケストレーター経路が増えたときに破綻するため）。
  */
 async function executeWithSlowNotice<T>(
   executor: Executor,
@@ -82,22 +112,42 @@ async function executeWithSlowNotice<T>(
   budgetMs: number,
   recoveryConfirmMs: number,
   onSlow: ((elapsedMs: number) => void) | undefined,
+  onSend: (() => void) | undefined,
+  onSettled: (() => void) | undefined,
 ): Promise<ExecOutcome<T>> {
   if (recoveryConfirmMs <= 0) {
-    return executor.execute(request, parse, budgetMs);
+    // タイマーは張らないが、呼び出し元の onSend/onSettled はそのまま executor に渡す。
+    return executor.execute(request, parse, budgetMs, { onSend, onSettled });
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
-  if (onSlow !== undefined) {
-    timer = setTimeout(() => {
-      onSlow(budgetMs);
-    }, budgetMs);
-  }
-  try {
-    return await executor.execute(request, parse, budgetMs + recoveryConfirmMs);
-  } finally {
+  function clearSlowTimer(): void {
     if (timer !== undefined) {
       clearTimeout(timer);
+      timer = undefined;
     }
+  }
+  const hooks: ExecuteHooks = {
+    onSend: () => {
+      // 送信のたびに（再試行を含め、1 回の execute で最大 2 回）測り直す。前のタイマーが
+      // 残っていれば解除してから張り直す。
+      clearSlowTimer();
+      if (onSlow !== undefined) {
+        timer = setTimeout(() => {
+          onSlow(budgetMs);
+        }, budgetMs);
+      }
+      onSend?.();
+    },
+    onSettled: () => {
+      clearSlowTimer();
+      onSettled?.();
+    },
+  };
+  try {
+    return await executor.execute(request, parse, budgetMs + recoveryConfirmMs, hooks);
+  } finally {
+    // onSend が一度も呼ばれなかった（門で止まった等）場合の保険。
+    clearSlowTimer();
   }
 }
 
@@ -111,12 +161,31 @@ export interface CheckUnitArgs {
   readonly generation: GenerationSettings;
   /** 遅延通知の閾値。ハード上限は checkMs + recoveryConfirmMs。 */
   readonly checkMs: number;
-  /** 既定 0。0 ならハード上限は checkMs そのもの（従来の挙動）。 */
+  /**
+   * 上限まで待つ時間。既定 0。0 ならハード上限は checkMs そのもの（決定 43 が認める正規の設定値）。
+   * **経路の判別には使わない**（決定 45-3。それは treatUnconfirmedAsPending の役目）。
+   */
   readonly recoveryConfirmMs?: number | undefined;
+  /**
+   * 打ち切られた単位を `pending` にするか（決定 20・45-3）。既定 false。
+   * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない。
+   */
+  readonly treatUnconfirmedAsPending?: boolean | undefined;
   readonly executor: Executor;
   readonly createCandidateId: () => string;
-  /** checkMs を超えたときに 1 回だけ呼ぶ。省略可。 */
+  /**
+   * checkMs を超えたときに呼ぶ。省略可。送信のたび（再試行を含め、1 回の execute で
+   * 最大 2 回）に測り直すので、1 回目の送信も 2 回目の送信も checkMs を超えれば、
+   * この execute で最大 2 回呼ばれうる（決定 27）。
+   */
   readonly onSlow?: ((elapsedMs: number) => void) | undefined;
+  /**
+   * 停止ゲートの beginRequest 相当。executor が実際に生成要求を送る直前に呼ぶ（決定 27）。
+   * 再試行のたびに呼ぶ。省略可（PR9b Task 7 でループが渡す）。
+   */
+  readonly onSend?: (() => void) | undefined;
+  /** 停止ゲートの endRequest 相当。onSend と同数呼ばれる。省略可（PR9b Task 7 でループが渡す）。 */
+  readonly onSettled?: (() => void) | undefined;
 }
 
 export interface CheckUnitOutcome {
@@ -138,6 +207,7 @@ export interface CheckUnitOutcome {
  */
 export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOutcome> {
   const recoveryConfirmMs = args.recoveryConfirmMs ?? 0;
+  const treatUnconfirmedAsPending = args.treatUnconfirmedAsPending ?? false;
   const inputGraphemes = countGraphemes(sliceRange(args.text, args.input.inputRange));
   const request = buildCheckRequest({
     text: args.text,
@@ -154,6 +224,8 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
     args.checkMs,
     recoveryConfirmMs,
     args.onSlow,
+    args.onSend,
+    args.onSettled,
   );
 
   if (outcome.ok) {
@@ -201,13 +273,13 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
       generationUnconfirmed: false,
     };
   }
-  const unit: CheckUnitResult = isPendingFailure(outcome.failure, recoveryConfirmMs)
+  const unit: CheckUnitResult = isPendingFailure(outcome.failure, treatUnconfirmedAsPending)
     ? {
         status: "pending",
         targetIndex: args.targetIndex,
         perspective: args.perspective,
         attempts: outcome.attempts,
-        note: pendingNote(outcome.failure, recoveryConfirmMs),
+        note: pendingNote(outcome.failure, treatUnconfirmedAsPending),
       }
     : {
         status: "failed",
@@ -242,11 +314,30 @@ export interface RecheckUnitArgs {
   readonly generation: GenerationSettings;
   /** 遅延通知の閾値。ハード上限は recheckMs + recoveryConfirmMs。 */
   readonly recheckMs: number;
-  /** 既定 0。0 ならハード上限は recheckMs そのもの（従来の挙動）。 */
+  /**
+   * 上限まで待つ時間。既定 0。0 ならハード上限は recheckMs そのもの（決定 43 が認める正規の設定値）。
+   * **経路の判別には使わない**（決定 45-3。それは treatUnconfirmedAsPending の役目）。
+   */
   readonly recoveryConfirmMs?: number | undefined;
+  /**
+   * 打ち切られた単位を `pending` にするか（決定 20・45-3）。既定 false。
+   * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない。
+   */
+  readonly treatUnconfirmedAsPending?: boolean | undefined;
   readonly executor: Executor;
-  /** recheckMs を超えたときに 1 回だけ呼ぶ。省略可。 */
+  /**
+   * recheckMs を超えたときに呼ぶ。省略可。送信のたび（再試行を含め、1 回の execute で
+   * 最大 2 回）に測り直すので、1 回目の送信も 2 回目の送信も recheckMs を超えれば、
+   * この execute で最大 2 回呼ばれうる（決定 27）。
+   */
   readonly onSlow?: ((elapsedMs: number) => void) | undefined;
+  /**
+   * 停止ゲートの beginRequest 相当。executor が実際に生成要求を送る直前に呼ぶ（決定 27）。
+   * 再試行のたびに呼ぶ。省略可（PR9b Task 7 でループが渡す）。
+   */
+  readonly onSend?: (() => void) | undefined;
+  /** 停止ゲートの endRequest 相当。onSend と同数呼ばれる。省略可（PR9b Task 7 でループが渡す）。 */
+  readonly onSettled?: (() => void) | undefined;
   /**
    * `buildRecheckInput` が成功し、実際に生成要求を送る直前に 1 回だけ呼ぶ。省略可。
    * `suppressed` で短絡したときや、`buildRecheckInput` が `InputTooLongError` を投げたときは呼ばない
@@ -277,6 +368,7 @@ export interface RecheckUnitOutcome {
  */
 export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<RecheckUnitOutcome> {
   const recoveryConfirmMs = args.recoveryConfirmMs ?? 0;
+  const treatUnconfirmedAsPending = args.treatUnconfirmedAsPending ?? false;
   if (args.suppressed) {
     return {
       result: { status: "suppressed" },
@@ -328,6 +420,8 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
     args.recheckMs,
     recoveryConfirmMs,
     args.onSlow,
+    args.onSend,
+    args.onSettled,
   );
 
   if (outcome.ok) {
@@ -350,13 +444,13 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
 
   // LM Studio 由来の input-too-long（HTTP 400）も再確認では実行を止めない（決定 5(c)）。
   const halt = outcome.halt;
-  if (isPendingFailure(outcome.failure, recoveryConfirmMs)) {
+  if (isPendingFailure(outcome.failure, treatUnconfirmedAsPending)) {
     return {
       result: {
         status: "pending",
         attempts: outcome.attempts,
         inputRange: input.inputRange,
-        note: pendingNote(outcome.failure, recoveryConfirmMs),
+        note: pendingNote(outcome.failure, treatUnconfirmedAsPending),
       },
       failure: outcome.failure,
       halt,

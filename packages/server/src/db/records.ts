@@ -30,13 +30,22 @@ import type { RunStatus, UnitStatus } from "../run/status.ts";
 export type CandidateLocateStatus = "located" | "not-found" | "ambiguous" | "outside-target";
 export type FindingLocateStatus = "located" | "not-found" | "ambiguous";
 
-/** `runs.stop_reason`。`../run/result.ts` の `StopReason` と値は同じだが、独立させて持つ。 */
+/**
+ * `runs.stop_reason`。`../run/result.ts` の `StopReason` と値は同じだが、独立させて持つ。
+ *
+ * `backend-restarted` は `run/result.ts` の `StopReason` には無い（決定 13・40）。起動時照合
+ * （`reconcileOnStartup`）は executor の halt を経由せずに直接この値を書くので、halt 由来の
+ * `StopReason` に足す必要が無い。
+ */
 export type RunStopReason =
   | "model-not-loaded"
   | "recovery-needed"
   | "connection-lost"
   | "settings"
-  | "aborted";
+  | "aborted"
+  | "internal-error"
+  | "recovery-blocked"
+  | "backend-restarted";
 
 /** `recheck_units.not_applicable_reason`。仕様書 6.5 節。 */
 export type RecheckNotApplicableReason = "disabled" | "suppressed" | "unlocated";
@@ -68,6 +77,7 @@ export interface RunRecord {
   /** `model` を除いた生成設定（決定 11）。 */
   readonly generationSettings: Omit<GenerationSettings, "model">;
   readonly chunkSettings: ChunkSettings;
+  /** 意味は `recoveryConfirmMs`（下記）に依存する。JSON のキー名自体は変えない（決定 7）。 */
   readonly timeouts: { readonly checkMs: number; readonly recheckMs: number };
   readonly perspectives: readonly Perspective[];
   readonly recheckEnabled: boolean;
@@ -84,7 +94,13 @@ export interface RunRecord {
   readonly startOperationId: string | null;
   /** 停止要求を受けた時刻。未受理・再開後は null（決定 21）。 */
   readonly stopRequestedAt: Date | null;
-  /** 復旧確認の待機上限（ミリ秒）。0 は「checkMs がそのままハード上限」（決定 8）。 */
+  /**
+   * 復旧確認の待機上限（ミリ秒）。オーケストレーター経路では `timeouts.checkMs` /
+   * `timeouts.recheckMs` は打ち切りの上限ではなく、超えた時点で遅延として通知する閾値になり、
+   * 実際のハード上限はそれぞれ `checkMs + recoveryConfirmMs` / `recheckMs + recoveryConfirmMs`
+   * になる（決定 7）。`runPipeline`（CLI）では `recoveryConfirmMs: 0` を使うため、
+   * `checkMs` / `recheckMs` がそのままハード上限という従来の意味のままになる（決定 8）。
+   */
   readonly recoveryConfirmMs: number;
   readonly startedAt: Date;
   readonly finishedAt: Date | null;
