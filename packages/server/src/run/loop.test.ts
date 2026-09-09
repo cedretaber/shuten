@@ -11,7 +11,7 @@ import type {
 } from "@shuten/shared";
 import { mergeCandidates } from "@shuten/shared";
 import { describe, expect, it, vi } from "vitest";
-
+import { fixedConnection } from "../connection.ts";
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
 import type { CheckUnitRecord, RecheckNotApplicableReason, RunRecord } from "../db/records.ts";
@@ -204,10 +204,9 @@ function makeHarness(
   const events: RunEvent[] = [];
   const deps: OrchestratorDeps = {
     db,
-    client,
+    connection: fixedConnection(client, "http://127.0.0.1:1234"),
     queue: createRequestQueue(),
     recoveryGate: createRecoveryGate(),
-    endpointUrl: "http://127.0.0.1:1234",
     recoveryConfirmMs: 0,
     createId: idSequence(),
     onEvent: (event) => events.push(event),

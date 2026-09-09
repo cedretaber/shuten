@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
+import { fixedConnection } from "./connection.ts";
 import { createDatabase } from "./db/client.ts";
 import { applyMigrations } from "./db/migrate.ts";
 import { resolveDatabaseFile } from "./db/path.ts";
@@ -25,10 +26,11 @@ const queue = createRequestQueue();
 const recoveryGate = createRecoveryGate();
 const orchestrator = createOrchestrator({
   db,
-  client,
+  // Task 4 で `createConnectionManager`（settings 表を読む実体）に置き換える。
+  // ここでは起動時の設定を固定で返すだけの供給元を渡す（PR10 決定 6）。
+  connection: fixedConnection(client, config.lmStudioUrl),
   queue,
   recoveryGate,
-  endpointUrl: config.lmStudioUrl,
   recoveryConfirmMs: config.recoveryConfirmMs,
 });
 

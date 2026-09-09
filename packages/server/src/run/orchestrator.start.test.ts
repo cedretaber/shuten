@@ -1,6 +1,6 @@
 import type { ChunkSettings, Perspective } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
-
+import { fixedConnection } from "../connection.ts";
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
 import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
@@ -44,10 +44,9 @@ function makeDeps(
 ): OrchestratorDeps {
   return {
     db,
-    client: unusedClient(),
+    connection: fixedConnection(unusedClient(), "http://127.0.0.1:1234"),
     queue: createRequestQueue(),
     recoveryGate: createRecoveryGate(),
-    endpointUrl: "http://127.0.0.1:1234",
     recoveryConfirmMs: 120_000,
     ...overrides,
   };

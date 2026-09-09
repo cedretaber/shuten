@@ -34,7 +34,7 @@ import {
   splitParagraphs,
 } from "@shuten/shared";
 
-import { MAX_TIMEOUT_MS } from "../config.ts";
+import type { ConnectionSource } from "../connection.ts";
 import type { AppDatabase, AppDatabaseLike } from "../db/client.ts";
 import { isUniqueConstraintViolation } from "../db/errors.ts";
 import { createId as createIdDefault } from "../db/ids.ts";
@@ -48,6 +48,7 @@ import {
   insertRun,
   insertRunTarget,
   listRunsByStatus,
+  setRecoveryConfirmedAt,
   setStopRequestedAt,
 } from "../db/repositories/runs.ts";
 import type { LmStudioClient } from "../lmstudio/types.ts";
@@ -61,6 +62,7 @@ import { createStopGate } from "./recovery.ts";
 import type { RecoveryGate } from "./recovery-gate.ts";
 import { runStatusForUnconfirmed } from "./state.ts";
 import type { RunStatus } from "./status.ts";
+import { validateHardTimeouts } from "./timeouts.ts";
 import {
   claimRecheckUnitChecked,
   claimRunChecked,
@@ -76,12 +78,15 @@ import {
 
 export interface OrchestratorDeps {
   readonly db: AppDatabase;
-  readonly client: LmStudioClient;
+  /**
+   * 接続の供給元（PR10 決定 6）。`client` と `endpointUrl` を直接持たず、開始・再開・再試行の
+   * 時点で `current()` を 1 回だけ読み、その実行に固定する。走っている実行は開始時に読んだ
+   * クライアントを持ち続けるので、「実行中に接続先が変わらない」がここで閉じる。
+   */
+  readonly connection: ConnectionSource;
   readonly queue: RequestQueue;
   /** プロセス全体の復旧ゲート（決定 39）。キューと同じく index.ts で 1 個だけ作って渡す。 */
   readonly recoveryGate: RecoveryGate;
-  /** `runs.endpoint_url` に保存するだけの値。イベント・結果には出さない。 */
-  readonly endpointUrl: string;
   /** config.ts（決定 8）が読む値。復旧確認の待機上限（ミリ秒）。 */
   readonly recoveryConfirmMs: number;
   readonly now?: (() => Date) | undefined;
@@ -116,10 +121,28 @@ export interface StartRunResult {
 }
 
 /**
- * 再開・再試行の結果。`StartRunResult` に「受け付けたか」を足したもの。
+ * 再開・再試行を受け付けなかった理由（PR10 決定 10）。HTTP は 409 の `code` に
+ * `run-rejected-<rejectReason>` として写すだけで、判定そのものを HTTP 層に書き写さない。
+ */
+export type RunRejectReason =
+  /** 走っているループがある（O11。`done` はそのループのもの）。 */
+  | "running"
+  /** `stop_reason` が `settings`（決定 36）。 */
+  | "settings"
+  /** 保存済みの版が現行の定数と違う（決定 45-1）。 */
+  | "stale-version"
+  /** 現在の接続先が保存済みの `endpoint_url` と違う（PR10 決定 6）。 */
+  | "connection"
+  /** その状態からは再開・再試行できない（`completed` など。競合で claim に失敗した場合も含む）。 */
+  | "status";
+
+/**
+ * 再開・再試行の結果。`StartRunResult` に「受け付けたか」と「拒否の理由」を足したもの。
  *
- * `accepted` が false なら**状態を 1 つも変えていない**（決定 36 の「拒否。現在のレコードを
- * 返す（例外にしない）」）。`run` は拒否した時点の DB の値で、`done`：
+ * `accepted` が false なら**実行の状態も単位も 1 つも変えていない**（決定 36 の「拒否。現在の
+ * レコードを返す（例外にしない）」）。唯一の例外は `recovery-waiting` の実行を拒否する経路で、
+ * 復旧確認の時刻（`recovery_confirmed_at`）だけは書く（PR10 決定 11。`status` も単位も変えない）。
+ * `run` は拒否した時点の DB の値で、`done`：
  *
  * - 実行中の実行への再開・再試行要求（O11）では、走っているループの `done` をそのまま返す
  *   （二重にループを起こさない）。
@@ -127,6 +150,8 @@ export interface StartRunResult {
  */
 export interface RunLaunchResult extends StartRunResult {
   readonly accepted: boolean;
+  /** `accepted` が true なら null。 */
+  readonly rejectReason: RunRejectReason | null;
 }
 
 /** `stopRun` の結果。 */
@@ -184,6 +209,17 @@ export interface Orchestrator {
    * 否定できないため）。想定外の例外はそのまま投げる（`index.ts` の非ゼロ終了に委ねる）。
    */
   reconcileOnStartup(): void;
+  /**
+   * このプロセスでループが走っている実行の ID（PR10 決定 7）。「走っているか」の正本は
+   * レジストリであり、DB の `status = running` ではない。
+   */
+  activeRunIds(): readonly string[];
+  /**
+   * 復旧の確認（PR10 決定 11）。実行が無ければ null（HTTP は 404）。あれば
+   * `markRecoveryConfirmed` を通して確認時刻を残し、復旧ゲートを開けて、読み直した実行を返す。
+   * **実行の `status` は変えない**（再開は `resumeRun` の仕事）。冪等。
+   */
+  confirmRecovery(runId: string): RunRecord | null;
 }
 
 /** 決定 33：想定外の例外で終端化した実行の `stop_message`。定型文のみ（例外のメッセージを転記しない）。 */
@@ -202,10 +238,15 @@ const RECONCILE_RECOVERY_MESSAGE =
 /** 決定 13：起動時照合で `stopped` にした実行の `stop_message`（`running` の単位が無かった場合）。 */
 const RECONCILE_STOPPED_MESSAGE = "バックエンドが終了しました";
 
-/** レジストリの 1 件。走っているループの `done` と、その実行の停止ゲートを対で持つ。 */
+/**
+ * レジストリの 1 件。走っているループの `done` と、その実行の停止ゲート、そして
+ * **その実行が開始・再開の時点で掴んだクライアント**（PR10 決定 6）を持つ。
+ */
 interface RegisteredRun {
   readonly gate: StopGate;
   readonly result: StartRunResult;
+  /** 開始・再開・再試行の時点で `ConnectionSource.current()` から読んだクライアント。 */
+  readonly client: LmStudioClient;
 }
 
 /** `retryFailedUnits` が `failed → pending` に戻す単位の ID（表ごとに分ける）。 */
@@ -465,13 +506,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * `deps.recoveryConfirmMs` を書いた直後なので両者は必ず一致し、食い違いうるのは
    * 設定を変えて再起動した後の `resumeRun` / `retryFailedUnits` だけである。
    */
-  function launch(run: RunRecord): StartRunResult {
+  function launch(run: RunRecord, client: LmStudioClient): StartRunResult {
     const gate = createStopGate(run.recoveryConfirmMs);
-    const done = startLoop(run, gate);
+    const done = startLoop(run, gate, client);
     const result: StartRunResult = { run, done };
     // `startLoop` の本体は最初の `await Promise.resolve()` までしか同期に走らず、
     // レジストリを触るのはその後の `finally` なので、ここで登録しても取りこぼさない。
-    registry.set(run.id, { gate, result });
+    registry.set(run.id, { gate, result, client });
     return result;
   }
 
@@ -482,7 +523,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * `settleInternalError` が `running` の単位を `pending` に戻して実行を終端化する。
    * レジストリからの削除と `gate.dispose()` は `finally` で必ず行う。
    */
-  function startLoop(run: RunRecord, gate: StopGate): Promise<RunRecord> {
+  function startLoop(run: RunRecord, gate: StopGate, client: LmStudioClient): Promise<RunRecord> {
     return (async (): Promise<RunRecord> => {
       try {
         // ループの最初の書き込み（`claimUnitChecked`）を `startRun` の呼び出しから切り離す。
@@ -492,7 +533,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         await Promise.resolve();
         return await runLoop({
           db: deps.db,
-          client: deps.client,
+          client,
           queue: deps.queue,
           recoveryGate: deps.recoveryGate,
           gate,
@@ -532,10 +573,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    *    （決定 39）なので、**プロセス全体の送信が再起動まで止まる**。
    *    「ゲートが閉じている ⟹ その実行は `recovery-waiting`」を不変条件として保つ。ここで使うのは
    *    この向きだけである。逆向き（`recovery-waiting` ならゲートが閉じている）は決定 45-1 の
-   *    拒否経路（版が変わった `recovery-waiting` の実行を、DB は `recovery-waiting` のまま
-   *    ゲートだけ開けて拒否する）で成り立たない。再起動時は `reconcileOnStartup` が
-   *    `recovery-waiting` を全件閉じ直すので、その実行のゲートはまた閉じる
-   *    （持ち越しの「復旧を確認した操作（PR10）」がこの往復を無くす）。
+   *    拒否経路（版が変わった・接続先が違う `recovery-waiting` の実行を、`status` は
+   *    `recovery-waiting` のままゲートだけ開けて拒否する）で成り立たない。その実行は
+   *    `recovery_confirmed_at` を持つので、再起動時の `reconcileOnStartup` も閉じ直さない
+   *    （PR10 決定 11）。
    * 3. 単位の差し戻しと終端化は 1 トランザクションにする（片方だけ書けた状態を残さない）。
    * 4. **この後始末自体が失敗することもある**（DB が原因の例外なら 1・2 も、その後の読み直しも
    *    失敗する）。その場合も握り、`done` は最後に読めた `RunRecord`（読めなければ引数）で
@@ -603,6 +644,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     }
 
     const plan = planStart(manuscript, input, deps.recoveryConfirmMs);
+    // PR10 決定 6：接続はここで 1 回だけ読み、この実行に固定する（`endpointUrl` は
+    // `runs.endpoint_url` に保存し、`client` は起こすループが持ち続ける）。
+    const { client, endpointUrl } = deps.connection.current();
     const startedAt = now();
 
     try {
@@ -613,7 +657,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           modelId: input.modelId,
           // 最初の ensureLoaded 成功まで null（決定 30）。startRun は生成要求を送らない。
           modelInfo: null,
-          endpointUrl: deps.endpointUrl,
+          endpointUrl,
           generationSettings: input.generation,
           chunkSettings: input.chunkSettings,
           timeouts: input.timeouts,
@@ -730,7 +774,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         return { run: written.run, done: Promise.resolve(written.run) };
       }
 
-      return launch(written.run);
+      return launch(written.run, client);
     } catch (error) {
       if (!isUniqueConstraintViolation(error, "start_operation_id")) {
         throw error;
@@ -777,9 +821,34 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     return { accepted: true, run: findRun(deps.db, runId) };
   }
 
-  /** 受け付けなかった要求の戻り値。状態を 1 つも変えていないことを表す。 */
-  function rejected(run: RunRecord): RunLaunchResult {
-    return { run, done: Promise.resolve(run), accepted: false };
+  /**
+   * 受け付けなかった要求の戻り値（決定 36・PR10 決定 10）。実行の状態も単位も変えていない
+   * ことを表す（`recovery-waiting` の拒否で書く `recovery_confirmed_at` を除く。決定 11）。
+   */
+  function rejected(run: RunRecord, reason: RunRejectReason): RunLaunchResult {
+    return { run, done: Promise.resolve(run), accepted: false, rejectReason: reason };
+  }
+
+  /**
+   * 復旧の確認を記録してゲートを開ける（PR10 決定 11）。**ゲートを開ける唯一の関数**。
+   *
+   * `recovery-waiting` かつ未確認なら、**先に** `recovery_confirmed_at` を書き、**その後で**
+   * ゲートを開ける。順序が逆だと、DB の更新が失敗したのにプロセス内の送信ゲートだけが開き、
+   * API は失敗を返すのに後続の生成要求が送れてしまう。書き込みが投げた場合はゲートを開けず、
+   * 例外をそのまま呼び出し元へ伝える。
+   *
+   * 確認を DB に残すのは、版が変わった（または接続先が違う）`recovery-waiting` の実行が
+   * 再開も終端化もされないまま残るためである。残さないと `reconcileOnStartup` が起動のたびに
+   * ゲートを閉じ直し、利用者は起動のたびに確認をやり直すことになる。
+   *
+   * `recovery-waiting` 以外の状態では DB を書かず `unblock` だけ呼ぶ（無害。ゲートに無い
+   * 実行 ID の `unblock` は何もしない）。
+   */
+  function markRecoveryConfirmed(run: RunRecord): void {
+    if (run.status === "recovery-waiting" && run.recoveryConfirmedAt === null) {
+      setRecoveryConfirmedAt(deps.db, run.id, now());
+    }
+    deps.recoveryGate.unblock(run.id);
   }
 
   /**
@@ -791,9 +860,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * （`failed` の単位は拾わない。それは `retryFailedUnits` の仕事）。
    *
    * `recovery-waiting` の実行の claim に成功したときだけ復旧ゲートを開ける（決定 39）。
-   * **ここがプロセス全体の送信ゲートを開ける唯一の口**である。時間が経ったことを
-   * 「生成が終わった証拠」にはできないので、開けてよいのは利用者が復旧を確認して
-   * 再開を指示したときだけ、という形にしてある。
+   * 時間が経ったことを「生成が終わった証拠」にはできないので、開けてよいのは利用者が復旧を
+   * 確認したときだけ、という形にしてある。**プロセス全体の送信ゲートを開けるのはこの関数と
+   * `confirmRecovery` だけ**で、どちらも `markRecoveryConfirmed` を通す（PR10 決定 11。
+   * 拒否の 2 経路も含め、`recoveryGate.unblock` を直接は呼ばない）。
    */
   function resumeRun(runId: string): RunLaunchResult {
     const existing = findRun(deps.db, runId);
@@ -804,13 +874,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     const registered = registry.get(runId);
     if (registered !== undefined) {
       // 実行中（O11）。ループを二重に起こさず、走っているループの `done` をそのまま返す。
-      return { ...registered.result, accepted: false };
+      return { ...registered.result, accepted: false, rejectReason: "running" };
     }
     if (existing.status !== "stopped" && existing.status !== "recovery-waiting") {
       // `running`（このプロセスにループが無い）・`completed`・`partially-failed` は拒否。
       // `partially-failed` からの再開は「やることなし」で即 `partially-failed` に戻るだけなので、
       // 失敗単位の個別再試行（`retryFailedUnits`）に案内する（決定 36 の表）。
-      return rejected(existing);
+      return rejected(existing, "status");
     }
     if (existing.stopReason === "settings") {
       // 決定 36：設定エラーで止まった実行は再開できない。`startRun` が決定 18・44 で作る
@@ -828,34 +898,54 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // **判別子を「`pending` の単位が 0 件」に置いてはならない**：最後の検査単位を保存した直後、
       // 対象の決着処理（決定 34 の再確認の起票）の前に停止した実行は、`pending` の単位が 0 件でも
       // 「起票して再確認を走らせる」という正当な仕事が残っており、弾くと復旧できなくなる。
-      return rejected(existing);
+      return rejected(existing, "settings");
     }
     if (hasStaleVersions(existing)) {
-      // 決定 45-1：アプリの更新で版が変わった実行は再開できない。DB は 1 行も変えない。
+      // 決定 45-1：アプリの更新で版が変わった実行は再開できない。実行の状態も単位も変えない。
       if (existing.status === "recovery-waiting") {
-        // ただし復旧ゲートだけは開ける。決定 39 のとおり、ゲートを開ける行為の意味は
-        // 「利用者が LM Studio 側の生成終了を確認した」であって「この実行を続ける」ではない。
-        // 再開を指示した時点で確認は済んでおり、その実行を続けられるかどうかとは独立している。
-        // ここで開けないと、版が変わった `recovery-waiting` の実行がプロセス全体の送信ゲートを
-        // 永久に閉じたままにする（`reconcileOnStartup` が起動のたびに閉じ直すので再起動でも
-        // 解けず、案内どおり新しい実行を始めても `recovery-blocked` で止まる）。
-        // `unblock` はメモリ上のゲートを触るだけで、DB は 1 行も書かない。
-        deps.recoveryGate.unblock(runId);
+        // ただし復旧の確認だけは記録して、ゲートを開ける。決定 39 のとおり、ゲートを開ける
+        // 行為の意味は「利用者が LM Studio 側の生成終了を確認した」であって「この実行を続ける」
+        // ではない。再開を指示した時点で確認は済んでおり、その実行を続けられるかどうかとは
+        // 独立している。ここで開けないと、版が変わった `recovery-waiting` の実行がプロセス全体の
+        // 送信ゲートを永久に閉じたままにする（案内どおり新しい実行を始めても `recovery-blocked`
+        // で止まる）。確認を DB に残すのは、残さないと `reconcileOnStartup` が起動のたびに
+        // 閉じ直すからである（PR10 決定 11）。書くのは `recovery_confirmed_at` の 1 列だけで、
+        // `status` も停止の記録も単位も変えない。
+        markRecoveryConfirmed(existing);
       }
-      return rejected(existing);
+      return rejected(existing, "stale-version");
+    }
+    // PR10 決定 6：接続はここで 1 回だけ読む。保存済みの `endpoint_url` と違えば、実行の状態も
+    // 単位も 1 つも変えずに拒否する（`runs.endpoint_url` を書くのは `startRun` だけで、
+    // 再開は保存済みの値を上書きしない）。停止中に接続先を変えてから再開できると、同じ実行の
+    // 前半と後半が別の LM Studio で処理される（仕様 8.2「再開では設定を変更できない」の
+    // 接続先への適用）。判定は `hasStaleVersions` と同じ位置（`claimRunChecked` の前）に置く。
+    const { client, endpointUrl } = deps.connection.current();
+    if (endpointUrl !== existing.endpointUrl) {
+      if (existing.status === "recovery-waiting") {
+        // 版違いの拒否と同じ理由でゲートを開け、確認を DB に残す（PR10 決定 11）。
+        // ゲートを開ける意味は「利用者が生成終了を確認した」であって、この実行を続けられるか
+        // とは独立している。
+        markRecoveryConfirmed(existing);
+      }
+      return rejected(existing, "connection");
     }
     if (!claimRunChecked(deps.db, runId, existing.status, "running", { clearStopState: true })) {
-      return rejected(findRun(deps.db, runId) ?? existing);
-    }
-    if (existing.status === "recovery-waiting") {
-      deps.recoveryGate.unblock(runId);
+      return rejected(findRun(deps.db, runId) ?? existing, "status");
     }
     const claimed = findRun(deps.db, runId);
     if (claimed === null) {
       // claim に成功した以上、行は存在するはず。理論上到達しない防御的分岐。
       throw new Error(`再開した検査実行が見つかりません（実行 ID: ${runId}）`);
     }
-    return { ...launch(claimed), accepted: true };
+    if (existing.status === "recovery-waiting") {
+      // 決定 39 のとおり claim に成功したときだけ開けるので、位置は claim の後のまま。渡すのは
+      // **claim 後**のレコード（`running`）である：`clearStopState` が `recovery_confirmed_at` を
+      // null に戻した直後なので確認時刻を書き直す意味はなく、書くと `running` の行に確認時刻が
+      // 残る。`markRecoveryConfirmed` は `recovery-waiting` 以外では `unblock` だけを行う。
+      markRecoveryConfirmed(claimed);
+    }
+    return { ...launch(claimed, client), accepted: true, rejectReason: null };
   }
 
   /**
@@ -874,15 +964,23 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     }
     const registered = registry.get(runId);
     if (registered !== undefined) {
-      return { ...registered.result, accepted: false };
+      return { ...registered.result, accepted: false, rejectReason: "running" };
     }
     if (existing.status !== "partially-failed" && existing.status !== "stopped") {
-      return rejected(existing);
+      return rejected(existing, "status");
     }
     if (hasStaleVersions(existing)) {
       // 決定 45-1：再開と同じ理由で再試行も受け付けない。トランザクションに入る前に返すので、
       // 実行の状態も単位も 1 行も変わらない。
-      return rejected(existing);
+      return rejected(existing, "stale-version");
+    }
+    // PR10 決定 6：再開と同じ判定を同じ位置（トランザクションの前）で行う。保存済みの
+    // `endpoint_url` と違えば実行の状態も単位も 1 つも変えずに拒否し、`endpoint_url` も
+    // 書き換えない。ここに `recovery-waiting` は来ない（上の状態ガードで弾いてある）ので、
+    // 復旧ゲートには触れない。
+    const { client, endpointUrl } = deps.connection.current();
+    if (endpointUrl !== existing.endpointUrl) {
+      return rejected(existing, "connection");
     }
     // `resumeRun` にある `stopReason === "settings"` のガードが、ここには**無い**。これは
     // `settings` の実行を一律に弾かないという意図的な差である。
@@ -933,9 +1031,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     });
 
     if (claimed === null) {
-      return rejected(findRun(deps.db, runId) ?? existing);
+      return rejected(findRun(deps.db, runId) ?? existing, "status");
     }
-    return { ...launch(claimed), accepted: true };
+    return { ...launch(claimed, client), accepted: true, rejectReason: null };
   }
 
   /**
@@ -997,17 +1095,52 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
    * 両方を対象にする。これが無いと、再起動しただけで未確認の生成に後続を送ってしまう。
    * 1 度 `listRunsByStatus(["recovery-waiting"])` を読み直すだけで両方を拾える
    * （新しく遷移させた行もこの時点ではもう `recovery-waiting` になっている）。
+   *
+   * ただし閉じるのは **`recovery_confirmed_at` が null の実行だけ**（PR10 決定 11）。
+   * 利用者が復旧を確認した実行まで閉じ直すと、版違い・接続先違いで再開も終端化もできない
+   * `recovery-waiting` の実行が、起動のたびに確認をやり直させることになる。今回新しく
+   * `recovery-waiting` にした実行は `finishRun` が確認時刻を null にしているので必ず閉じる。
    */
   function reconcileOnStartup(): void {
     for (const run of listRunsByStatus(deps.db, ["running"])) {
       reconcileRun(run.id);
     }
     for (const run of listRunsByStatus(deps.db, ["recovery-waiting"])) {
-      deps.recoveryGate.block(run.id);
+      if (run.recoveryConfirmedAt === null) {
+        deps.recoveryGate.block(run.id);
+      }
     }
   }
 
-  return { startRun, stopRun, resumeRun, retryFailedUnits, reconcileOnStartup };
+  /** PR10 決定 7：走っているループの実行 ID。「走っているか」の正本はレジストリ。 */
+  function activeRunIds(): readonly string[] {
+    return [...registry.keys()];
+  }
+
+  /**
+   * PR10 決定 11：復旧の確認。実行が無ければ null（HTTP は 404）。
+   * `markRecoveryConfirmed` が確認時刻を書いてからゲートを開け、読み直した実行を返す
+   * （書き込みが失敗すればゲートは開かず、例外がそのまま伝わる）。冪等：すでに確認済みなら
+   * 時刻を書き直さず、ゲートを開けるだけ。**実行の `status` は変えない。**
+   */
+  function confirmRecovery(runId: string): RunRecord | null {
+    const existing = findRun(deps.db, runId);
+    if (existing === null) {
+      return null;
+    }
+    markRecoveryConfirmed(existing);
+    return findRun(deps.db, runId);
+  }
+
+  return {
+    startRun,
+    stopRun,
+    resumeRun,
+    retryFailedUnits,
+    reconcileOnStartup,
+    activeRunIds,
+    confirmRecovery,
+  };
 }
 
 /** ---------------------------------------------------------------------- */
@@ -1056,30 +1189,6 @@ interface StartPlan {
 /** `UnitFailure`（`input-too-long`）を DB の `UnitFailureRecord` に写す。送信前の例外なので origin は "local"。 */
 function toInputTooLongFailure(message: string): UnitFailureRecord {
   return { reason: "input-too-long", message, finishReason: null, origin: "local" };
-}
-
-/**
- * `checkMs` / `recheckMs` が 1 以上の安全な整数であり、`recoveryConfirmMs` を加算した値が
- * 32bit 符号付き整数の上限を超えないことを検証する（決定 44）。違反したらエラーメッセージを、
- * 問題なければ null を返す。`stopMessage` に使うため、接続先 URL・API キーを含めない定型文。
- */
-function validateHardTimeouts(
-  timeouts: { readonly checkMs: number; readonly recheckMs: number },
-  recoveryConfirmMs: number,
-): string | null {
-  if (!Number.isSafeInteger(timeouts.checkMs) || timeouts.checkMs < 1) {
-    return "タイムアウト設定が不正なため実行を開始できなかった（checkMs は 1 以上の整数である必要がある）";
-  }
-  if (!Number.isSafeInteger(timeouts.recheckMs) || timeouts.recheckMs < 1) {
-    return "タイムアウト設定が不正なため実行を開始できなかった（recheckMs は 1 以上の整数である必要がある）";
-  }
-  if (timeouts.checkMs + recoveryConfirmMs > MAX_TIMEOUT_MS) {
-    return "タイムアウト設定が不正なため実行を開始できなかった（checkMs + recoveryConfirmMs が上限を超えている）";
-  }
-  if (timeouts.recheckMs + recoveryConfirmMs > MAX_TIMEOUT_MS) {
-    return "タイムアウト設定が不正なため実行を開始できなかった（recheckMs + recoveryConfirmMs が上限を超えている）";
-  }
-  return null;
 }
 
 /**

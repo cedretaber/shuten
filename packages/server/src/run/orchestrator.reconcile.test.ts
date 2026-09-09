@@ -9,6 +9,7 @@
 import type { ChunkSettings } from "@shuten/shared";
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { fixedConnection } from "../connection.ts";
 import { createDatabase } from "../db/client.ts";
 import { applyMigrations } from "../db/migrate.ts";
 import type { CheckUnitRecord, RecheckUnitRecord, RunRecord } from "../db/records.ts";
@@ -78,10 +79,9 @@ function makeOrchestrator(
   const recoveryGate = overrides.recoveryGate ?? createRecoveryGate();
   const orchestrator = createOrchestrator({
     db,
-    client: UNUSED_CLIENT,
+    connection: fixedConnection(UNUSED_CLIENT, "http://127.0.0.1:1234"),
     queue: createRequestQueue(),
     recoveryGate,
-    endpointUrl: "http://127.0.0.1:1234",
     recoveryConfirmMs: 60_000,
   });
   return { orchestrator, recoveryGate };
