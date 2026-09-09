@@ -357,7 +357,17 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
    転記しない。接続先 URL・API キーに加え、`PersistBoundaryError` が持つ**原稿の断片**
    （`previewQuote` の 20 コード単位）も DB に残さないため（PR9a の持ち越し）。
 4. 例外は `done` に載せずに握る（決定 24）。`run-settled` イベントで通知する。
-5. **この後始末自体が失敗することもある**（DB が原因の例外なら 1・2 も失敗しうる）。その場合も
+5. **その実行の復旧ゲートが閉じているなら、`stopped` ではなく `recovery-waiting`
+   （`generation_unconfirmed = true`）で終端化する**（Task 8 のレビューで判明した隙間への対処）。
+   `resumeRun` がゲートを開けるのは `recovery-waiting` の実行の claim に成功したときだけなので、
+   ゲートが閉じたまま `stopped(internal-error)` で終わると、**プロセス全体の送信が再起動まで
+   止まる**。生成終了を確認できていないことは想定外の例外とは無関係に真なので、
+   `recovery-waiting` と記録するのが事実にも合う。判定は `recoveryGate.blockedRunIds.has(runId)`。
+   これで「ゲートが閉じている ⟺ その実行は `recovery-waiting`」という不変条件が保たれる。
+   `stop_reason` は `internal-error` のまま、`run-settled` の `generationUnconfirmed` も
+   同じ値にする。決定 23 の写像表には `internal-error` / true / `recovery-waiting` の行が増える
+   （`state.test.ts` の S6 も同じ数になる）。
+6. **この後始末自体が失敗することもある**（DB が原因の例外なら 1・2 も失敗しうる）。その場合も
    捕まえて握り、`done` は最後に読めた `RunRecord`（読めなければ開始時のレコード）で解決する。
    レジストリからの削除と `gate.dispose()` は `finally` で必ず行う。「`done` は決して reject
    しない」（決定 24）の実体はここにある。
@@ -449,6 +459,10 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 `unitIds` で明示的に指定された場合も同じ理由で拒否する（`RetryTargetError`）。
 対処は「実際に試みた範囲を保存する」ではない（今度は上限を超える入力を送ることになる）。
 守りは消費側に置く。
+
+**この除外は検査単位だけで、再確認単位には掛けない**（意図的な非対称）。上の危険な理由 (2) は
+再確認には当てはまらない。再確認の入力は `buildRecheckInput` が毎回組み直すので、黙って狭い入力に
+なることがない。再試行しても同じ `input-too-long` を繰り返すだけで、安全上の問題は生じない。
 
 停止要求そのものは `setStopRequestedAt(db, runId, at)` で書く（`runs.status` は `running` のまま。決定 21）。
 
