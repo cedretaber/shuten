@@ -417,7 +417,7 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 
 | 入口 | 受け付ける `runs.status` | 遷移 |
 | --- | --- | --- |
-| `resumeRun` | `stopped`、`recovery-waiting` | → `running` |
+| `resumeRun` | `stopped`（**`stop_reason` が `settings` のものを除く**）、`recovery-waiting` | → `running` |
 | `retryFailedUnits` | `partially-failed`、`stopped` | → `running`（その後 `failed` 単位を `pending` に） |
 | どちらも | `running`（実行中）、`completed` | 拒否。現在のレコードを返す（例外にしない。決定 12） |
 
@@ -429,6 +429,25 @@ UPDATE で**消す（2 文に分けると途中で落ちた行が「実行中な
 - `finished_at` → null
 - `stop_reason` / `stop_message` → null（前回の停止の記録。実行中の行に残すと画面が矛盾する。
   単位ごとの失敗（`check_units.failure_*`）は消さないので「何が起きたか」は失われない）
+
+**`stop_reason` が `settings` の実行は再開できない**（最終レビューで判明した穴への対処）。
+`startRun` が決定 18・44 で作る `stopped(settings)` の実行（分割設定不正・タイムアウト設定不正・
+入力上限超過）は、検査単位が 0 件か全件 `failed` なので、そのまま再開すると**生成要求を 1 件も
+送らずに `completed` / `partially-failed` になり、`clearStopState` が停止理由まで消す**。
+設定エラーで 1 度も検査していない実行が「完了・指摘 0 件」として残るのは、
+`docs/reference/invariants.md` の「失敗を指摘ゼロと誤表示しない」に反する。`resumeRun` は
+これを拒否し、現在のレコードを返す（利用者への案内は「設定を見直して新しい実行を開始する」）。
+実行中に出る `settings`（モデル種別が生成に使えない、`chat` が HTTP 400 で返す入力上限超過）も
+同じ扱いでよい。どちらもメッセージ自体が「設定を見直せ」という意味だからである。
+
+**判別子を「`pending` の単位が 0 件」に置いてはならない。** 最後の検査単位を保存した直後、
+対象の決着処理（決定 34 の再確認の起票）の前に停止した実行は、`pending` の単位が 0 件でも
+「起票して再確認を走らせる」という正当な仕事が残っている。これを弾くと復旧できなくなる。
+
+**`retryFailedUnits` は、戻した失敗単位だけでなく、その実行に残っている `pending` の単位も
+進める**（ループが両者を区別しない）。これは意図した挙動である。決定 35 が「停止していないのに
+`pending` が残ったままループを抜けることは無い」と定めている以上、失敗単位だけを走らせて
+`pending` を残す終わり方はできない。
 
 **`retryFailedUnits` は検査単位と再確認単位の両方を戻す。** 仕様 8.2 の「失敗した単位」は
 `check_units` と `recheck_units` の両方を指す。`claimUnitChecked(failed → pending)` と
