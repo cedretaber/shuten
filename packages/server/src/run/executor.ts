@@ -7,7 +7,7 @@ import type {
   ModelInfo,
   Usage,
 } from "../lmstudio/types.ts";
-import type { RequestQueue } from "./queue.ts";
+import { QueueCancelledError, type RequestQueue } from "./queue.ts";
 import type { RecoveryGate } from "./recovery-gate.ts";
 import type { RunStop, StopReason, UnitFailure } from "./result.ts";
 
@@ -415,7 +415,7 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
     }
   }
 
-  function execute<T>(
+  async function execute<T>(
     request: ChatRequest,
     parse: (result: ChatResult) => T,
     timeoutMs: number,
@@ -431,7 +431,27 @@ export function createExecutor(client: LmStudioClient, options: ExecutorOptions)
       // runOne は executor 内の可変状態（halt / requestCount / firstModelInfo）を書き換えるが、
       // 共有キューが同時実行数を 1 に保つ（FIFO で前のジョブが解決してから次を始める）ため、
       // 複数 executor 間でこの状態が競合することはない。
-      return queue.enqueue(() => runOne(request, parse, timeoutMs, hooks));
+      //
+      // 決定 45-2：signal を一緒に渡すことで、順番が来る前に停止された場合は前のジョブの
+      // 解決を待たずにその場で決着する（待たないと、この実行は他の実行の生成が終わるまで
+      // running のまま止まらない）。enqueue の呼び出し自体はここで同期的に行うので、
+      // 共有キューへの投入順は execute の呼び出し順のままである。
+      const startedAt = now();
+      try {
+        return await queue.enqueue(
+          () => runOne(request, parse, timeoutMs, hooks),
+          signal !== undefined ? { signal } : undefined,
+        );
+      } catch (error) {
+        if (!(error instanceof QueueCancelledError)) {
+          throw error;
+        }
+        // キュー待ち中に停止した。生成要求は 1 件も送っていないので generationUnconfirmed は
+        // false のまま（単位は pending に残り、再開できる）。文言は runOne 冒頭の
+        // isAborted(signal) 分岐と同じにする。
+        halt ??= makeStop("aborted", "停止要求により実行を停止した", null, false);
+        return finish(blocked(halt, "停止要求により生成要求を送らなかった", startedAt));
+      }
     }
     // キューなしの経路（runPipeline / CLI）は従来どおり、この executor 内の tail で直列化する。
     const started = tail.then(() => runOne(request, parse, timeoutMs, hooks));
