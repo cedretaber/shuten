@@ -16,7 +16,12 @@ export interface ServerConfig {
   readonly lmStudioUrl: string;
   /** LM Studio の API キー。未設定・空文字・空白のみは null。 */
   readonly lmStudioApiKey: string | null;
+  /** 復旧確認の待機上限（ミリ秒）。決定 8・43。`recoveryConfirmMs === 0` は「checkMs がそのままハード上限」。 */
+  readonly recoveryConfirmMs: number;
 }
+
+/** `SHUTEN_RECOVERY_CONFIRM_MS` の既定値（暫定値。決定 8・43）。 */
+const DEFAULT_RECOVERY_CONFIRM_MS = 120_000;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = parsePort(env.SHUTEN_PORT ?? "3000");
@@ -27,6 +32,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     webDistDir: path.resolve(env.SHUTEN_WEB_DIST ?? "../web/dist"),
     lmStudioUrl: parseLmStudioUrl(env.SHUTEN_LM_STUDIO_URL ?? "http://127.0.0.1:1234"),
     lmStudioApiKey: parseLmStudioApiKey(env.SHUTEN_LM_STUDIO_API_KEY),
+    recoveryConfirmMs: parseRecoveryConfirmMs(env.SHUTEN_RECOVERY_CONFIRM_MS),
   };
 }
 
@@ -91,4 +97,43 @@ export function parseLmStudioApiKey(raw: string | undefined): string | null {
   }
   const trimmed = raw.trim();
   return trimmed === "" ? null : trimmed;
+}
+
+/** `setTimeout` の実用上限（符号付き 32bit 整数の最大値）。超えると Node はタイマーを即時発火させる。 */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * `SHUTEN_RECOVERY_CONFIRM_MS` を検証して数値にする（決定 43）。
+ *
+ * `parsePort`（1〜65535 の範囲検査）は流用できない。ここでは次を検査する。
+ *
+ * - 未設定（`undefined`）なら既定 120000（暫定値。決定 8）
+ * - **0 を許可する**（「`checkMs` がそのままハード上限」という従来の意味。決定 8）
+ * - 10 進の整数表記であること（`Number.parseInt` は "0oops" や "1.5"、"1e3" を黙って受け入れるため、
+ *   `parsePort` と同じく文字列全体が十進の整数表記であることを先に確認する）。負値は不可
+ * - `Number.isSafeInteger` を満たすこと
+ * - `setTimeout` の実用上限（2,147,483,647）以下であること
+ *
+ * 満たさなければ例外にする（既存の設定エラーと同じ扱い。失敗を既定値に丸めない）。
+ */
+export function parseRecoveryConfirmMs(raw: string | undefined): number {
+  if (raw === undefined) {
+    return DEFAULT_RECOVERY_CONFIRM_MS;
+  }
+  const trimmed = raw.trim();
+  if (!/^[0-9]+$/.test(trimmed)) {
+    throw new Error(
+      `SHUTEN_RECOVERY_CONFIRM_MS が不正です（0 以上の十進の整数のみ）: ${JSON.stringify(raw)}`,
+    );
+  }
+  const ms = Number(trimmed);
+  if (!Number.isSafeInteger(ms)) {
+    throw new Error(`SHUTEN_RECOVERY_CONFIRM_MS が大きすぎます: ${JSON.stringify(raw)}`);
+  }
+  if (ms > MAX_TIMEOUT_MS) {
+    throw new Error(
+      `SHUTEN_RECOVERY_CONFIRM_MS が上限（${String(MAX_TIMEOUT_MS)}）を超えています: ${JSON.stringify(raw)}`,
+    );
+  }
+  return ms;
 }

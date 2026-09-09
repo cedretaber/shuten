@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import type { LmStudioClient } from "../lmstudio/types.ts";
+import { createOrchestrator } from "../run/orchestrator.ts";
+import { createRequestQueue } from "../run/queue.ts";
+import { createRecoveryGate } from "../run/recovery-gate.ts";
 import { createDatabase } from "./client.ts";
 import { applyMigrations } from "./migrate.ts";
 import {
@@ -312,6 +316,163 @@ describe("db/persistence", () => {
 
       const unfinishedRecheckUnits = listUnfinishedRecheckUnits(reopened.db, run.id);
       expect(unfinishedRecheckUnits.map((u) => u.id).sort()).toEqual(["rc-pending", "rc-running"]);
+
+      reopened.close();
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  /**
+   * Task 9 の D1（起動時照合を含む再起動テスト）。PR8 の D2（このファイルの上のテスト）が
+   * 「行が残ること」を確認したのに対し、ここでは「残った running の行を起動時照合がどう扱い、
+   * 再開でその続きから最後まで進められるか」（決定 13）を、ファイル DB を実際に閉じて
+   * 開き直した上で確認する。
+   */
+  it("起動時照合と再開：ハンドルを閉じて開き直した後、reconcileOnStartup → resumeRun で最後まで進む（Task 9 D1）", async () => {
+    const ctx = createTempDbContext();
+    try {
+      const body = "あいうえおかきくけこさしすせそたちつてと"; // 20 書記素・1 段落
+
+      const opened = ctx.track(createDatabase(ctx.file));
+      applyMigrations(opened.db);
+
+      insertManuscriptVersion(opened.db, { id: "mv1", name: "原稿", body });
+      const run = insertRun(opened.db, {
+        ...baseRunInput("run-d1"),
+        perspectives: ["typo", "naturalness"],
+        recheckEnabled: false,
+        status: "running",
+        finishedAt: null,
+      });
+      const target = insertRunTarget(opened.db, {
+        id: "run-d1-t0",
+        runId: run.id,
+        targetIndex: 0,
+        target: { start: 0, end: body.length },
+        contextBefore: null,
+        contextAfter: null,
+        input: { start: 0, end: body.length },
+        paragraphIds: [0],
+      });
+      // 1 観点目はプロセスが落ちる前に完了していた。
+      insertCheckUnit(opened.db, {
+        id: "run-d1-cu-typo",
+        runId: run.id,
+        targetId: target.id,
+        perspective: "typo",
+        status: "done",
+        attempts: 1,
+        failure: null,
+        pendingNote: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: 5,
+        startedAt: new Date(1000),
+        finishedAt: new Date(2000),
+      });
+      // 2 観点目は生成要求を送った直後（running）にバックエンドが落ちた、という状況を再現する。
+      insertCheckUnit(opened.db, {
+        id: "run-d1-cu-naturalness",
+        runId: run.id,
+        targetId: target.id,
+        perspective: "naturalness",
+        status: "running",
+        attempts: 1,
+        failure: null,
+        pendingNote: null,
+        usage: null,
+        inputGraphemes: null,
+        elapsedMs: null,
+        startedAt: new Date(1500),
+        finishedAt: null,
+      });
+
+      opened.close();
+
+      // ハンドルを閉じて開き直す（バックエンドの再起動を模す）。
+      const reopened = ctx.track(createDatabase(ctx.file));
+      applyMigrations(reopened.db);
+
+      // 起動時照合の後に再開が続きから進められることを確かめるための、台本つきモック
+      // クライアント。「naturalness」観点の 1 回の生成要求にだけ応答する。
+      const requests: unknown[] = [];
+      const client: LmStudioClient = {
+        listModels: () =>
+          Promise.resolve([
+            {
+              id: "model-a",
+              type: "llm",
+              state: "loaded",
+              quantization: null,
+              maxContextLength: 4096,
+              loadedContextLength: 2048,
+            },
+          ]),
+        ensureLoaded: () =>
+          Promise.resolve({
+            id: "model-a",
+            type: "llm",
+            state: "loaded",
+            quantization: null,
+            maxContextLength: 4096,
+            loadedContextLength: 2048,
+          }),
+        chat: (request) => {
+          requests.push(request);
+          if (requests.length > 1) {
+            throw new Error("台本にない生成要求（続きから進むはずが、やり直している）");
+          }
+          return Promise.resolve({
+            content: JSON.stringify({ findings: [] }),
+            reasoningContent: null,
+            finishReason: "stop",
+            usage: {
+              promptTokens: 10,
+              completionTokens: 5,
+              totalTokens: 15,
+              reasoningTokens: null,
+            },
+            raw: {},
+          });
+        },
+      };
+
+      const recoveryGate = createRecoveryGate();
+      const orchestrator = createOrchestrator({
+        db: reopened.db,
+        client,
+        queue: createRequestQueue(),
+        recoveryGate,
+        endpointUrl: "http://127.0.0.1:1234",
+        recoveryConfirmMs: 60_000,
+      });
+
+      // 決定 13：自動では再開しない。running の単位を持っていたので recovery-waiting になる。
+      orchestrator.reconcileOnStartup();
+      const reconciled = findRun(reopened.db, "run-d1");
+      expect(reconciled?.status).toBe("recovery-waiting");
+      expect(reconciled?.generationUnconfirmed).toBe(true);
+      const pendingUnit = findCheckUnit(reopened.db, "run-d1-cu-naturalness");
+      expect(pendingUnit?.status).toBe("pending");
+      expect(pendingUnit?.pendingNote).toBe("バックエンドが終了したため未完了のまま残った");
+      // 完了済みの単位は触られない。
+      expect(findCheckUnit(reopened.db, "run-d1-cu-typo")?.status).toBe("done");
+      // 決定 39：起動時照合が復旧ゲートを閉じる（再起動しただけでは自動で送信を再開しない）。
+      expect(recoveryGate.blocked).toBe(true);
+
+      // 利用者が LM Studio 側を確認し、手で再開する。
+      const resumed = orchestrator.resumeRun("run-d1");
+      expect(resumed.accepted).toBe(true);
+      // resumeRun が recovery-waiting の claim に成功した時点でゲートが開く（決定 39 の唯一の口）。
+      expect(recoveryGate.blocked).toBe(false);
+      const finished = await resumed.done;
+
+      expect(finished.status).toBe("completed");
+      expect(requests).toHaveLength(1);
+      expect(findCheckUnit(reopened.db, "run-d1-cu-naturalness")?.status).toBe("done");
+      // 完了済みだった単位の attempts は再開の影響を受けない。
+      expect(findCheckUnit(reopened.db, "run-d1-cu-typo")?.attempts).toBe(1);
 
       reopened.close();
     } finally {

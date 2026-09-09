@@ -2,10 +2,8 @@
  * オーケストレーターの入口（決定 24）。プロセス内に 1 つ作る。
  *
  * 本ファイルが持つのは開始（`startRun`）・停止（`stopRun`）・再開（`resumeRun`）・
- * 失敗単位の個別再試行（`retryFailedUnits`）。単位駆動ループ本体は `run/loop.ts` にあり、
- * ここからは `launch` 経由で起動する。起動時照合（`reconcileOnStartup`）は Task 9 で足す
- * （`Orchestrator` インターフェースは決定 24 の全メンバーを一度に生やさず、実装できたものだけを
- * 載せる。呼び出し側が未実装メソッドを呼べば型検査の時点で弾かれる）。
+ * 失敗単位の個別再試行（`retryFailedUnits`）・起動時照合（`reconcileOnStartup`）。単位駆動ループ
+ * 本体は `run/loop.ts` にあり、開始・再開・再試行はそこから `launch` 経由で起動する。
  *
  * 責務の分け方（第一の防御は「状態を書く経路を 1 つにする」）：
  *
@@ -53,6 +51,7 @@ import {
   findRunByStartOperationId,
   insertRun,
   insertRunTarget,
+  listRunsByStatus,
   setStopRequestedAt,
 } from "../db/repositories/runs.ts";
 import type { LmStudioClient } from "../lmstudio/types.ts";
@@ -182,6 +181,12 @@ export interface Orchestrator {
   resumeRun(runId: string): RunLaunchResult;
   /** 失敗単位の個別再試行（決定 36）。`partially-failed` / `stopped` の実行だけを受け付ける。 */
   retryFailedUnits(runId: string, options?: RetryFailedUnitsOptions): RunLaunchResult;
+  /**
+   * 起動時照合（決定 13・39・40）。マイグレーション適用後、API 受付前に `index.ts` から 1 度だけ
+   * 呼ぶ。自動では再開しない（プロセスが落ちた時点で LM Studio 側の生成が走っていた可能性を
+   * 否定できないため）。想定外の例外はそのまま投げる（`index.ts` の非ゼロ終了に委ねる）。
+   */
+  reconcileOnStartup(): void;
 }
 
 /** 決定 33：想定外の例外で終端化した実行の `stop_message`。定型文のみ（例外のメッセージを転記しない）。 */
@@ -189,6 +194,16 @@ const INTERNAL_ERROR_RUN_MESSAGE = "想定外のエラーで実行を停止し�
 
 /** 決定 33：想定外の例外で `pending` に戻した単位の `pending_note`。同じく定型文のみ。 */
 const INTERNAL_ERROR_UNIT_NOTE = "想定外のエラーで実行が中断した";
+
+/** 決定 13：起動時照合で `pending` に戻した単位の `pending_note`。 */
+const RECONCILE_UNIT_NOTE = "バックエンドが終了したため未完了のまま残った";
+
+/** 決定 13：起動時照合で `recovery-waiting` にした実行の `stop_message`。 */
+const RECONCILE_RECOVERY_MESSAGE =
+  "バックエンドが終了しました。LM Studio 側を確認して再開してください";
+
+/** 決定 13：起動時照合で `stopped` にした実行の `stop_message`（`running` の単位が無かった場合）。 */
+const RECONCILE_STOPPED_MESSAGE = "バックエンドが終了しました";
 
 /** レジストリの 1 件。走っているループの `done` と、その実行の停止ゲートを対で持つ。 */
 interface RegisteredRun {
@@ -806,7 +821,121 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     return { ...launch(claimed), accepted: true };
   }
 
-  return { startRun, stopRun, resumeRun, retryFailedUnits };
+  /**
+   * `running` の実行を 1 件、決定 40 の 3 段階で片づける。**1 実行につき 1 トランザクション**
+   * （決定 40。複数の実行をまたいで 1 つのトランザクションにしない。1 実行の失敗で他の実行の
+   * 照合まで巻き戻さないため）。
+   *
+   * 1. トランザクションの中で、更新前に `running` の検査単位・再確認単位の有無を確定する
+   *    （`hadRunning`）。**この判定を単位の書き換えより先に行う**：先に単位を `pending` に
+   *    書き換えてから同じ行を読み直すと `running` が 0 件になり、「単位を持っていなかった」と
+   *    誤判定してしまう（決定 40 が警告している誤分類そのもの）。
+   * 2. `running` の単位を `pending` に戻す（`pending_note` は定型文）。処理状態は戻すが、
+   *    直前に何が起きたか（`failure` / `attempts` / `usage` / `elapsedMs`）は保つ
+   *    （`settleInternalError` と同じ考え方）。
+   * 3. 1 の判定に基づいて実行の状態を更新する：`running` の単位を持っていたら
+   *    `recovery-waiting`（`generationUnconfirmed: true`）、持っていなければ `stopped`
+   *    （`generationUnconfirmed: false`）。
+   *
+   * トランザクションが失敗したら（`finishRunChecked` が false を返す場合を含め）例外を投げて
+   * 抜ける。ここで握りつぶさない：`index.ts` の「例外は捕まえずに非ゼロ終了させる」方針に委ね、
+   * 中途半端な状態のまま起動を続けさせない（決定 40 の「1 実行の失敗で全実行の照合が巻き戻る」
+   * ことを避ける代わりに、その 1 実行の不整合を握りつぶして起動を続けることもしない）。
+   *
+   * **`recoveryGate.block` はここでは呼ばない**（呼び出し元の `reconcileOnStartup` がコミット後に
+   * まとめて行う）。ここで呼んでトランザクションがロールバックすると、ゲートだけ閉じて実行は
+   * `running` のまま残り、`resumeRun` は `running` を受け付けないためゲートを二度と開けなくなる
+   * （プロセス全体の送信が起動し直すまで止まる）。
+   */
+  function reconcileRun(runId: string): void {
+    const finishedAt = now();
+    deps.db.transaction((tx) => {
+      const checkUnits = listCheckUnits(tx, runId);
+      const recheckUnits = listRecheckUnits(tx, runId);
+      const hadRunning =
+        checkUnits.some((unit) => unit.status === "running") ||
+        recheckUnits.some((unit) => unit.status === "running");
+
+      for (const unit of checkUnits) {
+        if (unit.status !== "running") {
+          continue;
+        }
+        finishCheckUnitChecked(tx, unit.id, {
+          expectedStatus: "running",
+          status: "pending",
+          attempts: unit.attempts,
+          failure: unit.failure,
+          pendingNote: RECONCILE_UNIT_NOTE,
+          usage: unit.usage,
+          inputGraphemes: unit.inputGraphemes,
+          elapsedMs: unit.elapsedMs,
+          finishedAt,
+        });
+      }
+      for (const unit of recheckUnits) {
+        if (unit.status !== "running") {
+          continue;
+        }
+        finishRecheckUnitChecked(tx, unit.id, {
+          expectedStatus: "running",
+          status: "pending",
+          attempts: unit.attempts,
+          failure: unit.failure,
+          pendingNote: RECONCILE_UNIT_NOTE,
+          notApplicableReason: null,
+          verdict: unit.verdict,
+          reasonKind: unit.reasonKind,
+          reason: unit.reason,
+          suggestionValid: unit.suggestionValid,
+          usage: unit.usage,
+          inputGraphemes: unit.inputGraphemes,
+          elapsedMs: unit.elapsedMs,
+          finishedAt,
+        });
+      }
+
+      // stop_reason の選び方（判断に迷った点。task-9-report.md に詳細）：
+      // - hadRunning（recovery-waiting）→ "recovery-needed"。決定 23 の表にある既存の意味
+      //   「生成終了を確認できない」がそのまま当てはまる。
+      // - !hadRunning（stopped）→ "internal-error"。ユーザーの停止操作ではなくプロセスの
+      //   予期しない終了によるものという点で決定 14 の internal-error と性質が同じだが、専用の
+      //   値ではない代替。`stop_message` で「バックエンドが終了しました」と区別する。
+      const ok = finishRunChecked(tx, runId, {
+        expectedStatus: "running",
+        status: hadRunning ? "recovery-waiting" : "stopped",
+        stopReason: hadRunning ? "recovery-needed" : "internal-error",
+        stopMessage: hadRunning ? RECONCILE_RECOVERY_MESSAGE : RECONCILE_STOPPED_MESSAGE,
+        generationUnconfirmed: hadRunning,
+        finishedAt,
+      });
+      if (!ok) {
+        // `running` の実行を対象に `listRunsByStatus` で読んだ直後なので、通常は起こらない
+        // （このプロセス以外に書き手はいない）。防御的に例外にしてこの実行の照合を丸ごと戻す。
+        throw new Error(`起動時照合で実行を終端化できませんでした（実行 ID: ${runId}）`);
+      }
+    });
+  }
+
+  /**
+   * 起動時照合（決定 13・39・40）。`running` の実行を実行ごとに 1 トランザクションで
+   * `reconcileRun` に渡し、コミット後にまとめて復旧ゲートを復元する。
+   *
+   * ゲートの復元（決定 39）は、今回新しく `recovery-waiting` にした実行と、**すでに
+   * `recovery-waiting` だった既存の実行**（前回の起動時照合やその後の運用で残っていたもの）の
+   * 両方を対象にする。これが無いと、再起動しただけで未確認の生成に後続を送ってしまう。
+   * 1 度 `listRunsByStatus(["recovery-waiting"])` を読み直すだけで両方を拾える
+   * （新しく遷移させた行もこの時点ではもう `recovery-waiting` になっている）。
+   */
+  function reconcileOnStartup(): void {
+    for (const run of listRunsByStatus(deps.db, ["running"])) {
+      reconcileRun(run.id);
+    }
+    for (const run of listRunsByStatus(deps.db, ["recovery-waiting"])) {
+      deps.recoveryGate.block(run.id);
+    }
+  }
+
+  return { startRun, stopRun, resumeRun, retryFailedUnits, reconcileOnStartup };
 }
 
 /** ---------------------------------------------------------------------- */
