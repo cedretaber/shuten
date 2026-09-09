@@ -79,6 +79,17 @@ pnpm start          # http://127.0.0.1:3000 で起動し、ビルド済みの we
 開発時は `pnpm dev` でサーバー（`node --watch`）と Vite の開発サーバーを同時に起動する。
 Vite は `/api` をサーバーへプロキシする。
 
+環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）、
+`SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`。LM Studio のルート URL。`/v1` を付けると起動時にエラー）、
+`SHUTEN_LM_STUDIO_API_KEY`（省略可）。
+
+`SHUTEN_DATA_DIR` の下に SQLite ファイル `shuten.db` を作る。起動時に `createApp` の前に
+DB マイグレーションを適用し、失敗したら API を受け付けずにプロセスを非ゼロ終了させる。
+
+実 LM Studio を使う統合テストは通常のテストから分離してある。`SHUTEN_LM_STUDIO_URL` を設定して `pnpm test:llm`
+を実行する（未設定なら全件 skip）。モデルは `SHUTEN_LM_STUDIO_MODEL` で指定でき、未指定ならロード済みの
+`llm` / `vlm` の最初のものを使う。
+
 ### 終了
 
 `SIGINT`（コンソールの Ctrl+C）または `SIGTERM` を受けると、新規の接続を止め、SSE を閉じ、残った接続を切り、
@@ -91,17 +102,6 @@ LM Studio への接続を閉じ、DB を閉じてから終了する（`shutdown:
 **Windows では `SIGTERM` が届かない。** 対象はコンソールの Ctrl+C（`SIGINT`）だけになる。
 なお Windows での動作確認は CI（`windows-latest` の `pnpm check`）でのみ行っており、**ローカルの
 Windows 環境では未確認**（`docs/guides/windows-verification.md` のチェックポイントで確認する）。
-
-環境変数：`SHUTEN_HOST`（既定 `127.0.0.1`）、`SHUTEN_PORT`（既定 `3000`）、`SHUTEN_DATA_DIR`（既定 `.data`）、
-`SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`。LM Studio のルート URL。`/v1` を付けると起動時にエラー）、
-`SHUTEN_LM_STUDIO_API_KEY`（省略可）。
-
-`SHUTEN_DATA_DIR` の下に SQLite ファイル `shuten.db` を作る。起動時に `createApp` の前に
-DB マイグレーションを適用し、失敗したら API を受け付けずにプロセスを非ゼロ終了させる。
-
-実 LM Studio を使う統合テストは通常のテストから分離してある。`SHUTEN_LM_STUDIO_URL` を設定して `pnpm test:llm`
-を実行する（未設定なら全件 skip）。モデルは `SHUTEN_LM_STUDIO_MODEL` で指定でき、未指定ならロード済みの
-`llm` / `vlm` の最初のものを使う。
 
 ## 評価ハーネス（`packages/cli`）
 
