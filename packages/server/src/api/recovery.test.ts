@@ -11,7 +11,7 @@ import {
   DIAGNOSTIC_TRANSFORM_VERSION,
   PROMPT_VERSION,
 } from "@shuten/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { RunRecord } from "../db/records.ts";
 import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
@@ -20,22 +20,10 @@ import { LmStudioError } from "../lmstudio/errors.ts";
 import type { ChatResult, Usage } from "../lmstudio/types.ts";
 import type { StartRunInput } from "../run/orchestrator.ts";
 import { SCRIPTED_ENDPOINT_URL, SCRIPTED_LOADED_MODEL } from "../run/test-support.ts";
-import type { ApiHarness, SetupApiOverrides } from "./test-support.ts";
-import { setupApi } from "./test-support.ts";
+import type { ApiHarness } from "./test-support.ts";
+import { createHarnessRegistry, JSON_HEADERS } from "./test-support.ts";
 
-const JSON_HEADERS = { "content-type": "application/json" };
-
-const opened: ApiHarness[] = [];
-function open(overrides?: SetupApiOverrides): ApiHarness {
-  const harness = setupApi(overrides);
-  opened.push(harness);
-  return harness;
-}
-afterEach(() => {
-  for (const harness of opened.splice(0)) {
-    harness.close();
-  }
-});
+const { open } = createHarnessRegistry();
 
 async function getRecovery(harness: ApiHarness): Promise<{ status: number; body: unknown }> {
   const res = await harness.app.request("/api/recovery");

@@ -7,7 +7,7 @@
  * `ChatStep` の文脈（`endpointUrl`）に現れる接続先の違いの両方で確かめる。
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createConnectionManager } from "../connection.ts";
 import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
@@ -15,22 +15,10 @@ import type { ChatResult, ModelInfo, Usage } from "../lmstudio/types.ts";
 import type { StartRunInput } from "../run/orchestrator.ts";
 import { SCRIPTED_ENDPOINT_URL, SCRIPTED_LOADED_MODEL } from "../run/test-support.ts";
 import { CONNECTION_CHECK_ERROR_MESSAGES } from "./messages.ts";
-import type { ApiHarness, SetupApiOverrides } from "./test-support.ts";
-import { setupApi } from "./test-support.ts";
+import type { ApiHarness } from "./test-support.ts";
+import { createHarnessRegistry, JSON_HEADERS } from "./test-support.ts";
 
-const JSON_HEADERS = { "content-type": "application/json" };
-
-const opened: ApiHarness[] = [];
-function open(overrides?: SetupApiOverrides): ApiHarness {
-  const harness = setupApi(overrides);
-  opened.push(harness);
-  return harness;
-}
-afterEach(() => {
-  for (const harness of opened.splice(0)) {
-    harness.close();
-  }
-});
+const { open } = createHarnessRegistry();
 
 async function getConnection(harness: ApiHarness): Promise<{ status: number; body: unknown }> {
   const res = await harness.app.request("/api/settings/connection");

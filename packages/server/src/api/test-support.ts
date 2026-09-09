@@ -20,6 +20,7 @@
  */
 
 import { Hono } from "hono";
+import { afterEach } from "vitest";
 
 import { createApp } from "../app.ts";
 import type { ConnectionManager } from "../connection.ts";
@@ -163,4 +164,29 @@ export function setupApi(overrides: SetupApiOverrides = {}): ApiHarness {
   }
 
   return { app, db, orchestrator, hub, gate, client, connection, close };
+}
+
+/** JSON を送る要求に共通のヘッダー。各ルートのテストファイルで共用する。 */
+export const JSON_HEADERS = { "content-type": "application/json" };
+
+/**
+ * `setupApi` で作ったハーネスを控え、`afterEach` で必ず閉じる定型（`open`/`opened`/`afterEach` の
+ * 三点セット）。各ルートのテストファイルがほぼ同じ形を書いていたので、3 つ目の重複が出たところで
+ * ここへ集約した（Task 6 の申し送り）。呼び出しはテストファイルのトップレベルで 1 回だけ行うこと
+ * （`afterEach` はモジュール読み込み時に登録される）。
+ */
+export function createHarnessRegistry(): { open(overrides?: SetupApiOverrides): ApiHarness } {
+  const opened: ApiHarness[] = [];
+  afterEach(() => {
+    for (const harness of opened.splice(0)) {
+      harness.close();
+    }
+  });
+  return {
+    open(overrides?: SetupApiOverrides): ApiHarness {
+      const harness = setupApi(overrides);
+      opened.push(harness);
+      return harness;
+    },
+  };
 }
