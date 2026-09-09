@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import type { ApiDeps } from "./deps.ts";
 import { handleApiError, respond } from "./errors.ts";
+import { registerFindingRoutes } from "./findings.ts";
 import { registerManuscriptRoutes } from "./manuscripts.ts";
 import { registerRecoveryRoutes } from "./recovery.ts";
 import { registerRunRoutes } from "./runs.ts";
@@ -47,8 +48,9 @@ export function createApiRouter(deps: ApiDeps): Hono {
   registerRecoveryRoutes(router, deps);
   registerManuscriptRoutes(router, deps);
   registerRunRoutes(router, deps);
+  registerFindingRoutes(router, deps);
 
-  // Task 8 以降がここに route を足す。
+  // Task 9 以降がここに route を足す。
 
   return router;
 }
