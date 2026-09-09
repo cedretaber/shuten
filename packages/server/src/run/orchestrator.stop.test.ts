@@ -7,6 +7,11 @@
  */
 
 import type { ChunkSettings, FindingCategory, InitialVerdict, LlmFinding } from "@shuten/shared";
+import {
+  ALLOWED_WORD_RULE_VERSION,
+  DIAGNOSTIC_TRANSFORM_VERSION,
+  PROMPT_VERSION,
+} from "@shuten/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 
@@ -325,6 +330,13 @@ interface SeedRunInput {
   /** `failed` の単位に入れる失敗理由（省略時は `malformed`）。 */
   readonly failureReason?: "malformed" | "input-too-long";
   readonly manuscriptVersionId?: string;
+  /**
+   * 保存済みの版（既定は現行の定数）。決定 45-1 の検査に引っかかるケースを作るときだけ上書きする。
+   * 既定を定数にしてあるので、定数が上がっても他のテストは再開・再試行を受け付けるままになる。
+   */
+  readonly promptVersion?: string;
+  readonly allowedWordRuleVersion?: string;
+  readonly diagnosticTransformVersion?: string;
 }
 
 function seedRun(db: Db, input: SeedRunInput): SeededRun {
@@ -342,9 +354,9 @@ function seedRun(db: Db, input: SeedRunInput): SeededRun {
     perspectives,
     recheckEnabled: input.recheckEnabled ?? false,
     allowedWords: [],
-    allowedWordRuleVersion: "1",
-    promptVersion: "1",
-    diagnosticTransformVersion: "1",
+    allowedWordRuleVersion: input.allowedWordRuleVersion ?? ALLOWED_WORD_RULE_VERSION,
+    promptVersion: input.promptVersion ?? PROMPT_VERSION,
+    diagnosticTransformVersion: input.diagnosticTransformVersion ?? DIAGNOSTIC_TRANSFORM_VERSION,
     status: input.status,
     stopReason: input.status === "running" ? null : "aborted",
     stopMessage: input.status === "running" ? null : "前回の停止",
@@ -454,6 +466,19 @@ async function flush(): Promise<void> {
     await Promise.resolve();
   }
 }
+
+/**
+ * 決定 45-1：保存済みの版が現行の定数と食い違う 3 通り。3 つのうちどれか 1 つでも違えば、
+ * 再開も再試行も受け付けない（仕様 8.2）。
+ */
+const STALE_VERSION_CASES: readonly {
+  readonly label: string;
+  readonly seed: Partial<SeedRunInput>;
+}[] = [
+  { label: "prompt_version", seed: { promptVersion: "0" } },
+  { label: "allowed_word_rule_version", seed: { allowedWordRuleVersion: "0" } },
+  { label: "diagnostic_transform_version", seed: { diagnosticTransformVersion: "0" } },
+];
 
 /** ---------------------------------------------------------------------- */
 /** O4・O18・決定 21（停止要求そのもの） */
@@ -1222,6 +1247,34 @@ describe("run/orchestrator: resumeRun（決定 36）", () => {
     expect(scripted.ensureLoadedCalls).toHaveLength(0);
   });
 
+  for (const testCase of STALE_VERSION_CASES) {
+    it(`45-1: 保存済みの ${testCase.label} が現行と違う実行は再開せず、DB を 1 行も変えない（仕様 8.2）`, async () => {
+      const scripted = scriptedClient([]);
+      const harness = makeHarness(scripted.client);
+      const seeded = seedRun(harness.db, {
+        runId: `run-stale-${testCase.label}`,
+        status: "stopped",
+        unitStatuses: ["pending", "pending"],
+        ...testCase.seed,
+      });
+      const runBefore = readRun(harness.db, seeded.run.id);
+      const unitsBefore = unitsOf(harness.db, seeded.run.id);
+
+      const resumed = harness.orchestrator.resumeRun(seeded.run.id);
+
+      expect(resumed.accepted).toBe(false);
+      expect(await resumed.done).toMatchObject({ status: "stopped" });
+      await flush();
+
+      // 生成要求も ensureLoaded も 1 件も送らない。
+      expect(scripted.requests).toHaveLength(0);
+      expect(scripted.ensureLoadedCalls).toHaveLength(0);
+      // 実行の行も単位の行も、読み直して 1 つも変わっていない。
+      expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+      expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
+    });
+  }
+
   it("存在しない実行 ID の再開は呼び出し側の誤りとして例外にする", () => {
     const harness = makeHarness(scriptedClient([]).client);
     expect(() => harness.orchestrator.resumeRun("存在しない実行")).toThrow(
@@ -1433,6 +1486,33 @@ describe("run/orchestrator: retryFailedUnits（決定 36）", () => {
     expect(readRun(harness.db, waiting.run.id).status).toBe("recovery-waiting");
     expect(unitsOf(harness.db, waiting.run.id)[0]?.status).toBe("failed");
   });
+
+  for (const testCase of STALE_VERSION_CASES) {
+    it(`45-1: 保存済みの ${testCase.label} が現行と違う実行は再試行せず、DB を 1 行も変えない（仕様 8.2）`, async () => {
+      const scripted = scriptedClient([]);
+      const harness = makeHarness(scripted.client);
+      const seeded = seedRun(harness.db, {
+        runId: `retry-stale-${testCase.label}`,
+        status: "stopped",
+        // 失敗単位があるので、版の検査が無ければ受け付けられて単位が pending に戻ってしまう。
+        unitStatuses: ["failed", "done"],
+        ...testCase.seed,
+      });
+      const runBefore = readRun(harness.db, seeded.run.id);
+      const unitsBefore = unitsOf(harness.db, seeded.run.id);
+
+      const retried = harness.orchestrator.retryFailedUnits(seeded.run.id);
+
+      expect(retried.accepted).toBe(false);
+      expect(await retried.done).toMatchObject({ status: "stopped" });
+      await flush();
+
+      expect(scripted.requests).toHaveLength(0);
+      expect(scripted.ensureLoadedCalls).toHaveLength(0);
+      expect(readRun(harness.db, seeded.run.id)).toEqual(runBefore);
+      expect(unitsOf(harness.db, seeded.run.id)).toEqual(unitsBefore);
+    });
+  }
 });
 
 /** ---------------------------------------------------------------------- */

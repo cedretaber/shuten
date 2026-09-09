@@ -230,6 +230,30 @@ function isInputTooLong(unit: { readonly failure: UnitFailureRecord | null }): b
 }
 
 /**
+ * 保存済みの版が現行の定数と食い違っているか（決定 45-1。仕様 8.2）。
+ *
+ * 仕様 8.2 は「再開では原稿版・モデル・設定（許容語を含む）・**プロンプト版**を変更できない。
+ * 変更する場合は新規検査として開始する」と定めている。原稿版・モデル・生成設定・分割設定・
+ * 許容語一覧は `runs` の行から読み直すので実行の途中で変わりようがないが、
+ * `prompt_version` / `allowed_word_rule_version` / `diagnostic_transform_version` の 3 つだけは
+ * **コード内の定数**に由来する。アプリを更新すると、同じ実行の続きに別の版の結果が混ざり、
+ * 記録は旧版のまま残ってしまう。
+ *
+ * そこで再開（`resumeRun`）と再試行（`retryFailedUnits`）の**両方**が、`claimRunChecked` を
+ * 呼ぶ前（DB を 1 行も書かない位置）でこれを見て、true なら `rejected(existing)` を返す。
+ * 旧版を再現する仕組みは持たない（MVP の範囲外）。利用者への案内は
+ * 「アプリの更新でプロンプト版が変わったため再開できない。新しい実行を開始してください」。
+ * 3 つのうちどれが食い違ったかは案内し分けない（対処は 1 つしかない）ので、判定もここに 1 つだけ置く。
+ */
+function hasStaleVersions(run: RunRecord): boolean {
+  return (
+    run.promptVersion !== PROMPT_VERSION ||
+    run.allowedWordRuleVersion !== ALLOWED_WORD_RULE_VERSION ||
+    run.diagnosticTransformVersion !== DIAGNOSTIC_TRANSFORM_VERSION
+  );
+}
+
+/**
  * `running` の検査単位・再確認単位を `pending` に戻す（決定 33・40 で共通の規則）。
  * **呼び出し元のトランザクションの中で呼ぶこと**（実行の終端化と同じ 1 トランザクションにする）。
  *
@@ -801,6 +825,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       // 「起票して再確認を走らせる」という正当な仕事が残っており、弾くと復旧できなくなる。
       return rejected(existing);
     }
+    if (hasStaleVersions(existing)) {
+      // 決定 45-1：アプリの更新で版が変わった実行は再開できない。DB は 1 行も変えない。
+      return rejected(existing);
+    }
     if (!claimRunChecked(deps.db, runId, existing.status, "running", { clearStopState: true })) {
       return rejected(findRun(deps.db, runId) ?? existing);
     }
@@ -834,6 +862,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       return { ...registered.result, accepted: false };
     }
     if (existing.status !== "partially-failed" && existing.status !== "stopped") {
+      return rejected(existing);
+    }
+    if (hasStaleVersions(existing)) {
+      // 決定 45-1：再開と同じ理由で再試行も受け付けない。トランザクションに入る前に返すので、
+      // 実行の状態も単位も 1 行も変わらない。
       return rejected(existing);
     }
     const from = existing.status;
