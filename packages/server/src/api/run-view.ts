@@ -69,7 +69,7 @@ function requireTargetIndex(indexById: ReadonlyMap<string, number>, targetId: st
 }
 
 /** 実行の進捗（検査単位・再確認単位の状態別件数）。 */
-export function buildRunProgress(db: AppDatabaseLike, run: RunRecord): ProgressDto {
+function buildRunProgress(db: AppDatabaseLike, run: RunRecord): ProgressDto {
   return {
     checkUnits: countByStatus(listCheckUnits(db, run.id)),
     recheckUnits: countByStatus(listRecheckUnits(db, run.id)),

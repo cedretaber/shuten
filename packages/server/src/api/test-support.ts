@@ -179,6 +179,8 @@ export const JSON_HEADERS = { "content-type": "application/json" };
  * 読み取りと購読の間に決着した `run-settled` を取りこぼして永久に待つ。ループは DB を書いてから
  * `run-settled` を出す（`run/loop.ts` の `finalizeRun`、`run/orchestrator.ts` の `settleInternalError`）
  * ので、イベントを受けた時点で DB は決着済みであり、**状態の正本として DB を読み直す**。
+ * ただし `run-settled` を受けて読み直した値が `running` のままのこともある（決定 33 の後始末自体が
+ * 失敗した場合。イベントは DB の実際の値を載せるので嘘は無い）。「解決した＝終端状態」ではない。
  *
  * ハブが `closeAll()` された場合（ハーネスの `close()`）は、そのときの DB の値で解決する
  * （待ち続けてテストをタイムアウトさせない）。決着していない値が返りうるので、
