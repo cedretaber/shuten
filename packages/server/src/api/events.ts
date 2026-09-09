@@ -186,30 +186,49 @@ export function registerEventRoutes(router: Hono, deps: ApiDeps): void {
           .catch(finish);
       }
 
-      // 決定 12 の順序：**購読が先**。この後で DB を読む。
-      unsubscribe = deps.hub.subscribe(runId, {
-        onEvent: (runEvent) => {
-          const dto = toRunEventDto(runEvent);
-          send(dto);
-          if (dto.type === "run-settled") {
-            // 書き終えてから閉じる（chain に乗せた書き込みの後に finish が来るようにする）。
-            chain.then(finish, finish);
-          }
-        },
-        onClose: finish,
-      });
+      // 最終レビューでの多重防御：`hub.subscribe` の後、`stream.onAbort(finish)` を登録する前に
+      // このコールバックが例外を投げると、`finish` が一度も呼ばれず購読が hub に残り続ける
+      // （プロセスが `closeAll()` するまで解放されない）。今日到達しうる例外源は購読直後の
+      // `findRun`（`runs` 表の JSON 列の解析）だけで、その手前のルートの 404 判定
+      // （`if (findRun(deps.db, runId) === null) throw notFound(...)`）が同じ呼び出しを
+      // 一度成功させているので実際には届かない。それでも、hono 4.13.7 の
+      // `helper/streaming/sse.js` の `run()` は `onError` を渡さない限り例外オブジェクトそのものを
+      // `console.error(e)` に渡し、Node の `util.inspect` が `cause` まで辿る（undici の `cause` は
+      // `host:port` を含みうる）ため、この `try/catch` で必ず先に捕まえてクラス名だけを出す
+      // （決定 4・不変条件：接続先 URL を出さない）。
+      try {
+        // 決定 12 の順序：**購読が先**。この後で DB を読む。
+        unsubscribe = deps.hub.subscribe(runId, {
+          onEvent: (runEvent) => {
+            const dto = toRunEventDto(runEvent);
+            send(dto);
+            if (dto.type === "run-settled") {
+              // 書き終えてから閉じる（chain に乗せた書き込みの後に finish が来るようにする）。
+              chain.then(finish, finish);
+            }
+          },
+          onClose: finish,
+        });
 
-      // 購読の後に読む。終端状態なら合成した `run-settled` を 1 件だけ送って閉じる。
-      const current = findRun(deps.db, runId);
-      if (current !== null && current.status !== "running") {
-        send({ type: "run-settled", status: current.status, stopReason: current.stopReason });
-        chain.then(finish, finish);
+        // 購読の後に読む。終端状態なら合成した `run-settled` を 1 件だけ送って閉じる。
+        const current = findRun(deps.db, runId);
+        if (current !== null && current.status !== "running") {
+          send({ type: "run-settled", status: current.status, stopReason: current.stopReason });
+          chain.then(finish, finish);
+        }
+
+        // クライアント切断。購読を解除するだけで、**実行は止めない**（決定 12 の 5）。
+        stream.onAbort(finish);
+
+        await closed;
+      } catch (error) {
+        // 値もメッセージも出さない。クラス名だけ（他の 500 ログと同じ規則。`api/errors.ts` 参照）。
+        console.error(
+          "SSE ストリームの購読中に例外が発生しました",
+          error instanceof Error ? error.constructor.name : typeof error,
+        );
+        finish();
       }
-
-      // クライアント切断。購読を解除するだけで、**実行は止めない**（決定 12 の 5）。
-      stream.onAbort(finish);
-
-      await closed;
     });
   });
 }

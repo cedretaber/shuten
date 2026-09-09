@@ -24,8 +24,9 @@ scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は
 実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めており、**PR10（HTTP API と SSE）
 まで完了**。DB を正本として、検査の開始・停止・再開・失敗単位の個別再試行・起動時照合（バックエンド再起動後の
 状態整合）が動き、それらを `/api` 配下の HTTP エンドポイントと SSE から操作・観測できる。接続先 URL は
-`settings` 表に保存して UI から上書きでき、API キーはプロセスのメモリにだけ置く（応答・ログ・SSE・エラーには
-接続先 URL も API キーも出さない。`packages/server/src/api/leak.test.ts` が全エンドポイントで検査している）。
+`settings` 表に保存して API（`PUT /api/settings/connection`）から上書きでき、API キーは
+プロセスのメモリにだけ置く（応答・ログ・SSE・エラーには接続先 URL も API キーも出さない。
+`packages/server/src/api/leak.test.ts` が全エンドポイントで検査している）。
 受け入れ条件のうち 11 節 3・4・5・11・14・15・16・18 項をサーバー側で満たした（画面がまだ無いため、利用者が
 実際に触って確認できるのは PR11・PR12 の完了後）。詳細計画は `docs/plans/2026-09-09-pr9-orchestration.md`
 （決定 1〜23）、`docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）、

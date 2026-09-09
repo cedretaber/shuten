@@ -97,7 +97,7 @@ interface EndpointSpec {
 const ENDPOINTS: readonly EndpointSpec[] = [
   { key: "GET /api/settings/connection", hasErrorForm: false },
   { key: "PUT /api/settings/connection", hasErrorForm: true },
-  { key: "POST /api/settings/connection/check", hasErrorForm: false },
+  { key: "POST /api/settings/connection/check", hasErrorForm: true },
   { key: "POST /api/manuscripts", hasErrorForm: true },
   { key: "POST /api/manuscripts/upload", hasErrorForm: true },
   { key: "GET /api/manuscripts/:id", hasErrorForm: true },
