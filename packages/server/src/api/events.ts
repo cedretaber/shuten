@@ -149,6 +149,8 @@ export function registerEventRoutes(router: Hono, deps: ApiDeps): void {
           .then(async () => {
             await stream.write(": ping\n\n");
           })
+          // 多重防御（裁定 R17）。hono 4.13.7 の `StreamingApi.write` は書き込みの失敗を
+          // 握りつぶすので、この版では到達しない。
           .catch(finish);
       }, pingIntervalMs);
 
@@ -177,6 +179,10 @@ export function registerEventRoutes(router: Hono, deps: ApiDeps): void {
         }
         chain = chain
           .then(() => stream.writeSSE({ event: dto.type, data: JSON.stringify(parsed.data) }))
+          // 書き込みが失敗したら購読を解除してストリームを閉じる。**ただし多重防御**（裁定 R17）：
+          // hono 4.13.7 の `StreamingApi.write` は `try { await writer.write() } catch {}` で失敗を
+          // 握りつぶすので、この版で `writeSSE` が reject することはない（切断は `onAbort` として届く）。
+          // 将来 hono が握りつぶしをやめたときのために残す。
           .catch(finish);
       }
 
