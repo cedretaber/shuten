@@ -145,7 +145,12 @@ export function createRequestQueue(): RequestQueue;
 | `pending` | `running` / `not-applicable` |
 | `running` | `done` / `failed` / `pending`（送らずに戻す） |
 | `failed` | `pending`（個別再試行） |
-| `done` / `not-applicable` | （終端。再試行でも戻さない） |
+| `not-applicable` | `pending`（**抑制の解除だけ**。決定 45-4） |
+| `done` | （終端。再試行でも戻さない） |
+
+`not-applicable` は原則として終端で、`disabled`（実行ごとに固定）と `unlocated`（位置特定の
+結果は変わらない）は戻さない。戻すのは `suppressed` の指摘の抑制が後から外れた場合だけで、
+これは 1 度も実行していない再確認単位を起票し直すのと同じ意味である（PR9b 計画書の決定 45-4）。
 
 `state.ts` は `canTransitionRun(from, to): boolean` と `canTransitionUnit(from, to): boolean` を公開し、
 遷移を書く経路はすべてこれを通す。**状態を書くのはオーケストレーターだけ**とし、停止要求は
