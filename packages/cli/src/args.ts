@@ -1,6 +1,7 @@
 import type { PipelineMode } from "@shuten/server/run/result.ts";
 import {
   type ChunkSettings,
+  MAX_TIMEOUT_MS,
   type Perspective,
   type ReasoningEffort,
   RUN_SETTINGS_DEFAULTS,
@@ -34,8 +35,12 @@ const MODES: readonly PipelineMode[] = ["split", "split-recheck", "full-text"];
 const PERSPECTIVES: readonly Perspective[] = ["typo", "naturalness"];
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high"];
 
-/** タイムアウトの整数範囲（`packages/server/src/lmstudio/client.ts` の `validateTimeoutMs` と合わせる）。 */
-const TIMEOUT_MS_MAX = 2 ** 31 - 1;
+/**
+ * タイムアウトの整数範囲の上限。`packages/server/src/lmstudio/client.ts` の `validateTimeoutMs` と
+ * 同じ値で、どちらも `@shuten/shared` の `MAX_TIMEOUT_MS` を正本にする（2 か所に書くと片方だけ
+ * 直す事故が起きるため）。
+ */
+const TIMEOUT_MS_MAX = MAX_TIMEOUT_MS;
 
 /**
  * 「実測で決める初期値」の表の暫定値（計画 2026-09-08-pr7-pipeline.md）。CLI に無い設定

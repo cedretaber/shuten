@@ -1,3 +1,4 @@
+import { MAX_TIMEOUT_MS } from "@shuten/shared";
 import { Agent, type Dispatcher } from "undici";
 
 import { LmStudioError } from "./errors.ts";
@@ -35,11 +36,14 @@ function truncateRaw(text: string): string {
   return text.length > RAW_TEXT_LIMIT ? text.slice(0, RAW_TEXT_LIMIT) : text;
 }
 
-/** `timeoutMs` が有限で 1 以上 `2**31 - 1` 以下の整数であることを検証する（決定 8）。 */
+/**
+ * `timeoutMs` が有限で 1 以上 `MAX_TIMEOUT_MS`（`@shuten/shared`。`2**31 - 1`）以下の整数で
+ * あることを検証する（決定 8）。
+ */
 function validateTimeoutMs(timeoutMs: number): void {
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2 ** 31 - 1) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new TypeError(
-      `timeoutMs は 1 以上 2**31-1 以下の整数でなければならない（実際: ${String(timeoutMs)}）`,
+      `timeoutMs は 1 以上 ${String(MAX_TIMEOUT_MS)} 以下の整数でなければならない（実際: ${String(timeoutMs)}）`,
     );
   }
 }
