@@ -132,7 +132,11 @@ export type StopReason =
   | "recovery-needed"
   | "connection-lost"
   | "settings"
-  | "aborted";
+  | "aborted"
+  /** 想定外の例外で停止した（決定 14・決定 33）。 */
+  | "internal-error"
+  /** 別の実行が復旧待ちのため、プロセス全体の送信ゲートに止められた（決定 39）。 */
+  | "recovery-blocked";
 
 export interface RunStop {
   readonly reason: StopReason;

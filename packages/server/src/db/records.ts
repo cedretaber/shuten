@@ -36,7 +36,9 @@ export type RunStopReason =
   | "recovery-needed"
   | "connection-lost"
   | "settings"
-  | "aborted";
+  | "aborted"
+  | "internal-error"
+  | "recovery-blocked";
 
 /** `recheck_units.not_applicable_reason`。仕様書 6.5 節。 */
 export type RecheckNotApplicableReason = "disabled" | "suppressed" | "unlocated";

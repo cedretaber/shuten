@@ -1,6 +1,7 @@
-import type { Perspective } from "@shuten/shared";
+import type { Perspective, Range } from "@shuten/shared";
 
 import type { CheckUnitResult, PipelineRunStatus, RecheckResult, RunStop } from "./result.ts";
+import type { RunStatus } from "./status.ts";
 
 /**
  * パイプラインの進捗イベント（決定 10）。1 つのコールバックに union で流す。PR10 の SSE がそのまま流せる形にする。
@@ -39,3 +40,29 @@ export type PipelineEvent =
       readonly status: PipelineRunStatus;
       readonly stop: RunStop | null;
     };
+
+/**
+ * オーケストレーターが足すイベント（決定 37）。`PipelineEvent` には含めない。
+ * `packages/cli` の `formatEvent`（`main.ts`）が default 無しの網羅 switch で `PipelineEvent`
+ * だけを受け取るため、`PipelineEvent` にメンバーを増やすとそちらのコンパイルが壊れる。
+ *
+ * オーケストレーターは `PipelineEvent` のうち `check-started` / `check-finished` /
+ * `target-merged` / `recheck-started` / `recheck-finished` を出し、`run-started` /
+ * `run-finished` は出さない（開始・終了はこちらの `target-planned` と `run-settled` で表す）。
+ */
+export type OrchestratorEvent =
+  | {
+      readonly type: "target-planned";
+      readonly targetIndex: number;
+      readonly target: Range;
+      readonly input: Range;
+    }
+  | { readonly type: "generation-slow"; readonly unitId: string; readonly elapsedMs: number }
+  | { readonly type: "stop-requested" }
+  | { readonly type: "run-settled"; readonly status: RunStatus; readonly stop: RunStop | null };
+
+/** SSE（PR10）に渡す形。実行 ID を必ず添える。 */
+export interface RunEvent {
+  readonly runId: string;
+  readonly event: PipelineEvent | OrchestratorEvent;
+}

@@ -90,7 +90,7 @@ function makeStop(
 }
 
 describe("runStatusForStop", () => {
-  // 決定 23 の写像表 9 行。
+  // 決定 23 の写像表 10 行。
   const TABLE: ReadonlyArray<{
     readonly label: string;
     readonly stop: RunStop;
@@ -137,17 +137,13 @@ describe("runStatusForStop", () => {
       expected: "recovery-waiting",
     },
     {
-      // "internal-error" は決定 14（PR9b でオーケストレーターが足す予定）の値で、本 PR（PR9a）
-      // 時点の StopReason にはまだ存在しない。runStatusForStop の規則は reason を見ず
-      // generationUnconfirmed だけで決まる（決定 23 本文の 1 行規則）ので、型アサーションで
-      // 未追加の値を渡しても検証として成立する。決定 14 実装後は通常の StopReason 値に置き換える。
       label: "internal-error：想定外の例外",
-      stop: {
-        reason: "internal-error" as StopReason,
-        message: "test",
-        failure: null,
-        generationUnconfirmed: false,
-      },
+      stop: makeStop("internal-error", false),
+      expected: "stopped",
+    },
+    {
+      label: "recovery-blocked：別の実行が復旧待ちのため送信ゲートに止められた",
+      stop: makeStop("recovery-blocked", false),
       expected: "stopped",
     },
   ];
@@ -159,8 +155,8 @@ describe("runStatusForStop", () => {
     },
   );
 
-  it("S6: 表が 9 行である（決定 23 の全行を網羅していることの保証）", () => {
-    expect(TABLE).toHaveLength(9);
+  it("S6: 表が 10 行である（決定 23 の全行を網羅していることの保証）", () => {
+    expect(TABLE).toHaveLength(10);
   });
 
   it("S6: connection-lost かつ generationUnconfirmed: true は stopped ではなく recovery-waiting（生成が LM Studio 側で走り続けている可能性があるため）", () => {
