@@ -1,5 +1,5 @@
 import type { ConnectionCheckDto, ConnectionSettingsDto, ModelInfoDto } from "@shuten/shared";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api/client.ts";
@@ -70,9 +70,8 @@ describe("SettingsPage", () => {
     renderSettingsPage(makeClient());
 
     expect(screen.getByRole("heading", { name: "LM Studio への接続" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "生成に使うモデル" })).toBeInTheDocument(),
-    );
+    // 接続確認（checkConnection）の解決を待つため。fake は即時解決するが、待たないと ConnectionProvider の setState が act() 警告になる。
+    expect(await screen.findByRole("heading", { name: "生成に使うモデル" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "詳細な検査設定" })).toBeInTheDocument();
   });
 

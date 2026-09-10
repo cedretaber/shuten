@@ -17,6 +17,10 @@
   text-decoration: none;
 }
 
+.title:hover {
+  text-decoration: underline;
+}
+
 .status {
   display: flex;
   flex-wrap: wrap;
