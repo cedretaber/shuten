@@ -183,7 +183,7 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
     expect(screen.getByRole("button", { name: "検査を開始する" })).toBeDisabled();
   });
 
-  it("モデル未選択のとき disabled で、接続設定へのリンクが出る", () => {
+  it("モデル未選択のとき disabled で、設定へのリンクが出る", () => {
     renderForm({
       manuscriptVersionId: "mv-1",
       modelId: null,
@@ -192,7 +192,7 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
     });
 
     expect(screen.getByRole("button", { name: "検査を開始する" })).toBeDisabled();
-    expect(screen.getByRole("link", { name: "接続設定" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "設定" })).toBeInTheDocument();
   });
 
   it("原稿の復元中は disabled", () => {

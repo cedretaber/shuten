@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Route, Routes } from "react-router";
+import { Navigate, Route, Routes } from "react-router";
 import { type ApiClient, createApiClient } from "./api/client.ts";
 import { ApiClientProvider } from "./api/context.tsx";
 import { ConnectionProvider } from "./app/connection-context.tsx";
@@ -25,7 +25,12 @@ export function App({ client: injectedClient }: AppProps = {}) {
         <Routes>
           <Route element={<Layout />}>
             <Route path={ROUTES.home} element={<HomePage />} />
-            <Route path={ROUTES.connectionSettings} element={<ConnectionSettingsPage />} />
+            <Route path={ROUTES.settings} element={<ConnectionSettingsPage />} />
+            {/* replace を付けるのは、戻るボタンで旧パス → 新パスの往復に落ちないようにするため。 */}
+            <Route
+              path={ROUTES.legacyConnectionSettings}
+              element={<Navigate to={ROUTES.settings} replace />}
+            />
             <Route path={ROUTES.run} element={<RunReceiptPage />} />
             <Route path="*" element={<NotFound />} />
           </Route>

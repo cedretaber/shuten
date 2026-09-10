@@ -475,7 +475,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
 
       {modelId === null && (
         <p className={styles.modelNote}>
-          モデルが未選択です。<Link to={ROUTES.connectionSettings}>接続設定</Link>
+          モデルが未選択です。<Link to={ROUTES.settings}>設定</Link>
           で検査に使うモデルを選んでください。
         </p>
       )}

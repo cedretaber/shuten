@@ -219,14 +219,14 @@ function NavigationProbe() {
 /** `App.tsx` と同じ route 構成（Header を含む `Layout`）を、fake fetch を注入した client で組む。 */
 function renderAppTree(client: ApiClient) {
   return render(
-    <MemoryRouter initialEntries={[ROUTES.connectionSettings]}>
+    <MemoryRouter initialEntries={[ROUTES.settings]}>
       <ApiClientProvider client={client}>
         <ConnectionProvider client={client}>
           <NavigationProbe />
           <Routes>
             <Route element={<Layout />}>
               <Route path={ROUTES.home} element={<HomePage />} />
-              <Route path={ROUTES.connectionSettings} element={<ConnectionSettingsPage />} />
+              <Route path={ROUTES.settings} element={<ConnectionSettingsPage />} />
               <Route path={ROUTES.run} element={<RunReceiptPage />} />
             </Route>
           </Routes>
