@@ -1,0 +1,426 @@
+/**
+ * 検査開始の操作とスナップショット（決定 13・15。W7-5〜6、W7-8〜15、W7-18）。
+ *
+ * `start()` の順序（`checkConnection` → `canStartWithModel` → `StartRunRequest` の組み立てと検証 →
+ * `startRun`）と、「結果不明」からの `retry()` が接続確認をやり直さずスナップショットをそのまま
+ * 再送することを確認する。
+ *
+ * W7-11・W7-14・W7-15 は、実装を意図的に誤らせて赤くなることを確認した（作業報告に記録する）。
+ * - W7-11：`retry()` に `connection.checkConnection` の呼び出しを足すと、2 回目以降
+ *   `checkConnection` の呼び出し回数が増え、落ちる。
+ * - W7-14：`send()` の catch で「不明」と「確定」の分岐を入れ替える（確定なのにスナップショットを
+ *   保持する）と、4xx のあとの `retry()` で `startRun` が再度呼ばれてしまい、落ちる。
+ * - W7-15：スナップショットを `parsed.data`（zod が組み立てた新しいオブジェクト）ではなく
+ *   呼び出し元から渡された `candidate` をそのまま保持するよう変えると、`start()` の呼び出し後に
+ *   元のオブジェクトを書き換えたときに `retry()` の送信内容が汚染され、落ちる。
+ */
+
+import type { ConnectionCheckDto, ModelInfoDto, RunDto, StartRunRequest } from "@shuten/shared";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { ApiClient } from "../../api/client.ts";
+import { ApiRequestError, ApiResponseError, ApiTransportError } from "../../api/errors.ts";
+import type { ConnectionApi } from "../../app/connection-context.tsx";
+import { useStartRun } from "./use-start-run.ts";
+
+function makeModel(overrides: Partial<ModelInfoDto> = {}): ModelInfoDto {
+  return {
+    id: "model-a",
+    type: "llm",
+    state: "loaded",
+    quantization: null,
+    maxContextLength: null,
+    loadedContextLength: null,
+    ...overrides,
+  };
+}
+
+function makeCheck(overrides: Partial<ConnectionCheckDto> = {}): ConnectionCheckDto {
+  return {
+    reachable: true,
+    error: null,
+    models: [makeModel()],
+    model: { id: "model-a", found: true, state: "loaded", loaded: true },
+    ...overrides,
+  };
+}
+
+function makeConnectionApi(overrides: Partial<ConnectionApi> = {}): ConnectionApi {
+  return {
+    check: null,
+    checkedAt: null,
+    selectedModelId: null,
+    error: null,
+    checking: false,
+    checkConnection: vi.fn(() => Promise.resolve(makeCheck())),
+    selectModel: vi.fn(),
+    ...overrides,
+  };
+}
+
+/** `startRun` 以外は呼ばれない想定の fake。 */
+function makeClient(overrides: Partial<ApiClient> = {}): ApiClient {
+  const notImplemented = (name: string) => () => {
+    throw new Error(`${name} は呼ばれない想定`);
+  };
+  return {
+    getConnection: notImplemented("getConnection"),
+    putConnection: notImplemented("putConnection"),
+    checkConnection: notImplemented("checkConnection"),
+    createManuscript: notImplemented("createManuscript"),
+    uploadManuscript: notImplemented("uploadManuscript"),
+    getManuscript: notImplemented("getManuscript"),
+    startRun: vi.fn(() => Promise.reject(new Error("startRun は未設定"))),
+    getRun: notImplemented("getRun"),
+    ...overrides,
+  };
+}
+
+function buildRequest(
+  overrides: Partial<Omit<StartRunRequest, "startOperationId">> = {},
+): Omit<StartRunRequest, "startOperationId"> {
+  return {
+    manuscriptVersionId: "mv-1",
+    modelId: "model-a",
+    generation: { maxTokens: 16_000, temperature: 0, reasoningEffort: "none" },
+    chunkSettings: {
+      targetGraphemes: 1_500,
+      contextGraphemes: 1_000,
+      recheckContextGraphemes: 3_000,
+      roundingTolerance: 0.2,
+      maxInputGraphemes: 12_000,
+    },
+    timeouts: { checkMs: 300_000, recheckMs: 300_000 },
+    perspectives: ["typo", "naturalness"],
+    recheckEnabled: true,
+    allowedWordsRaw: "",
+    ...overrides,
+  };
+}
+
+const RUN_DTO = { id: "run-1" } as RunDto;
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/** `mock.calls[index][0]` を安全に取り出す（`noUncheckedIndexedAccess` 対策）。 */
+function nthStartRunBody(
+  startRun: { mock: { calls: unknown[][] } },
+  index: number,
+): StartRunRequest {
+  const call = startRun.mock.calls[index];
+  if (call === undefined) {
+    throw new Error(`startRun は ${index + 1} 回以上呼ばれていません`);
+  }
+  return call[0] as StartRunRequest;
+}
+
+describe("useStartRun: start()", () => {
+  it("W7-8: 開始で checkConnection → startRun の順に呼ばれる", async () => {
+    const calls: string[] = [];
+    const checkConnection = vi.fn(() => {
+      calls.push("checkConnection");
+      return Promise.resolve(makeCheck());
+    });
+    const startRun = vi.fn(() => {
+      calls.push("startRun");
+      return Promise.resolve(RUN_DTO);
+    });
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(calls).toEqual(["checkConnection", "startRun"]);
+  });
+
+  it("W7-9: 成功すると outcome が started(runId) になる", async () => {
+    const connection = makeConnectionApi();
+    const startRun = vi.fn(() => Promise.resolve({ id: "run-42" } as RunDto));
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(result.current.outcome).toEqual({ kind: "started", runId: "run-42" });
+  });
+
+  it("W7-10: 送信中は outcome が sending になる", async () => {
+    const pending = deferred<RunDto>();
+    const connection = makeConnectionApi();
+    const startRun = vi.fn(() => pending.promise);
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    let startPromise!: Promise<void>;
+    act(() => {
+      startPromise = result.current.start(buildRequest());
+    });
+
+    await waitFor(() => expect(result.current.outcome.kind).toBe("sending"));
+
+    await act(async () => {
+      pending.resolve(RUN_DTO);
+      await startPromise;
+    });
+
+    expect(result.current.outcome.kind).toBe("started");
+  });
+
+  it("W7-5: 未ロードのモデルでは startRun を投げない（checkConnection だけが呼ばれる）", async () => {
+    const checkConnection = vi.fn(() =>
+      Promise.resolve(
+        makeCheck({
+          models: [makeModel({ state: "not-loaded" })],
+          model: { id: "model-a", found: true, state: "not-loaded", loaded: false },
+        }),
+      ),
+    );
+    const startRun = vi.fn(() => Promise.resolve(RUN_DTO));
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(checkConnection).toHaveBeenCalledTimes(1);
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.current.outcome.kind).toBe("failed");
+  });
+
+  it("W7-6: embeddings では startRun を投げない", async () => {
+    const checkConnection = vi.fn(() =>
+      Promise.resolve(
+        makeCheck({
+          models: [makeModel({ type: "embeddings" })],
+          model: { id: "model-a", found: true, state: "loaded", loaded: true },
+        }),
+      ),
+    );
+    const startRun = vi.fn(() => Promise.resolve(RUN_DTO));
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(checkConnection).toHaveBeenCalledTimes(1);
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.current.outcome.kind).toBe("failed");
+  });
+
+  it("checkConnection が中断でない失敗で例外を投げたら startRun を呼ばず失敗にする", async () => {
+    const checkConnection = vi.fn(() => Promise.reject(new Error("接続できません")));
+    const startRun = vi.fn(() => Promise.resolve(RUN_DTO));
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: "接続できません",
+      retryable: false,
+    });
+  });
+
+  it("不正な chunkSettings では startRun を呼ばず、フォーム全体のエラーにする（validateChunkSettings）", async () => {
+    const connection = makeConnectionApi();
+    const startRun = vi.fn(() => Promise.resolve(RUN_DTO));
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(
+        buildRequest({ chunkSettings: { ...buildRequest().chunkSettings, roundingTolerance: 1 } }),
+      );
+    });
+
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.current.outcome.kind).toBe("failed");
+    if (result.current.outcome.kind === "failed") {
+      expect(result.current.outcome.message).toContain("roundingTolerance");
+      expect(result.current.outcome.retryable).toBe(false);
+    }
+  });
+
+  it("W7-18: 開始前の確認が中断された（null）とき、startRun を呼ばずエラーも出さない", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(null));
+    const startRun = vi.fn(() => Promise.resolve(RUN_DTO));
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(startRun).not.toHaveBeenCalled();
+    expect(result.current.outcome.kind).not.toBe("failed");
+  });
+});
+
+describe("useStartRun: 結果不明からの retry()（決定 15）", () => {
+  it("W7-11: 5xx は不明。同じ本文で再送でき、checkConnection の呼び出しは増えない", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    expect(result.current.outcome.kind).toBe("failed");
+    if (result.current.outcome.kind === "failed") {
+      expect(result.current.outcome.retryable).toBe(true);
+    }
+    expect(startRun).toHaveBeenCalledTimes(1);
+    const firstBody = nthStartRunBody(startRun, 0);
+
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    expect(startRun).toHaveBeenCalledTimes(2);
+    const secondBody = nthStartRunBody(startRun, 1);
+    expect(secondBody).toEqual(firstBody); // 同じ startOperationId・同じ本文
+    expect(checkConnection).toHaveBeenCalledTimes(1); // 再送で増えない（決定 15）
+    expect(result.current.outcome).toEqual({ kind: "started", runId: RUN_DTO.id });
+  });
+
+  it("W7-12: 2xx の契約違反（ApiResponseError）も不明。retry() で再送できる", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiResponseError())
+      .mockResolvedValueOnce(RUN_DTO);
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    expect(startRun).toHaveBeenCalledTimes(2);
+    expect(checkConnection).toHaveBeenCalledTimes(1);
+    expect(result.current.outcome).toEqual({ kind: "started", runId: RUN_DTO.id });
+  });
+
+  it("W7-13: 本文の読み取り失敗（ApiTransportError）も不明。retry() で再送できる", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiTransportError())
+      .mockResolvedValueOnce(RUN_DTO);
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    expect(startRun).toHaveBeenCalledTimes(2);
+    expect(checkConnection).toHaveBeenCalledTimes(1);
+    expect(result.current.outcome).toEqual({ kind: "started", runId: RUN_DTO.id });
+  });
+
+  it("W7-14: 4xx は確定。retry() は何もせず、押し直すと新しい startOperationId になる", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(400, "validation", "不正な要求です"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    expect(result.current.outcome.kind).toBe("failed");
+    if (result.current.outcome.kind === "failed") {
+      expect(result.current.outcome.retryable).toBe(false);
+    }
+    expect(startRun).toHaveBeenCalledTimes(1);
+    const firstId = nthStartRunBody(startRun, 0).startOperationId;
+
+    // スナップショットは破棄済み：retry() は何もしない。
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(startRun).toHaveBeenCalledTimes(1);
+
+    // 押し直すと新しい ID で送信する。
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    expect(startRun).toHaveBeenCalledTimes(2);
+    const secondId = nthStartRunBody(startRun, 1).startOperationId;
+    expect(secondId).not.toBe(firstId);
+  });
+
+  it("W7-15: retry() は開始時のスナップショットを送る。呼び出し後に元のオブジェクトを変えても影響しない", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    const request = buildRequest();
+    await act(async () => {
+      await result.current.start(request);
+    });
+    const firstBody = nthStartRunBody(startRun, 0);
+    expect(firstBody.chunkSettings.targetGraphemes).toBe(1_500);
+
+    // start() が返った後に、呼び出し元が持っていた元のオブジェクトを書き換える
+    // （フォームの現在値が変わる状況を模す）。retry() はこれを送ってはならない。
+    request.chunkSettings.targetGraphemes = 9_999;
+
+    await act(async () => {
+      await result.current.retry();
+    });
+    const secondBody = nthStartRunBody(startRun, 1);
+
+    expect(secondBody).toEqual(firstBody);
+    expect(secondBody.chunkSettings.targetGraphemes).toBe(1_500);
+  });
+});
