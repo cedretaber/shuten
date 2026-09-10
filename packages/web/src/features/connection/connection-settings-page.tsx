@@ -19,7 +19,7 @@
  */
 
 import { isGenerationCapable, type ModelInfoDto } from "@shuten/shared";
-import { type SubmitEvent, useEffect, useState } from "react";
+import { type SubmitEvent, useEffect, useRef, useState } from "react";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { useConnection } from "../../app/connection-context.tsx";
@@ -52,6 +52,13 @@ export function ConnectionSettingsPage() {
   const [clearApiKey, setClearApiKey] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // 初回 GET の結果を、利用者の編集や保存成功後の値へ上書きさせないための印（レビュー対応）。
+  // GET が古い設定を読んで応答だけ遅れている間に、利用者が新しい URL を入力して PUT に成功すると、
+  // 遅れて届いた GET が `endpointUrl` と `hasApiKey` を古い値へ戻してしまう。そのまま保存し直すと
+  // 接続先まで元へ戻る。API キー欄の入力ではこの印を立てない：初回 GET が決着する前にキーだけを
+  // 打ち始めた利用者が、URL 欄が空のまま（`required`）保存できなくなるため。
+  const settingsDirtyRef = useRef(false);
+
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -62,12 +69,12 @@ export function ConnectionSettingsPage() {
     apiClient
       .getConnection()
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || settingsDirtyRef.current) return;
         setEndpointUrl(result.endpointUrl);
         setHasApiKey(result.hasApiKey);
       })
       .catch((cause) => {
-        if (cancelled) return;
+        if (cancelled || settingsDirtyRef.current) return;
         setLoadError(errorMessageFrom(cause));
       });
     return () => {
@@ -101,6 +108,7 @@ export function ConnectionSettingsPage() {
     apiClient
       .putConnection(body)
       .then((result) => {
+        settingsDirtyRef.current = true; // 遅れて届く初回 GET に保存後の値を戻させない
         setEndpointUrl(result.endpointUrl);
         setHasApiKey(result.hasApiKey);
         setApiKeyInput("");
@@ -144,7 +152,10 @@ export function ConnectionSettingsPage() {
               className={styles.input}
               type="text"
               value={endpointUrl}
-              onChange={(event) => setEndpointUrl(event.target.value)}
+              onChange={(event) => {
+                settingsDirtyRef.current = true;
+                setEndpointUrl(event.target.value);
+              }}
               required
             />
           </div>

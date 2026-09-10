@@ -4,7 +4,7 @@ import type {
   ModelInfoDto,
   PutConnectionRequest,
 } from "@shuten/shared";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
@@ -22,6 +22,7 @@ import { ConnectionSettingsPage } from "./connection-settings-page.tsx";
  */
 
 const DEFAULT_URL = "http://127.0.0.1:1234";
+const NEW_URL = "http://127.0.0.1:5678";
 
 function makeSettings(overrides: Partial<ConnectionSettingsDto> = {}): ConnectionSettingsDto {
   return { endpointUrl: DEFAULT_URL, hasApiKey: false, ...overrides };
@@ -59,6 +60,19 @@ function makeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     getRun: notImplemented("getRun"),
     ...overrides,
   };
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 function renderPage(client: ApiClient) {
@@ -272,5 +286,34 @@ describe("ConnectionSettingsPage", () => {
     const body = putConnection.mock.calls[0]?.[0];
     expect(body).toEqual({ endpointUrl: DEFAULT_URL });
     expect(body && Object.hasOwn(body, "apiKey")).toBe(false);
+  });
+
+  it("遅れて届いた初回 GET は、編集して保存した後の値を上書きしない（レビュー対応）", async () => {
+    // 初回 GET は古い設定を読んだまま応答が遅れている。その間に利用者が接続先を変えて保存する。
+    const pending = deferred<ConnectionSettingsDto>();
+    const getConnection = vi.fn(() => pending.promise);
+    const putConnection = vi.fn((_body: PutConnectionRequest) =>
+      Promise.resolve(makeSettings({ endpointUrl: NEW_URL, hasApiKey: true })),
+    );
+    const client = makeClient({ getConnection, putConnection });
+    renderPage(client);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("接続先 URL"), NEW_URL);
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(screen.getByText("保存しました")).toBeInTheDocument());
+    expect(screen.getByLabelText("接続先 URL")).toHaveValue(NEW_URL);
+    expect(screen.getByText(/設定済み/)).toBeInTheDocument();
+
+    // ここでようやく、古い設定を読んだ GET が解決する。
+    await act(async () => {
+      pending.resolve(makeSettings({ endpointUrl: DEFAULT_URL, hasApiKey: false }));
+      await pending.promise;
+    });
+
+    // 保存後の値のまま。古い値へ戻らない（戻ると、そのまま保存し直して接続先まで元へ戻る）。
+    expect(screen.getByLabelText("接続先 URL")).toHaveValue(NEW_URL);
+    expect(screen.getByText(/設定済み/)).toBeInTheDocument();
   });
 });
