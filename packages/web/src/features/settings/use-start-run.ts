@@ -157,6 +157,16 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
         // 呼び出し元がその後 request を書き換えても、このスナップショットは影響を受けない。
         snapshotRef.current = parsed.data;
         await send(parsed.data);
+      } catch {
+        // 保険の catch-all（レビュー対応）。`crypto.randomUUID()` や `validateChunkSettings` の
+        // 想定外の例外（`InvalidChunkSettingsError` 以外）はここまで素通りする。無ければ
+        // `outcome` が "sending" のまま固まり、開始ボタンが再読み込みまで disabled になる。
+        // 例外の中身は画面に出さない（決定 18）。
+        updateOutcome({
+          kind: "failed",
+          message: "検査の開始に失敗しました。もう一度お試しください。",
+          retryable: false,
+        });
       } finally {
         sendingRef.current = false;
       }

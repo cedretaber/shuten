@@ -124,13 +124,20 @@
   margin: 0;
 }
 
+/*
+ * 結果不明（5xx など）からの正しい回収経路は、同じ startOperationId での再送（「再試行」）。
+ * 「検査を開始する」を押すと新しい実行 ID になり、元の実行がサーバー側で成功していた場合に
+ * 実行が 2 つになりうる（その操作自体は仕様上禁止しない）。塗り潰しにして「検査を開始する」
+ * より視覚的に優先し、利用者が正しいほうを選びやすくする（レビュー対応）。
+ */
 .retryButton {
   flex-shrink: 0;
   padding: var(--space-xs) var(--space-md);
   border: 1px solid var(--color-danger);
   border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-danger);
-  font-size: var(--font-size-sm);
+  background-color: var(--color-danger);
+  color: var(--color-bg);
+  font-size: var(--font-size-md);
+  font-weight: bold;
   cursor: pointer;
 }

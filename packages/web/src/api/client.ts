@@ -44,7 +44,7 @@ export interface ApiClient {
   getRun(id: string, options?: { signal?: AbortSignal }): Promise<RunDetailDto>;
 }
 
-/** zod スキーマの構造的な最小形。`zod` を web パッケージの直接依存に増やさないための型。 */
+/** zod スキーマの構造的な最小形。スキーマの実装（バージョンや具体の型）に縛られずに受け取るための型。 */
 interface ResponseSchema<T> {
   parse(data: unknown): T;
 }

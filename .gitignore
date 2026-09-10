@@ -38,3 +38,6 @@ dist/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# エージェントの作業用（レビュー差分・作業報告。リポジトリには入れない）
+.superpowers/
