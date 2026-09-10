@@ -309,16 +309,32 @@ S4・S5 は「保存値」と「再マウント後」しか見ない。実装が
 - 決定 8 の 4 経路が実際に `"settings"` を返すことを、テストを落として（`"none"` に変えて）確かめる。
 - S7-1 が、`resetAdvancedRunSettings()` の戻り値で state を更新しない実装（`localStorage` だけを
   書く実装）で落ちることを確かめる。
-- Windows での確認は下記の 2 点だけ。
+- Windows での実機確認は**行わない**（下記の理由による）。
 
 ## Windows での再確認
 
-React と CSS の配置換えが主なので、`docs/guides/windows-verification.md` の 9 項目をやり直す必要は
-ない。次の 2 点だけを見る。
+**行わない。PR11 の実機確認と Windows CI で担保済みとする**（2026-09-10、レビューでの指摘を受けて
+当初の方針を改めた）。
 
-- `http://127.0.0.1:3000/settings` を**直接開いて**設定画面が出る（SPA フォールバックが新しいパスで
-  効く）。
+当初は次の 2 点を実機で見るつもりだった。
+
+- `http://127.0.0.1:3000/settings` を**直接開いて**設定画面が出る（SPA フォールバック）。
 - `http://127.0.0.1:3000/settings/connection` を直接開くと `/settings` へ移る。
+
+やめた理由は、この 2 点に **Windows 固有の面が無い**ことが実装から確かめられるためである。
+
+- SPA フォールバックは `packages/server/src/app.ts` の `app.get("*", …)` で、除外しているのは
+  `/api/*` だけである。**パスごとの分岐が一切無い。** したがって `/settings` は、PR11 の実機確認で
+  通した `/settings/connection`（より深いパス）や `/runs/:id` と**同じ経路**を通る。新しく通る
+  コードは無い。
+- 旧パスのリダイレクトは `<Navigate replace />` で、ブラウザ内の React Router だけで完結する。
+  サーバーもファイルシステムも関与しない。S1-2 がこれを検査しており、Windows CI（`windows-latest`
+  の `pnpm check`）で実行されている。
+
+Windows 固有だったのは `better-sqlite3` のバイナリ、Windows パスでの DB と静的ファイルの操作、
+Windows 上のサーバーから LM Studio への接続、コンソールの Ctrl+C による終了、静的配信と SPA
+フォールバックそのものである。いずれも PR11 の実機確認（`docs/decisions/0002-scaffold-conventions.md`）
+と Windows CI が済ませている。この PR が足したのは、その上に乗る React のルートと画面の配置換えだけである。
 
 ## 参照
 
