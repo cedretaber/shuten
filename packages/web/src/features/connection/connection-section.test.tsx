@@ -1,7 +1,6 @@
 import type {
   ConnectionCheckDto,
   ConnectionSettingsDto,
-  ModelInfoDto,
   PutConnectionRequest,
 } from "@shuten/shared";
 import { act, render, screen, waitFor } from "@testing-library/react";
@@ -12,13 +11,13 @@ import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { ConnectionProvider } from "../../app/connection-context.tsx";
-import { ConnectionSettingsPage } from "./connection-settings-page.tsx";
+import { ConnectionSection } from "./connection-section.tsx";
 
 /**
- * `/settings/connection` の検証（W5-1〜11、決定 9・18）。
- * API キーの三状態（W5-1〜3・W5-10）と 409 `runs-active`（W5-5）、ロード済みモデルに
- * 注記が出ないこと（W5-8）は、実装を意図的に誤らせてこのテストが実際に赤くなることを
- * 確認した（作業報告に記録する）。
+ * 設定画面の「LM Studio への接続」節の検証（W5-1〜7・W5-10〜11、決定 9・18）。
+ * モデル選択を見る W5-8・W5-9 は `model-section.test.tsx` へ移した（PR11c）。
+ * API キーの三状態（W5-1〜3・W5-10）と 409 `runs-active`（W5-5）は、実装を意図的に誤らせて
+ * このテストが実際に赤くなることを確認した（作業報告に記録する）。
  */
 
 const DEFAULT_URL = "http://127.0.0.1:1234";
@@ -30,18 +29,6 @@ function makeSettings(overrides: Partial<ConnectionSettingsDto> = {}): Connectio
 
 function makeCheck(overrides: Partial<ConnectionCheckDto> = {}): ConnectionCheckDto {
   return { reachable: true, error: null, models: [], model: null, ...overrides };
-}
-
-function makeModel(overrides: Partial<ModelInfoDto> = {}): ModelInfoDto {
-  return {
-    id: "model-a",
-    type: "llm",
-    state: "loaded",
-    quantization: null,
-    maxContextLength: null,
-    loadedContextLength: null,
-    ...overrides,
-  };
 }
 
 /** `getConnection` / `putConnection` / `checkConnection` 以外は呼ばれない想定の fake。 */
@@ -80,7 +67,7 @@ function renderPage(client: ApiClient) {
     <MemoryRouter>
       <ApiClientProvider client={client}>
         <ConnectionProvider client={client}>
-          <ConnectionSettingsPage />
+          <ConnectionSection />
         </ConnectionProvider>
       </ApiClientProvider>
     </MemoryRouter>,
@@ -91,7 +78,7 @@ async function waitForLoaded() {
   await waitFor(() => expect(screen.getByLabelText("接続先 URL")).toHaveValue(DEFAULT_URL));
 }
 
-describe("ConnectionSettingsPage", () => {
+describe("ConnectionSection", () => {
   it("W5-1: API キー欄を空のまま保存すると、要求に apiKey を含めない（維持）", async () => {
     const putConnection = vi.fn((_body: PutConnectionRequest) =>
       Promise.resolve(makeSettings({ hasApiKey: true })),
@@ -220,51 +207,6 @@ describe("ConnectionSettingsPage", () => {
     await waitFor(() => expect(putConnection).toHaveBeenCalledTimes(1));
     // 保存直後にもう 1 回（決定 8 の契機 2）。定期ポーリングではないので 2 回で止まる。
     await waitFor(() => expect(checkConnection).toHaveBeenCalledTimes(2));
-  });
-
-  it("W5-8: モデル一覧は type が llm/vlm のものだけを出す（embeddings・null は出ない）", async () => {
-    const checkConnection = vi.fn(() =>
-      Promise.resolve(
-        makeCheck({
-          models: [
-            makeModel({ id: "model-llm", type: "llm" }),
-            makeModel({ id: "model-vlm", type: "vlm" }),
-            makeModel({ id: "model-embed", type: "embeddings" }),
-            makeModel({ id: "model-untyped", type: null }),
-          ],
-        }),
-      ),
-    );
-    const client = makeClient({ checkConnection });
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByText("model-llm")).toBeInTheDocument());
-    expect(screen.getByText("model-vlm")).toBeInTheDocument();
-    expect(screen.queryByText("model-embed")).not.toBeInTheDocument();
-    expect(screen.queryByText("model-untyped")).not.toBeInTheDocument();
-    // ここに並ぶモデルは既定でロード済み（`makeModel` の既定値）：注記を出してはいけない。
-    expect(screen.queryByText(/LM Studio でロードしてください/)).not.toBeInTheDocument();
-  });
-
-  it("W5-9: 未ロードのモデルは選べるが「LM Studio でロードしてください」を添える", async () => {
-    const checkConnection = vi.fn(() =>
-      Promise.resolve(
-        makeCheck({
-          models: [makeModel({ id: "model-cold", type: "llm", state: "not-loaded" })],
-        }),
-      ),
-    );
-    const client = makeClient({ checkConnection });
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByText("model-cold")).toBeInTheDocument());
-    const radio = screen.getByRole("radio", { name: "model-cold" });
-    expect(radio).not.toBeDisabled();
-    expect(screen.getByText(/LM Studio でロードしてください/)).toBeInTheDocument();
-
-    const user = userEvent.setup();
-    await user.click(radio);
-    expect(radio).toBeChecked();
   });
 
   it("W5-10: API キー欄に空白のみを入力して保存すると、要求に apiKey を含めない（維持）", async () => {

@@ -6,7 +6,7 @@
  *
  * - サーバー側は `app.request` で HTTP を直接呼ぶが、こちらは `createApiClient` に fake の
  *   `fetch` を注入し（決定 14）、**クライアントが実際に送ったすべての要求**（メソッド・URL・本文）
- *   を集める。`ApiClient` を丸ごとモックする他のテスト（`connection-settings-page.test.tsx` 等）
+ *   を集める。`ApiClient` を丸ごとモックする他のテスト（`connection-section.test.tsx` 等）
  *   と違い、ここは fetch の 1 段下まで見ないと「要求本文に出ない」を確かめられない（決定 18 の
  *   「`PUT /api/settings/connection` の要求本文以外へ送らない」はクライアントの実装そのものの
  *   検証であって、`ApiClient` のモックでは素通りしてしまう）。
@@ -22,7 +22,7 @@
  * 一本化する、という判断）。そのため W9-4〜7 それぞれについて、この 4 件を書いた時点で
  * **実装を一時的に誤らせて実際に赤くなることを手作業で確認してから戻した**（作業報告に記録）。
  *
- * - W9-4：保存直後の接続確認（`connection-settings-page.tsx` の `checkConnection` 呼び出し）に
+ * - W9-4：保存直後の接続確認（`connection-section.tsx` の `checkConnection` 呼び出し）に
  *   誤って `apiKeyInput` を紛れ込ませ、`POST /api/settings/connection/check` の本文に番兵が
  *   乗って赤くなることを確認した。
  * - W9-5：保存成功の表示に `apiKeyInput` をそのまま添えるよう変え、描画テキストに番兵が
@@ -50,7 +50,7 @@ import { ConnectionProvider } from "./app/connection-context.tsx";
 import { HomePage } from "./app/home-page.tsx";
 import { Layout } from "./app/layout.tsx";
 import { ROUTES, runPath } from "./app/routes.ts";
-import { ConnectionSettingsPage } from "./features/connection/connection-settings-page.tsx";
+import { SettingsPage } from "./app/settings-page.tsx";
 import { RunReceiptPage } from "./features/run-receipt/run-receipt-page.tsx";
 
 /** ---------------------------------------------------------------------- */
@@ -185,7 +185,7 @@ function renderConnectionPage(client: ApiClient) {
     <MemoryRouter>
       <ApiClientProvider client={client}>
         <ConnectionProvider client={client}>
-          <ConnectionSettingsPage />
+          <SettingsPage />
         </ConnectionProvider>
       </ApiClientProvider>
     </MemoryRouter>,
@@ -226,7 +226,7 @@ function renderAppTree(client: ApiClient) {
           <Routes>
             <Route element={<Layout />}>
               <Route path={ROUTES.home} element={<HomePage />} />
-              <Route path={ROUTES.settings} element={<ConnectionSettingsPage />} />
+              <Route path={ROUTES.settings} element={<SettingsPage />} />
               <Route path={ROUTES.run} element={<RunReceiptPage />} />
             </Route>
           </Routes>
