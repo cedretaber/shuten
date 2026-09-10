@@ -85,6 +85,11 @@ PR11 の決定 2（接続を別画面へ）と決定 12（詳細設定を折り�
 そこで**詳細の持ち分にだけ既定値を書き込む**。保存済みの値が確かに既定値へ変わるので、
 「削除まで含める」という要求は満たす。
 
+`resetAdvancedRunSettings()` は**書き込んだ既定値を返し**、呼び出し側はその戻り値で state を
+更新する。`localStorage` を書くだけにすると、決定 7 でマウント時に読んだ state が古い値のまま残り、
+画面の要約と次の開始要求だけが「戻す前」に取り残される（レビュー指摘）。保存と表示の出どころを
+1 つにして、この食い違いを起こせなくする。
+
 ### 決定 6：メイン画面には要約と入口を残す
 
 別画面へ移しただけだと「自分が変えた覚えの無い設定で検査が走る」状態を作れてしまう。
@@ -179,6 +184,7 @@ PR11 の決定 2（接続を別画面へ）と決定 12（詳細設定を折り�
 | `packages/web/src/features/settings/run-settings-form.tsx` | 詳細の入力と state を撤去。要約を差し込み、開始要求は決定 7 の値で組み立てる |
 | `packages/web/src/features/settings/use-start-run.ts` | `StartOutcome.failed` に `hint` |
 | `packages/web/src/storage/run-settings.ts` | 新規。決定 4・5 の読み書き |
+| `packages/web/src/settings-round-trip.test.tsx` | 新規。画面をまたぐ結合テスト（S7） |
 | `docs/guides/windows-verification.md` | 直リンク先を `/settings` へ。旧パスのリダイレクトを 1 行足す |
 | `docs/plans/2026-09-10-pr11-web-shell.md` | 決定 2・12・20 に「PR11c で改めた」を 1 行ずつ |
 | `docs/plans/2026-09-07-mvp-roadmap.md` | PR 一覧・依存の並び・チェックポイントに PR11c |
@@ -213,7 +219,8 @@ PR11 の決定 2（接続を別画面へ）と決定 12（詳細設定を折り�
 - S4-2：基本を書いても詳細の持ち分（温度・タイムアウト）が残る
 - S4-3：`chunkSettings` は項目単位で混ざる（`targetGraphemes` と `maxInputGraphemes` が同居する）
 - S4-4：`seed` は未設定のとき書き戻してもキーごと現れない
-- S4-5：「既定値に戻す」で保存値が既定値になり、再マウントしても戻らない
+- S4-5：`resetAdvancedRunSettings()` が既定値を書き込んで返し、基本の持ち分は残す
+  （関数と「既定値に戻す」ボタンは同じ Task 4 で作る。レビュー指摘）
 - S4-6：詳細の入力を変えると保存され、再マウントで復元される
 
 ### S5：要約（`features/settings/advanced-settings-description.test.ts`、`advanced-settings-summary.test.tsx`）
@@ -231,6 +238,24 @@ PR11 の決定 2（接続を別画面へ）と決定 12（詳細設定を折り�
 - S6-4：`validateChunkSettings` に反する詳細設定（保存値）で開始すると、エラーとリンクが出て
   `startRun` を呼ばない（W7-7 の移設版。画面から丸め許容を変えられなくなるため、
   `localStorage` に値を仕込んでから開始する）
+
+### S7：詳細設定の往復（`settings-round-trip.test.tsx`。画面をまたぐ結合テスト）
+
+S4・S5 は「保存値」と「再マウント後」しか見ない。実装が `localStorage` だけを更新して state を
+放置しても、その 2 つは通ってしまう（レビュー指摘）。決定 5・決定 7 の接合部を 1 本で通して確かめる。
+
+- S7-1：次の順序を 1 つのテストで通す。
+  1. `/settings` で詳細設定（温度・初回検査のタイムアウト）を変える
+  2. ヘッダーの「朱点」でホームへ戻る
+  3. 要約に変更後の値が名前と値で出る
+  4. そのまま開始し、`startRun` の要求本文に変更後の値（API の単位）が入る
+  5. 「既定値に戻す」を押す
+  6. **再マウントせずに**要約が「既定値」になり、ボタンが disabled になる
+  7. そのまま開始し、要求本文に既定値が入る
+  8. 基本の持ち分（検査観点・分割長）は 1〜7 のあいだ変わらない
+
+  6 と 7 が決定 5 の戻り値の規定を、3 と 4 が決定 7 を守らせる。`resetAdvancedRunSettings()` が
+  state を更新しない実装にすると 6 と 7 が落ちることを、実装後に実際に落として確かめる。
 
 ### 動く既存テスト
 
@@ -252,11 +277,12 @@ PR11 の決定 2（接続を別画面へ）と決定 12（詳細設定を折り�
    この時点では `/settings` は現行の接続設定画面のまま。
 2. **設定画面の 3 節化**（決定 3）：`settings-page.tsx` を作り、接続とモデルを分ける。
    詳細の節は空の器だけ置く。S3。
-3. **保存の所有分離**（決定 4・5）：`storage/run-settings.ts` を作り、`run-settings-form.tsx` の
-   全体書き込みをこれに置き換える。画面の見た目は変えない。S4-1〜S4-5。
-4. **詳細設定の移設と要約**（決定 1・6・7）：`advanced-settings-section.tsx`、
-   `advanced-settings-description.ts`、`advanced-settings-summary.tsx`。`run-settings-form.tsx` から
-   詳細の state を撤去。S4-6・S5、動く既存テストの手当て。
+3. **保存の所有分離**（決定 4）：`storage/run-settings.ts` に読み出しと所有者ごとの書き込みを作り、
+   `run-settings-form.tsx` の全体書き込みをこれに置き換える。画面の見た目は変えない。S4-1〜S4-4。
+   `resetAdvancedRunSettings()` はここでは作らない（使う相手がまだ無いため。レビュー指摘）。
+4. **詳細設定の移設と要約**（決定 1・5・6・7）：`advanced-settings-section.tsx`、
+   `advanced-settings-description.ts`、`advanced-settings-summary.tsx`、`resetAdvancedRunSettings()`。
+   `run-settings-form.tsx` から詳細の state を撤去。S4-5・S4-6・S5・S7、動く既存テストの手当て。
 5. **開始エラーの導線とドキュメント**（決定 8・10）：`use-start-run.ts` の `hint`、
    `run-settings-form.tsx` の表示、`docs/` の 3 ファイル。S6。
 
@@ -265,6 +291,8 @@ PR11 の決定 2（接続を別画面へ）と決定 12（詳細設定を折り�
 - `pnpm check` と `pnpm build` の両方が通る（PR11 決定 20 と同じ）。
 - 上の「動く既存テスト」がすべて手当てされ、テスト総数が減っていないこと（減るなら理由を書く）。
 - 決定 8 の 4 経路が実際に `"settings"` を返すことを、テストを落として（`"none"` に変えて）確かめる。
+- S7-1 が、`resetAdvancedRunSettings()` の戻り値で state を更新しない実装（`localStorage` だけを
+  書く実装）で落ちることを確かめる。
 - Windows での確認は下記の 2 点だけ。
 
 ## Windows での再確認
