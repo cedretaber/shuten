@@ -158,6 +158,11 @@ function connectionLost(): LmStudioError {
   return new LmStudioError("connection", "応答を受け取れずに切断した", { status: null });
 }
 
+/** HTTP 応答（非 2xx）を受け取った拒否。生成は走っていないので generationUnconfirmed にならない。 */
+function connectionRefused(): LmStudioError {
+  return new LmStudioError("connection", "LM Studio が HTTP 503 を返した", { status: 503 });
+}
+
 /** ハード上限を超えた（決定 7）。 */
 function timedOut(): LmStudioError {
   return new LmStudioError("timeout", "生成要求がタイムアウトした", { raw: null });
@@ -908,6 +913,74 @@ describe("run/orchestrator: 停止要求が届いた場所で結果が変わる�
     // failed になると resumeRun（pending しか拾わない）で復旧できなくなる。
     expect(recheck?.status).toBe("pending");
     expect(recheck?.pendingNote).toBe("応答が上限内に届かなかった。生成終了は未確認");
+  });
+
+  it("R4c: 応答を受け取れずに接続が切れた単位は pending になり、再開だけで再実行される（PR11b）", async () => {
+    const scripted = scriptedClient([
+      () => {
+        throw connectionLost();
+      },
+      () => checkResponse([]),
+    ]);
+    const harness = makeHarness(scripted.client, { recoveryConfirmMs: 500 });
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    const run = await started.done;
+
+    expect(run.status).toBe("recovery-waiting");
+    expect(run.generationUnconfirmed).toBe(true);
+    expect(run.stopReason).toBe("connection-lost");
+    // status: null の connection は再試行しない。
+    expect(scripted.requests).toHaveLength(1);
+
+    const unit = unitsOf(harness.db, run.id)[0];
+    expect(unit?.status).toBe("pending");
+    expect(unit?.pendingNote).toBe("応答を受け取らずに接続が切れた。生成終了は未確認");
+    // pending にしても失敗の事実は捨てない。
+    expect(unit?.failure?.reason).toBe("connection");
+
+    const resumed = harness.orchestrator.resumeRun(run.id);
+    const resumedRun = await resumed.done;
+
+    expect(resumed.accepted).toBe(true);
+    // retryFailedUnits を呼ばずに、再開だけでその単位が再実行された（1 段の復旧）。
+    expect(scripted.requests).toHaveLength(2);
+    expect(resumedRun.status).toBe("completed");
+    expect(unitsOf(harness.db, run.id)[0]?.status).toBe("done");
+  });
+
+  it("R4d: HTTP 応答を受け取った connection は failed のままで、再開では拾われない（PR11b の判別子）", async () => {
+    const scripted = scriptedClient([
+      () => {
+        throw connectionRefused();
+      },
+      () => {
+        throw connectionRefused();
+      },
+    ]);
+    const harness = makeHarness(scripted.client, { recoveryConfirmMs: 500 });
+    const started = harness.orchestrator.startRun(baseInput({ perspectives: ["typo"] }));
+    const run = await started.done;
+
+    // HTTP 応答ありの connection は executor が 1 回だけ再試行する（executor.ts の isRetryable）。
+    expect(scripted.requests).toHaveLength(2);
+    expect(run.status).toBe("stopped");
+    expect(run.generationUnconfirmed).toBe(false);
+    expect(run.stopReason).toBe("connection-lost");
+
+    const unit = unitsOf(harness.db, run.id)[0];
+    expect(unit?.status).toBe("failed");
+    expect(unit?.failure?.reason).toBe("connection");
+
+    const resumed = harness.orchestrator.resumeRun(run.id);
+    const resumedRun = await resumed.done;
+
+    expect(resumed.accepted).toBe(true);
+    // pending の単位が無いので新しい要求は送られない。
+    expect(scripted.requests).toHaveLength(2);
+    // この経路の復旧には retryFailedUnits が要る＝2 段のままでよい。応答を受け取っている以上、
+    // 生成は走っておらず、再開（resumeRun）で作り直す理由がないため。
+    expect(resumedRun.status).toBe("partially-failed");
+    expect(unitsOf(harness.db, run.id)[0]?.status).toBe("failed");
   });
 
   it("R3: recovery-waiting の実行があると、別の実行にも自動で生成要求を送らない（決定 39）", async () => {
