@@ -978,10 +978,12 @@ describe("run/orchestrator: 復旧ゲート（決定 39）", () => {
       () => first.promise,
       () => checkResponse([]),
       () => checkResponse([]),
+      () => checkResponse([]),
     ]);
     const harness = makeHarness(scripted.client);
 
-    // A は 2 観点。1 観点目が「応答を受け取れずに切断」で終わり、2 観点目は手つかず（pending）で残る。
+    // A は 2 観点。1 観点目は「応答を受け取れずに切断」して pending に残り（PR11b：接続断も
+    // halt.generationUnconfirmed で判別するため）、2 観点目も手つかず（pending）のまま残る。
     const startedA = harness.orchestrator.startRun(baseInput({ startOperationId: "op-a" }));
     const startedB = harness.orchestrator.startRun(
       baseInput({ startOperationId: "op-b", perspectives: ["typo"] }),
@@ -999,14 +1001,14 @@ describe("run/orchestrator: 復旧ゲート（決定 39）", () => {
     const resumedA = harness.orchestrator.resumeRun(runA.id);
     expect(resumedA.accepted).toBe(true);
     expect(harness.recoveryGate.blocked).toBe(false);
-    // 1 観点目は failed のまま残る（再開は pending の単位だけを拾う）。
-    expect(await resumedA.done).toMatchObject({ status: "partially-failed" });
-    expect(scripted.requests).toHaveLength(2);
+    // 2 観点とも pending なので、再開はどちらも拾って再送する（PR11b）。
+    expect(await resumedA.done).toMatchObject({ status: "completed" });
+    expect(scripted.requests).toHaveLength(3);
 
     const resumedB = harness.orchestrator.resumeRun(runB.id);
     expect(resumedB.accepted).toBe(true);
     expect(await resumedB.done).toMatchObject({ status: "completed" });
-    expect(scripted.requests).toHaveLength(3);
+    expect(scripted.requests).toHaveLength(4);
   });
 
   it("V4: 復旧待ちが 2 件あるとき、1 件を再開してもゲートは開かない（集合で持つ）", async () => {
