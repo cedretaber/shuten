@@ -13,12 +13,17 @@
  * `retry()` はそれを**そのまま**、接続確認をやり直さずに再送する（決定 15）。確定（成功 or 4xx）
  * ならスナップショットを破棄する。押し直しは `start()` を呼び直すことで新しい ID になる。
  *
- * **レビュー対応（意図した中断でスナップショットと再試行手段を失わない）。** `start()` の手順 1 で
- * `checkResult === null`（意図した中断）になったとき、この開始操作は「何も起きなかった」ものとして
- * 扱う：スナップショットは新しい送信の直前（手順 4 の末尾）まで差し替えないので、直前に「結果不明」で
- * 保持していたスナップショットはそのまま残る。`outcome` も、この開始操作を始める前の値へ戻す
- * （素朴に `idle` へ戻すと、直前が「結果不明・再試行できる」だった場合に再試行ボタンごと消えてしまい、
- * スナップショットは残っていても回収する手段が画面から失われる）。開始前の `outcome` を握るために
+ * **再試行できるかどうか（`canRetry`）は `outcome` とは独立に持つ。** 結果不明のスナップショットを
+ * 保持したまま利用者がもう一度「検査を開始する」を押し、その開始操作が送信前に失敗すると
+ * （接続確認が例外・モデル未準備・入力検証で停止）、`outcome` は新しい失敗で上書きされる。
+ * 再試行できるかどうかを `outcome` に持たせると、このとき再試行ボタンが画面から消え、
+ * スナップショットは残っているのに同じ `startOperationId` を送る手段が失われる。最初の POST が
+ * 実際には成功していて応答だけが失われていた場合、押し直しは重複実行を作りうる。そのため
+ * `canRetry` は「結果不明のまま保持している開始操作があるか」だけを表し、`send()` の結末でしか動かない。
+ *
+ * スナップショットも新しい送信の直前（手順 4 の末尾）まで差し替えない。手順 1〜3 のどこで終了しても、
+ * 直前に保持していたスナップショットは破棄されない。`outcome` は意図した中断のときだけ開始前の値へ
+ * 戻す（中断は「何も起きなかった」ので、直前の失敗メッセージを消さない）。そのために
  * `outcomeRef`（state と同期する ref）を持つ。
  */
 
@@ -38,11 +43,16 @@ import { canStartWithModel } from "../../app/model-selection.ts";
 export type StartOutcome =
   | { readonly kind: "idle" }
   | { readonly kind: "sending" }
-  | { readonly kind: "failed"; readonly message: string; readonly retryable: boolean }
+  | { readonly kind: "failed"; readonly message: string }
   | { readonly kind: "started"; readonly runId: string };
 
 export interface StartRunApi {
   readonly outcome: StartOutcome;
+  /**
+   * 結果不明のまま保持している開始操作があるか。`outcome` とは独立に動く：
+   * この後の開始操作が送信前に失敗しても、再試行の手段を画面から消さないため。
+   */
+  readonly canRetry: boolean;
   /** 新しい開始操作。startOperationId を作り、要求全体をスナップショットに固定する。 */
   start(request: Omit<StartRunRequest, "startOperationId">): Promise<void>;
   /**
@@ -77,6 +87,8 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
   // 「結果不明」からの再試行に使うスナップショット。React state ではなく ref に持つ：
   // start()/retry() の非同期処理の途中でも常に最新の値を読めるようにするため。
   const snapshotRef = useRef<StartRunRequest | null>(null);
+  // 再試行できるか。`send()` の結末だけが動かす（`start()` の送信前の失敗では触らない）。
+  const [canRetry, setCanRetry] = useState(false);
   // 送信中の二重呼び出しを防ぐ（連打防止はボタンの disabled が主だが、ここでも保険を掛ける）。
   const sendingRef = useRef(false);
 
@@ -86,14 +98,17 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
       try {
         const run = await client.startRun(snapshot);
         snapshotRef.current = null; // 確定：使い切り
+        setCanRetry(false);
         updateOutcome({ kind: "started", runId: run.id });
       } catch (cause) {
         if (isStartOutcomeUnknown(cause)) {
           // 不明：ID とスナップショットを保持する（決定 15）。snapshotRef はそのまま。
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), retryable: true });
+          setCanRetry(true);
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause) });
         } else {
           snapshotRef.current = null; // 確定（4xx）：破棄する
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), retryable: false });
+          setCanRetry(false);
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause) });
         }
       }
     },
@@ -116,19 +131,19 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
           checkResult = await connection.checkConnection(request.modelId);
         } catch (cause) {
           // 中断でない失敗。context の error に理由が入る。startRun は呼ばない（決定 10）。
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), retryable: false });
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause) });
           return;
         }
         if (checkResult === null) {
           // 意図した中断：この開始操作は何も起きなかったものとして扱う。
           // スナップショットには一切触れていないので、直前に保持していた「結果不明」の
-          // スナップショットはそのまま残る。outcome も開始前の値へ戻す（idle だったなら idle、
-          // 「結果不明・再試行できる」だったならそれを維持し、再試行ボタンを画面に残す）。
+          // スナップショットはそのまま残る。outcome も開始前の値へ戻し、直前の失敗メッセージを
+          // 消さない（再試行ボタンを出すかどうかは `canRetry` が持つので、ここでは動かない）。
           updateOutcome(outcomeBeforeStart);
           return;
         }
         if (!canStartWithModel(checkResult, request.modelId)) {
-          updateOutcome({ kind: "failed", message: MODEL_NOT_READY_MESSAGE, retryable: false });
+          updateOutcome({ kind: "failed", message: MODEL_NOT_READY_MESSAGE });
           return;
         }
 
@@ -137,7 +152,7 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
 
         const parsed = startRunRequestSchema.safeParse(candidate);
         if (!parsed.success) {
-          updateOutcome({ kind: "failed", message: GENERIC_VALIDATION_MESSAGE, retryable: false });
+          updateOutcome({ kind: "failed", message: GENERIC_VALIDATION_MESSAGE });
           return;
         }
 
@@ -145,7 +160,7 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
           validateChunkSettings(parsed.data.chunkSettings);
         } catch (cause) {
           if (cause instanceof InvalidChunkSettingsError) {
-            updateOutcome({ kind: "failed", message: cause.message, retryable: false });
+            updateOutcome({ kind: "failed", message: cause.message });
             return;
           }
           throw cause;
@@ -165,7 +180,6 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
         updateOutcome({
           kind: "failed",
           message: "検査の開始に失敗しました。もう一度お試しください。",
-          retryable: false,
         });
       } finally {
         sendingRef.current = false;
@@ -187,5 +201,5 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
     }
   }, [send]);
 
-  return { outcome, start, retry };
+  return { outcome, canRetry, start, retry };
 }

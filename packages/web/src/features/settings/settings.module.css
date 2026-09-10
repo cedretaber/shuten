@@ -125,6 +125,25 @@
 }
 
 /*
+ * 再試行の案内。失敗メッセージ（.error）とは別の塊で出す：結果不明のあとに新しい開始操作が
+ * 送信前に失敗した場合、上に出ているメッセージは別の試行のものになるため。
+ */
+.retryNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+  margin-top: var(--space-sm);
+}
+
+.retryNotice p {
+  margin: 0;
+}
+
+/*
  * 結果不明（5xx など）からの正しい回収経路は、同じ startOperationId での再送（「再試行」）。
  * 「検査を開始する」を押すと新しい実行 ID になり、元の実行がサーバー側で成功していた場合に
  * 実行が 2 つになりうる（その操作自体は仕様上禁止しない）。塗り潰しにして「検査を開始する」

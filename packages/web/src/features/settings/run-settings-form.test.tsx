@@ -27,6 +27,7 @@ import { useStartRun } from "./use-start-run.ts";
 function makeStartApi(overrides: Partial<StartRunApi> = {}): StartRunApi {
   return {
     outcome: { kind: "idle" },
+    canRetry: false,
     start: vi.fn(() => Promise.resolve()),
     retry: vi.fn(() => Promise.resolve()),
     ...overrides,
@@ -414,5 +415,50 @@ describe("RunSettingsForm × useStartRun: 再試行ボタン（決定 15、W7-15
     expect(secondBody).toEqual(firstBody); // 同じ startOperationId・同じ本文
     expect(secondBody.chunkSettings.targetGraphemes).toBe(1_500); // 9999 に汚染されていない
     expect(checkConnection).toHaveBeenCalledTimes(1); // 再送で増えない（決定 15）
+  });
+
+  it("押し直しが送信前に失敗しても「再試行」は画面に残り、元の startOperationId で再送する（レビュー対応）", async () => {
+    const startRun = vi
+      .fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto))
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"));
+    // 1 回目の開始は接続確認に成功し、POST が 5xx になる。2 回目は接続確認自体が失敗する。
+    const checkConnection = vi
+      .fn<ConnectionApi["checkConnection"]>()
+      .mockResolvedValueOnce(makeCheck())
+      .mockRejectedValueOnce(new Error("接続できません"));
+    const client = makeFakeClient(startRun);
+    const connection = makeConnectionApi({ checkConnection });
+    renderHarness(client, connection);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "再試行" })).toBeInTheDocument());
+
+    // 利用者が「検査を開始する」を押し直し、その接続確認が失敗する。
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByText("接続できません")).toBeInTheDocument());
+
+    // 新しい失敗のメッセージが出ても、「再試行」は画面から消えない。
+    expect(screen.getByRole("button", { name: "再試行" })).toBeInTheDocument();
+    expect(startRun).toHaveBeenCalledTimes(1); // 新しい POST は出ていない
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "再試行" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(2));
+
+    const firstBody = startRun.mock.calls[0]?.[0] as StartRunRequest;
+    const secondBody = startRun.mock.calls[1]?.[0] as StartRunRequest;
+    expect(secondBody.startOperationId).toBe(firstBody.startOperationId);
   });
 });

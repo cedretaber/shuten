@@ -240,11 +240,8 @@ describe("useStartRun: start()", () => {
     });
 
     expect(startRun).not.toHaveBeenCalled();
-    expect(result.current.outcome).toEqual({
-      kind: "failed",
-      message: "接続できません",
-      retryable: false,
-    });
+    expect(result.current.outcome).toEqual({ kind: "failed", message: "接続できません" });
+    expect(result.current.canRetry).toBe(false);
   });
 
   it("不正な chunkSettings では startRun を呼ばず、フォーム全体のエラーにする（validateChunkSettings）", async () => {
@@ -263,8 +260,8 @@ describe("useStartRun: start()", () => {
     expect(result.current.outcome.kind).toBe("failed");
     if (result.current.outcome.kind === "failed") {
       expect(result.current.outcome.message).toContain("roundingTolerance");
-      expect(result.current.outcome.retryable).toBe(false);
     }
+    expect(result.current.canRetry).toBe(false);
   });
 
   it("W7-18: 開始前の確認が中断された（null）とき、startRun を呼ばずエラーも出さない", async () => {
@@ -286,7 +283,116 @@ describe("useStartRun: start()", () => {
   });
 });
 
-describe("useStartRun: 意図した中断でスナップショットと再試行手段を失わない（レビュー対応）", () => {
+describe("useStartRun: 結果不明のあと、次の開始操作が送信前に失敗しても回収経路を失わない（レビュー対応）", () => {
+  /**
+   * 5xx で「結果不明」になった開始操作は、同じ `startOperationId` の再送だけが正しい回収経路である。
+   * 利用者がもう一度「検査を開始する」を押し、その開始操作が送信前（接続確認・モデル判定・入力検証）で
+   * 失敗すると、`outcome` は新しい失敗で上書きされる。再試行できるかどうかを `outcome` に持たせると
+   * 再試行の手段がここで画面から消え、最初の POST が実際には成功していた場合に重複実行を作りうる。
+   * 以下の 3 経路すべてで `canRetry` が残ることと、元の本文をそのまま再送できることを見る。
+   */
+  async function startUnknown(deps: {
+    checkConnection: ConnectionApi["checkConnection"];
+    startRun: ApiClient["startRun"];
+  }) {
+    const connection = makeConnectionApi({ checkConnection: deps.checkConnection });
+    const client = makeClient({ startRun: deps.startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    expect(result.current.canRetry).toBe(true);
+    return result;
+  }
+
+  it("押し直しの接続確認が例外になっても、再試行の手段が残る", async () => {
+    const checkConnection = vi
+      .fn<ConnectionApi["checkConnection"]>()
+      .mockResolvedValueOnce(makeCheck())
+      .mockRejectedValueOnce(new Error("接続できません"));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const result = await startUnknown({ checkConnection, startRun });
+    const originalBody = nthStartRunBody(startRun, 0);
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    // 新しい失敗のメッセージは出るが、前回の不明な実行を回収する手段は消えない。
+    expect(result.current.outcome).toEqual({ kind: "failed", message: "接続できません" });
+    expect(result.current.canRetry).toBe(true);
+    expect(startRun).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(startRun).toHaveBeenCalledTimes(2);
+    expect(nthStartRunBody(startRun, 1)).toEqual(originalBody); // 同じ startOperationId
+  });
+
+  it("押し直しでモデルが未ロードでも、再試行の手段が残る", async () => {
+    const checkConnection = vi
+      .fn<ConnectionApi["checkConnection"]>()
+      .mockResolvedValueOnce(makeCheck())
+      .mockResolvedValueOnce(
+        makeCheck({
+          models: [makeModel({ state: "not-loaded" })],
+          model: { id: "model-a", found: true, state: "not-loaded", loaded: false },
+        }),
+      );
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const result = await startUnknown({ checkConnection, startRun });
+    const originalBody = nthStartRunBody(startRun, 0);
+
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+
+    expect(result.current.outcome.kind).toBe("failed");
+    expect(result.current.canRetry).toBe(true);
+    expect(startRun).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(nthStartRunBody(startRun, 1)).toEqual(originalBody);
+  });
+
+  it("押し直しが入力検証で止まっても、再試行の手段が残る", async () => {
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const result = await startUnknown({
+      checkConnection: checkConnection as ConnectionApi["checkConnection"],
+      startRun,
+    });
+    const originalBody = nthStartRunBody(startRun, 0);
+
+    await act(async () => {
+      await result.current.start(
+        buildRequest({ chunkSettings: { ...buildRequest().chunkSettings, roundingTolerance: 1 } }),
+      );
+    });
+
+    expect(result.current.outcome.kind).toBe("failed");
+    expect(result.current.canRetry).toBe(true);
+    expect(startRun).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(nthStartRunBody(startRun, 1)).toEqual(originalBody);
+  });
+
   it("5xx で結果不明のあと、押し直しの接続確認が中断されても元の実行を retry() で回収できる", async () => {
     const checkConnection = vi
       .fn<ConnectionApi["checkConnection"]>()
@@ -304,11 +410,8 @@ describe("useStartRun: 意図した中断でスナップショットと再試行
     await act(async () => {
       await result.current.start(buildRequest());
     });
-    expect(result.current.outcome).toEqual({
-      kind: "failed",
-      message: expect.any(String),
-      retryable: true,
-    });
+    expect(result.current.outcome).toEqual({ kind: "failed", message: expect.any(String) });
+    expect(result.current.canRetry).toBe(true);
     expect(startRun).toHaveBeenCalledTimes(1);
     const originalBody = nthStartRunBody(startRun, 0);
 
@@ -318,11 +421,8 @@ describe("useStartRun: 意図した中断でスナップショットと再試行
     });
     // この開始操作は何も起きなかったものとして扱う：直前の「結果不明・再試行できる」状態が
     // そのまま残る（再試行ボタンが画面から消えない）。新しい送信もしていない。
-    expect(result.current.outcome).toEqual({
-      kind: "failed",
-      message: expect.any(String),
-      retryable: true,
-    });
+    expect(result.current.outcome).toEqual({ kind: "failed", message: expect.any(String) });
+    expect(result.current.canRetry).toBe(true);
     expect(startRun).toHaveBeenCalledTimes(1);
 
     // 中断のあとも、元の不明な実行を retry() で回収できる（同じ本文で再送される）。
@@ -350,9 +450,7 @@ describe("useStartRun: 結果不明からの retry()（決定 15）", () => {
       await result.current.start(buildRequest());
     });
     expect(result.current.outcome.kind).toBe("failed");
-    if (result.current.outcome.kind === "failed") {
-      expect(result.current.outcome.retryable).toBe(true);
-    }
+    expect(result.current.canRetry).toBe(true);
     expect(startRun).toHaveBeenCalledTimes(1);
     const firstBody = nthStartRunBody(startRun, 0);
 
@@ -425,9 +523,7 @@ describe("useStartRun: 結果不明からの retry()（決定 15）", () => {
       await result.current.start(buildRequest());
     });
     expect(result.current.outcome.kind).toBe("failed");
-    if (result.current.outcome.kind === "failed") {
-      expect(result.current.outcome.retryable).toBe(false);
-    }
+    expect(result.current.canRetry).toBe(false);
     expect(startRun).toHaveBeenCalledTimes(1);
     const firstId = nthStartRunBody(startRun, 0).startOperationId;
 

@@ -492,17 +492,26 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
       {startApi.outcome.kind === "failed" && (
         <div role="alert" className={styles.error}>
           <p>{startApi.outcome.message}</p>
-          {startApi.outcome.retryable && (
-            <button
-              type="button"
-              className={styles.retryButton}
-              onClick={() => {
-                void startApi.retry();
-              }}
-            >
-              再試行
-            </button>
-          )}
+        </div>
+      )}
+
+      {/*
+        再試行の案内は失敗メッセージとは別の塊にする（レビュー対応）。結果不明のあとに
+        もう一度「検査を開始する」を押して送信前に失敗した場合、上のメッセージは新しい失敗の
+        ものになるが、再送できるのは前回の（結果不明のままの）開始操作である。
+      */}
+      {startApi.canRetry && startApi.outcome.kind !== "sending" && (
+        <div role="alert" className={styles.retryNotice}>
+          <p>前回の開始操作は結果が不明のままです。同じ内容で再送できます。</p>
+          <button
+            type="button"
+            className={styles.retryButton}
+            onClick={() => {
+              void startApi.retry();
+            }}
+          >
+            再試行
+          </button>
         </div>
       )}
     </div>
