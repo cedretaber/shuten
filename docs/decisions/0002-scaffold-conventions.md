@@ -81,6 +81,22 @@ scaffold 時点では型検査・テスト・ビルドがすべて通ること�
 - PR4（LLM 出力スキーマ、重複統合、許容語抑制）後：テスト 360 件が WSL と CI（Ubuntu / Windows）で通過（2026-09-08）。shared に zod 4.5.4 を追加。
 - PR5（設定と LM Studio クライアント）後：テスト 461 件が WSL で通過（Windows は CI で確認）（2026-09-08）。実 LM Studio を使うテストは `packages/server/vitest.integration.config.ts` の別プロジェクトに分離し、`pnpm test:llm` で実行する（`pnpm check` には含めない）。実機（Windows 側の LM Studio に WSL から接続）で 5 件通過を確認（2026-09-08、決定記録 0003 の追試）。Windows での `pnpm test:llm` は未確認。
 - PR6（プロンプトと要求の組み立て）後：`pnpm check` はテストファイル 23 件・テスト 529 件が WSL で通過（Windows は CI で確認）（2026-09-08、レビュー対応後の値）。この作業環境からは LM Studio に到達できず、`pnpm test:llm` は未実行。`SHUTEN_LM_STUDIO_URL` を設定していない状態でテストファイル 2 件・テスト 11 件が skip されることだけ確認した。その後、実機（Windows 側の LM Studio に WSL から接続、モデル `qwen/qwen3.8-27b`）で `pnpm test:llm` がテストファイル 2 件・テスト 11 件すべて通過（skip なし）を確認（2026-09-08）。結果は `docs/experiments/2026-09-08-prompt-injection/` に記録した。
+- PR11（web の画面）後：**Windows 実機での動作確認を実施（2026-09-10）**。`docs/guides/windows-verification.md` の
+  「2. Windows で人が確認すること」の 9 項目すべてを満たした。環境は Windows 11、Node 24.20.0、pnpm 10.17.1。
+  - `pnpm install --frozen-lockfile` は node-gyp のソースビルドを起動せず完了（lockfile の変更なし）。
+  - `pnpm check` は typecheck・lint（253 ファイル）・テストファイル 91 件・テスト 1502 件が通過。`pnpm build` も通過。
+  - `pnpm start` で 127.0.0.1:3000 に待ち受け。`/api/health` が JSON を返し、`/` の静的配信、
+    `/settings/connection` の直リンク（SPA フォールバック）、`/runs/<未知の ID>` でサーバー 404 ではなく
+    画面内の「その実行はありません」が出ることを確認。
+  - 「接続設定」を開くと起動時の接続確認が自動で走り、「接続できています」とモデル一覧が表示された。
+    未ロードのモデルには注記が付き、埋め込みモデルは一覧から除外される。モデルを選ぶとヘッダーの選択モデルが
+    更新され、再読み込み後も保持された。
+  - 合成した 248 字の文章で原稿を確定し、検査を開始して `/runs/:id` へ遷移、「状態: 実行中」から「状態: 完了」まで
+    到達した。ブラウザ・バックエンド・SQLite・LM Studio が Windows 上で一周つながることを確認（品質は評価しない）。
+  - コンソールの Ctrl+C で `shutdown: done` まで進んでプロセスが終了し、その後もう一度 `pnpm start` で起動できた。
+    Windows に `SIGTERM` が届かない前提で書かれた graceful shutdown が実機で通ることを、ここで初めて確認した。
+  - 環境側の注意：Volta 2.0.2 は pnpm の管理を `VOLTA_FEATURE_PNPM=1` の裏に置いており、この変数が無いと
+    `pnpm` シムが素通りして「認識されていません」になる。Volta で pnpm を使う場合はこの変数を設定する。
 
 ## 却下した案
 
