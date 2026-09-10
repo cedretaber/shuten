@@ -15,7 +15,7 @@ import { ConnectionProvider } from "../../app/connection-context.tsx";
 import { ConnectionSettingsPage } from "./connection-settings-page.tsx";
 
 /**
- * `/settings/connection` の検証（W5-1〜10、決定 9・18）。
+ * `/settings/connection` の検証（W5-1〜11、決定 9・18）。
  * API キーの三状態（W5-1〜3・W5-10）と 409 `runs-active`（W5-5）、ロード済みモデルに
  * 注記が出ないこと（W5-8）は、実装を意図的に誤らせてこのテストが実際に赤くなることを
  * 確認した（作業報告に記録する）。
@@ -288,7 +288,7 @@ describe("ConnectionSettingsPage", () => {
     expect(body && Object.hasOwn(body, "apiKey")).toBe(false);
   });
 
-  it("遅れて届いた初回 GET は、編集して保存した後の値を上書きしない（レビュー対応）", async () => {
+  it("W5-11: 遅れて届いた初回 GET は、編集して保存した後の値を上書きしない（レビュー対応）", async () => {
     // 初回 GET は古い設定を読んだまま応答が遅れている。その間に利用者が接続先を変えて保存する。
     const pending = deferred<ConnectionSettingsDto>();
     const getConnection = vi.fn(() => pending.promise);

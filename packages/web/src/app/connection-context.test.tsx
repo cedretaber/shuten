@@ -9,7 +9,8 @@ import { ConnectionProvider, useConnection } from "./connection-context.tsx";
 
 /**
  * 接続 context の競合防止（決定 10）と、意図した中断／中断していない通信エラーの切り分け
- * （W4-1〜4、W4-12）、モデル選択の永続化（W4-13）を検証する。
+ * （W4-1〜4、W4-12）、モデル選択の永続化（W4-13）と、選択の見直しが 2 回目以降の確認でも
+ * 働くこと（W4-14・W4-15）を検証する。
  */
 
 function makeCheck(overrides: Partial<ConnectionCheckDto> = {}): ConnectionCheckDto {
@@ -316,35 +317,35 @@ describe("ConnectionProvider: 選択モデルの見直しは成功した確認�
     await waitFor(() => expect(checkConnection).toHaveBeenCalledTimes(2));
   }
 
-  it("2 回目の確認の一覧に ID が無ければ、選択と保存値を解除する", async () => {
+  it("W4-14: 2 回目の確認の一覧に ID が無ければ、選択と保存値を解除する", async () => {
     await renderWithStoredSelection(makeCheck({ models: [makeModel({ id: "model-z" })] }));
 
     await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent("none"));
     expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBeNull();
   });
 
-  it("2 回目の確認で種別が llm / vlm でなくなれば、選択と保存値を解除する", async () => {
+  it("W4-14: 2 回目の確認で種別が llm / vlm でなくなれば、選択と保存値を解除する", async () => {
     await renderWithStoredSelection(makeCheck({ models: [makeModel({ type: "embeddings" })] }));
 
     await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent("none"));
     expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBeNull();
   });
 
-  it("2 回目の確認で未ロードの llm なら、選択を維持する", async () => {
+  it("W4-14: 2 回目の確認で未ロードの llm なら、選択を維持する", async () => {
     await renderWithStoredSelection(makeCheck({ models: [makeModel({ state: "not-loaded" })] }));
 
     expect(screen.getByTestId("selected")).toHaveTextContent(STORED);
     expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBe(JSON.stringify(STORED));
   });
 
-  it("2 回目の確認が接続失敗（reachable: false）なら、選択を維持する", async () => {
+  it("W4-14: 2 回目の確認が接続失敗（reachable: false）なら、選択を維持する", async () => {
     await renderWithStoredSelection(makeCheck({ reachable: false, models: [] }));
 
     expect(screen.getByTestId("selected")).toHaveTextContent(STORED);
     expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBe(JSON.stringify(STORED));
   });
 
-  it("確認の最中に選び直したモデルを、遅れて届いた結果が消さない", async () => {
+  it("W4-15: 確認の最中に選び直したモデルを、遅れて届いた結果が消さない", async () => {
     localStorage.setItem(STORAGE_KEYS.selectedModelId, JSON.stringify(STORED));
     const pending = deferred<ConnectionCheckDto>();
     const checkConnection = vi
