@@ -93,7 +93,8 @@ export interface RunSettingsFormProps {
 export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element {
   const { manuscriptVersionId, modelId, restoring, startApi } = props;
 
-  const initialRunSettings = readStoredRunSettings();
+  // 遅延初期化子でマウント時に一度だけ読む（毎レンダーで localStorage を読み直さない）。
+  const [initialRunSettings] = useState(readStoredRunSettings);
 
   const [perspectives, setPerspectives] = useState<readonly Perspective[]>(
     initialRunSettings.perspectives,

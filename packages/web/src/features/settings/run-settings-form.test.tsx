@@ -16,6 +16,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
+import { ApiRequestError } from "../../api/errors.ts";
 import type { ConnectionApi } from "../../app/connection-context.tsx";
 import { STORAGE_KEYS } from "../../storage/keys.ts";
 import { writeStored } from "../../storage/local.ts";
@@ -336,5 +337,43 @@ describe("RunSettingsForm × useStartRun: 単位変換の配線（決定 12）",
       timeouts: { checkMs: 300_000, recheckMs: 300_000 },
       chunkSettings: expect.objectContaining({ roundingTolerance: 0.2 }),
     });
+  });
+});
+
+describe("RunSettingsForm × useStartRun: 再試行ボタン（決定 15、W7-15 のフォーム側）", () => {
+  it("「再試行」はフォームの現在値ではなく開始時のスナップショットを送り、checkConnection をやり直さない", async () => {
+    const startRun = vi
+      .fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto))
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"));
+    const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+    const client = makeFakeClient(startRun);
+    const connection = makeConnectionApi({ checkConnection });
+    renderHarness(client, connection);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "再試行" })).toBeInTheDocument());
+
+    // 再試行の前にフォームの値を変える。送る内容には影響しないはず（決定 15）。
+    fireEvent.change(screen.getByLabelText("検査対象の分割長（字）"), {
+      target: { value: "9999" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "再試行" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(2));
+
+    const firstBody = startRun.mock.calls[0]?.[0] as StartRunRequest;
+    const secondBody = startRun.mock.calls[1]?.[0] as StartRunRequest;
+    expect(secondBody).toEqual(firstBody); // 同じ startOperationId・同じ本文
+    expect(secondBody.chunkSettings.targetGraphemes).toBe(1_500); // 9999 に汚染されていない
+    expect(checkConnection).toHaveBeenCalledTimes(1); // 再送で増えない（決定 15）
   });
 });
