@@ -34,11 +34,15 @@ import { STORAGE_KEYS } from "../../storage/keys.ts";
 import {
   readStored,
   type StoredAllowedWords,
-  type StoredRunSettings,
   storedAllowedWordsSchema,
-  storedRunSettingsSchema,
   writeStored,
 } from "../../storage/local.ts";
+import {
+  readAdvancedRunSettings,
+  readBasicRunSettings,
+  writeAdvancedRunSettings,
+  writeBasicRunSettings,
+} from "../../storage/run-settings.ts";
 import styles from "./settings.module.css";
 import {
   MAX_TIMEOUT_SECONDS,
@@ -60,10 +64,6 @@ function restoreAllowedWords(manuscriptVersionId: string | null): string {
     EMPTY_ALLOWED_WORDS,
   );
   return stored.manuscriptVersionId === manuscriptVersionId ? stored.allowedWordsRaw : "";
-}
-
-function readStoredRunSettings(): StoredRunSettings {
-  return readStored(STORAGE_KEYS.runSettings, storedRunSettingsSchema, RUN_SETTINGS_DEFAULTS);
 }
 
 const PERSPECTIVE_LABELS: Record<Perspective, string> = {
@@ -94,44 +94,37 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
   const { manuscriptVersionId, modelId, restoring, startApi } = props;
 
   // 遅延初期化子でマウント時に一度だけ読む（毎レンダーで localStorage を読み直さない）。
-  const [initialRunSettings] = useState(readStoredRunSettings);
+  // 基本・詳細を別々に読むのは、保存の書き戻しも基本・詳細で別の effect に分けるため
+  // （`storage/run-settings.ts` の所有者ごとの部分更新に合わせる）。
+  const [initialBasic] = useState(readBasicRunSettings);
+  const [initialAdvanced] = useState(readAdvancedRunSettings);
 
   const [perspectives, setPerspectives] = useState<readonly Perspective[]>(
-    initialRunSettings.perspectives,
+    initialBasic.perspectives,
   );
-  const [targetGraphemes, setTargetGraphemes] = useState(
-    initialRunSettings.chunkSettings.targetGraphemes,
-  );
-  const [contextGraphemes, setContextGraphemes] = useState(
-    initialRunSettings.chunkSettings.contextGraphemes,
-  );
-  const [recheckEnabled, setRecheckEnabled] = useState(initialRunSettings.recheckEnabled);
+  const [targetGraphemes, setTargetGraphemes] = useState(initialBasic.targetGraphemes);
+  const [contextGraphemes, setContextGraphemes] = useState(initialBasic.contextGraphemes);
+  const [recheckEnabled, setRecheckEnabled] = useState(initialBasic.recheckEnabled);
   const [recheckContextGraphemes, setRecheckContextGraphemes] = useState(
-    initialRunSettings.chunkSettings.recheckContextGraphemes,
+    initialBasic.recheckContextGraphemes,
   );
 
   // 詳細設定（決定 12）。
-  const [maxTokens, setMaxTokens] = useState(initialRunSettings.generation.maxTokens);
-  const [temperature, setTemperature] = useState(initialRunSettings.generation.temperature);
+  const [maxTokens, setMaxTokens] = useState(initialAdvanced.generation.maxTokens);
+  const [temperature, setTemperature] = useState(initialAdvanced.generation.temperature);
   const [seedInput, setSeedInput] = useState(
-    initialRunSettings.generation.seed === undefined
-      ? ""
-      : String(initialRunSettings.generation.seed),
+    initialAdvanced.generation.seed === undefined ? "" : String(initialAdvanced.generation.seed),
   );
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
-    initialRunSettings.generation.reasoningEffort,
+    initialAdvanced.generation.reasoningEffort,
   );
   const [roundingTolerancePercent, setRoundingTolerancePercent] = useState(
-    toleranceToPercent(initialRunSettings.chunkSettings.roundingTolerance),
+    toleranceToPercent(initialAdvanced.roundingTolerance),
   );
-  const [maxInputGraphemes, setMaxInputGraphemes] = useState(
-    initialRunSettings.chunkSettings.maxInputGraphemes,
-  );
-  const [checkSeconds, setCheckSeconds] = useState(
-    msToSeconds(initialRunSettings.timeouts.checkMs),
-  );
+  const [maxInputGraphemes, setMaxInputGraphemes] = useState(initialAdvanced.maxInputGraphemes);
+  const [checkSeconds, setCheckSeconds] = useState(msToSeconds(initialAdvanced.timeouts.checkMs));
   const [recheckSeconds, setRecheckSeconds] = useState(
-    msToSeconds(initialRunSettings.timeouts.recheckMs),
+    msToSeconds(initialAdvanced.timeouts.recheckMs),
   );
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -146,41 +139,40 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
   }, [manuscriptVersionId]);
 
   // 検査設定は変更のたびに保存する（W7-19）。原稿版に依存しないため、復元用の effect は無い
-  // （初期値は上の useState の遅延初期化子で読み込み済み）。
+  // （初期値は上の useState の遅延初期化子で読み込み済み）。基本・詳細は保存の持ち分が違うので
+  // effect を分ける（Task 4 で詳細設定を設定画面へ移すとき、詳細側の effect を丸ごと消すだけで
+  // 済むようにするため）。
   useEffect(() => {
-    const settings: StoredRunSettings = {
+    writeBasicRunSettings({
+      perspectives,
+      recheckEnabled,
+      targetGraphemes,
+      contextGraphemes,
+      recheckContextGraphemes,
+    });
+  }, [perspectives, recheckEnabled, targetGraphemes, contextGraphemes, recheckContextGraphemes]);
+
+  useEffect(() => {
+    writeAdvancedRunSettings({
       generation: {
         maxTokens,
         temperature,
         reasoningEffort,
         ...(seedInput.trim() === "" ? {} : { seed: Number(seedInput) }),
       },
-      chunkSettings: {
-        targetGraphemes,
-        contextGraphemes,
-        recheckContextGraphemes,
-        roundingTolerance: percentToTolerance(roundingTolerancePercent),
-        maxInputGraphemes,
-      },
+      roundingTolerance: percentToTolerance(roundingTolerancePercent),
+      maxInputGraphemes,
       timeouts: { checkMs: secondsToMs(checkSeconds), recheckMs: secondsToMs(recheckSeconds) },
-      perspectives,
-      recheckEnabled,
-    };
-    writeStored(STORAGE_KEYS.runSettings, settings);
+    });
   }, [
     maxTokens,
     temperature,
     seedInput,
     reasoningEffort,
-    targetGraphemes,
-    contextGraphemes,
-    recheckContextGraphemes,
     roundingTolerancePercent,
     maxInputGraphemes,
     checkSeconds,
     recheckSeconds,
-    perspectives,
-    recheckEnabled,
   ]);
 
   const handleAllowedWordsChange = (value: string) => {
