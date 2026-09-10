@@ -50,7 +50,7 @@ describe("App", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("heading", { name: "実行状況" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "検査実行" })).toBeInTheDocument();
     expect(screen.getByText(/abc/)).toBeInTheDocument();
   });
 
