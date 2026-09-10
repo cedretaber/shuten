@@ -25,6 +25,11 @@
  * 直前に保持していたスナップショットは破棄されない。`outcome` は意図した中断のときだけ開始前の値へ
  * 戻す（中断は「何も起きなかった」ので、直前の失敗メッセージを消さない）。そのために
  * `outcomeRef`（state と同期する ref）を持つ。
+ *
+ * `failed` の `hint` は「**送信前に止まったか、送信後に決まったか**」の 1 本の規則で決める。
+ * 送信前（`checkConnection` の例外、`canStartWithModel` が false、クライアント側の検証失敗）は
+ * 設定画面で直せる可能性があるので `"settings"`。送信後（`send()` の結末。4xx でも結果不明でも）と
+ * 想定外の例外（保険の catch-all）は、設定を直しても再現するとは限らないので `"none"`。
  */
 
 import {
@@ -40,10 +45,13 @@ import { isStartOutcomeUnknown } from "../../api/errors.ts";
 import type { ConnectionApi } from "../../app/connection-context.tsx";
 import { canStartWithModel } from "../../app/model-selection.ts";
 
+/** 失敗の原因が設定画面で直せるものかどうか。 */
+export type StartFailureHint = "none" | "settings";
+
 export type StartOutcome =
   | { readonly kind: "idle" }
   | { readonly kind: "sending" }
-  | { readonly kind: "failed"; readonly message: string }
+  | { readonly kind: "failed"; readonly message: string; readonly hint: StartFailureHint }
   | { readonly kind: "started"; readonly runId: string };
 
 export interface StartRunApi {
@@ -103,12 +111,14 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
       } catch (cause) {
         if (isStartOutcomeUnknown(cause)) {
           // 不明：ID とスナップショットを保持する（決定 15）。snapshotRef はそのまま。
+          // 送信後に決まった失敗なので hint は "none"。
           setCanRetry(true);
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause) });
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), hint: "none" });
         } else {
           snapshotRef.current = null; // 確定（4xx）：破棄する
+          // 送信後に決まった失敗なので hint は "none"。
           setCanRetry(false);
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause) });
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), hint: "none" });
         }
       }
     },
@@ -131,7 +141,8 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
           checkResult = await connection.checkConnection(request.modelId);
         } catch (cause) {
           // 中断でない失敗。context の error に理由が入る。startRun は呼ばない（決定 10）。
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause) });
+          // 送信前に止まった失敗なので hint は "settings"（接続先を見直す）。
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), hint: "settings" });
           return;
         }
         if (checkResult === null) {
@@ -143,7 +154,8 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
           return;
         }
         if (!canStartWithModel(checkResult, request.modelId)) {
-          updateOutcome({ kind: "failed", message: MODEL_NOT_READY_MESSAGE });
+          // 送信前に止まった失敗なので hint は "settings"（モデルの節がある）。
+          updateOutcome({ kind: "failed", message: MODEL_NOT_READY_MESSAGE, hint: "settings" });
           return;
         }
 
@@ -152,7 +164,8 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
 
         const parsed = startRunRequestSchema.safeParse(candidate);
         if (!parsed.success) {
-          updateOutcome({ kind: "failed", message: GENERIC_VALIDATION_MESSAGE });
+          // 送信前に止まった失敗なので hint は "settings"。
+          updateOutcome({ kind: "failed", message: GENERIC_VALIDATION_MESSAGE, hint: "settings" });
           return;
         }
 
@@ -160,7 +173,8 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
           validateChunkSettings(parsed.data.chunkSettings);
         } catch (cause) {
           if (cause instanceof InvalidChunkSettingsError) {
-            updateOutcome({ kind: "failed", message: cause.message });
+            // 送信前に止まった失敗なので hint は "settings"。
+            updateOutcome({ kind: "failed", message: cause.message, hint: "settings" });
             return;
           }
           throw cause;
@@ -176,10 +190,12 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
         // 保険の catch-all（レビュー対応）。`crypto.randomUUID()` や `validateChunkSettings` の
         // 想定外の例外（`InvalidChunkSettingsError` 以外）はここまで素通りする。無ければ
         // `outcome` が "sending" のまま固まり、開始ボタンが再読み込みまで disabled になる。
-        // 例外の中身は画面に出さない（決定 18）。
+        // 例外の中身は画面に出さない（決定 18）。想定外の例外なので hint は "none"
+        // （設定を直しても再現するとは限らない）。
         updateOutcome({
           kind: "failed",
           message: "検査の開始に失敗しました。もう一度お試しください。",
+          hint: "none",
         });
       } finally {
         sendingRef.current = false;

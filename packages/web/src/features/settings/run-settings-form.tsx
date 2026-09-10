@@ -294,6 +294,11 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
       {startApi.outcome.kind === "failed" && (
         <div role="alert" className={styles.error}>
           <p>{startApi.outcome.message}</p>
+          {startApi.outcome.hint === "settings" && (
+            <p>
+              値を見直すには<Link to={ROUTES.settings}>設定</Link>を開いてください。
+            </p>
+          )}
         </div>
       )}
 

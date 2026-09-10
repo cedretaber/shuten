@@ -231,6 +231,43 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
   });
 });
 
+describe("RunSettingsForm: 失敗時の設定画面へのリンク（決定 8。S6-3）", () => {
+  it("S6-3: hint が settings のときだけ、エラーの下に設定画面へのリンクが出る", () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId="model-a"
+          restoring={false}
+          startApi={makeStartApi({
+            outcome: { kind: "failed", message: "設定を見直してください", hint: "settings" },
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("設定を見直してください");
+    expect(screen.getByRole("link", { name: "設定" })).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId="model-a"
+          restoring={false}
+          startApi={makeStartApi({
+            outcome: { kind: "failed", message: "サーバーでエラーが起きました", hint: "none" },
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("サーバーでエラーが起きました");
+    expect(screen.queryByRole("link", { name: "設定" })).toBeNull();
+  });
+});
+
 describe("RunSettingsForm: 設定の保存と復元（W7-19）", () => {
   it("変更した検査設定が runSettings に保存され、再マウントで復元される", () => {
     const { unmount } = renderForm({
@@ -339,8 +376,8 @@ function renderHarness(client: ApiClient, connection: ConnectionApi) {
   );
 }
 
-describe("RunSettingsForm × useStartRun: クライアント検証（W7-7）", () => {
-  it("validateChunkSettings に反する保存値ではフォーム全体のエラーを出し、startRun を呼ばない", async () => {
+describe("RunSettingsForm × useStartRun: クライアント検証（W7-7、S6-4）", () => {
+  it("validateChunkSettings に反する保存値ではフォーム全体のエラーを出し、startRun を呼ばない（設定画面へのリンクも出る）", async () => {
     const startRun = vi.fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto));
     const client = makeFakeClient(startRun);
     const connection = makeConnectionApi();
@@ -355,6 +392,8 @@ describe("RunSettingsForm × useStartRun: クライアント検証（W7-7）", (
 
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
     expect(screen.getByRole("alert").textContent).toContain("roundingTolerance");
+    // クライアント側の検証で送信前に止まった失敗なので、設定画面へのリンクが出る（決定 8、S6-4）。
+    expect(screen.getByRole("link", { name: "設定" })).toBeInTheDocument();
     expect(startRun).not.toHaveBeenCalled();
   });
 });

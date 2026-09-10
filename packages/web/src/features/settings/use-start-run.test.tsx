@@ -240,7 +240,11 @@ describe("useStartRun: start()", () => {
     });
 
     expect(startRun).not.toHaveBeenCalled();
-    expect(result.current.outcome).toEqual({ kind: "failed", message: "接続できません" });
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: "接続できません",
+      hint: "settings",
+    });
     expect(result.current.canRetry).toBe(false);
   });
 
@@ -280,6 +284,125 @@ describe("useStartRun: start()", () => {
     // （`.kind).not.toBe("failed")` だけだと "sending" のままでも通ってしまい、レビューで
     // 指摘された：実装で `updateOutcome(outcomeBeforeStart)` を消し忘れても赤にならない）。
     expect(result.current.outcome).toEqual({ kind: "idle" });
+  });
+});
+
+describe("useStartRun: failed の hint（決定 8。S6）", () => {
+  /**
+   * 規則は「送信前に止まったか、送信後に決まったか」の 1 本だけ。
+   * S6-1 は送信前に止まる 4 経路すべてが `hint: "settings"` になることを、1 つのテストの
+   * 中で確かめる：4 経路のどれか 1 つでも実装で `hint: "none"` に変えると、この 1 テストが
+   * 落ちる（4 つを別テストに分けると、直したい経路だけを個別に赤くできず確認しにくい）。
+   */
+  it("S6-1: 送信前に止まった 4 経路の hint が settings になる", async () => {
+    // 経路 1：checkConnection が中断でない例外で失敗する。
+    {
+      const checkConnection = vi.fn(() => Promise.reject(new Error("接続できません")));
+      const connection = makeConnectionApi({ checkConnection });
+      const client = makeClient();
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest());
+      });
+      expect(result.current.outcome).toEqual({
+        kind: "failed",
+        message: "接続できません",
+        hint: "settings",
+      });
+    }
+
+    // 経路 2：canStartWithModel が false（モデルが未ロード）。
+    {
+      const checkConnection = vi.fn(() =>
+        Promise.resolve(
+          makeCheck({
+            models: [makeModel({ state: "not-loaded" })],
+            model: { id: "model-a", found: true, state: "not-loaded", loaded: false },
+          }),
+        ),
+      );
+      const connection = makeConnectionApi({ checkConnection });
+      const client = makeClient();
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest());
+      });
+      expect(result.current.outcome.kind).toBe("failed");
+      if (result.current.outcome.kind === "failed") {
+        expect(result.current.outcome.hint).toBe("settings");
+      }
+    }
+
+    // 経路 3：startRunRequestSchema.safeParse が失敗する（checkMs が 1 未満）。
+    {
+      const connection = makeConnectionApi();
+      const client = makeClient();
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest({ timeouts: { checkMs: 0, recheckMs: 300_000 } }));
+      });
+      expect(result.current.outcome.kind).toBe("failed");
+      if (result.current.outcome.kind === "failed") {
+        expect(result.current.outcome.hint).toBe("settings");
+      }
+    }
+
+    // 経路 4：InvalidChunkSettingsError（validateChunkSettings が拒否する）。
+    {
+      const connection = makeConnectionApi();
+      const client = makeClient();
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(
+          buildRequest({
+            chunkSettings: { ...buildRequest().chunkSettings, roundingTolerance: 1 },
+          }),
+        );
+      });
+      expect(result.current.outcome.kind).toBe("failed");
+      if (result.current.outcome.kind === "failed") {
+        expect(result.current.outcome.hint).toBe("settings");
+      }
+    }
+  });
+
+  it("S6-2: 送信後に決まった失敗（確定した 4xx、結果不明）の hint が none になる", async () => {
+    // 経路 1：確定した 4xx。
+    {
+      const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+      const startRun = vi.fn(() =>
+        Promise.reject(new ApiRequestError(400, "validation", "不正な要求です")),
+      );
+      const connection = makeConnectionApi({ checkConnection });
+      const client = makeClient({ startRun });
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest());
+      });
+      expect(result.current.outcome).toEqual({
+        kind: "failed",
+        message: "不正な要求です",
+        hint: "none",
+      });
+    }
+
+    // 経路 2：結果不明（5xx）。
+    {
+      const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+      const startRun = vi.fn(() =>
+        Promise.reject(new ApiRequestError(500, "unknown", "サーバー内部エラー")),
+      );
+      const connection = makeConnectionApi({ checkConnection });
+      const client = makeClient({ startRun });
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest());
+      });
+      expect(result.current.outcome.kind).toBe("failed");
+      if (result.current.outcome.kind === "failed") {
+        expect(result.current.outcome.hint).toBe("none");
+      }
+    }
   });
 });
 
@@ -323,7 +446,11 @@ describe("useStartRun: 結果不明のあと、次の開始操作が送信前に
     });
 
     // 新しい失敗のメッセージは出るが、前回の不明な実行を回収する手段は消えない。
-    expect(result.current.outcome).toEqual({ kind: "failed", message: "接続できません" });
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: "接続できません",
+      hint: "settings",
+    });
     expect(result.current.canRetry).toBe(true);
     expect(startRun).toHaveBeenCalledTimes(1);
 
@@ -410,7 +537,11 @@ describe("useStartRun: 結果不明のあと、次の開始操作が送信前に
     await act(async () => {
       await result.current.start(buildRequest());
     });
-    expect(result.current.outcome).toEqual({ kind: "failed", message: expect.any(String) });
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: expect.any(String),
+      hint: "none",
+    });
     expect(result.current.canRetry).toBe(true);
     expect(startRun).toHaveBeenCalledTimes(1);
     const originalBody = nthStartRunBody(startRun, 0);
@@ -421,7 +552,11 @@ describe("useStartRun: 結果不明のあと、次の開始操作が送信前に
     });
     // この開始操作は何も起きなかったものとして扱う：直前の「結果不明・再試行できる」状態が
     // そのまま残る（再試行ボタンが画面から消えない）。新しい送信もしていない。
-    expect(result.current.outcome).toEqual({ kind: "failed", message: expect.any(String) });
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: expect.any(String),
+      hint: "none",
+    });
     expect(result.current.canRetry).toBe(true);
     expect(startRun).toHaveBeenCalledTimes(1);
 
