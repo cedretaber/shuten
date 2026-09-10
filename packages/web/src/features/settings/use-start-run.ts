@@ -26,10 +26,17 @@
  * 戻す（中断は「何も起きなかった」ので、直前の失敗メッセージを消さない）。そのために
  * `outcomeRef`（state と同期する ref）を持つ。
  *
- * `failed` の `hint` は「**送信前に止まったか、送信後に決まったか**」の 1 本の規則で決める。
+ * `failed` の `hint` は基本的に「**送信前に止まったか、送信後に決まったか**」の 1 本の規則で決める。
  * 送信前（`checkConnection` の例外、`canStartWithModel` が false、クライアント側の検証失敗）は
  * 設定画面で直せる可能性があるので `"settings"`。送信後（`send()` の結末。4xx でも結果不明でも）と
  * 想定外の例外（保険の catch-all）は、設定を直しても再現するとは限らないので `"none"`。
+ *
+ * **例外が 1 つある**：確定した 4xx のうち `code` が {@link INVALID_RUN_SETTINGS_CODE}
+ * （サーバーだけが検証できる設定エラー。`validateHardTimeouts` の失敗を含む）のときだけ、
+ * 送信後に決まった失敗でも `"settings"` にする。画面が `checkMs` を個別の上限内に収めていても、
+ * サーバーはプロセス設定の `recoveryConfirmMs` を足した合計を検査するため、この検証はクライアント
+ * では完結できない（サーバーのプロセス設定を画面は知らない）。それ以外の 4xx と結果不明は
+ * これまでどおり `"none"`。
  */
 
 import {
@@ -41,9 +48,17 @@ import {
 } from "@shuten/shared";
 import { useCallback, useRef, useState } from "react";
 import type { ApiClient } from "../../api/client.ts";
-import { isStartOutcomeUnknown } from "../../api/errors.ts";
+import { ApiRequestError, isStartOutcomeUnknown } from "../../api/errors.ts";
 import type { ConnectionApi } from "../../app/connection-context.tsx";
 import { canStartWithModel } from "../../app/model-selection.ts";
+
+/**
+ * サーバーだけが検証できる設定エラーの `ApiRequestError.code`。
+ * `validateHardTimeouts()`（`packages/server/src/api/runs.ts`）の失敗など、画面上の値だけでは
+ * クライアント側で完結できない検証の失敗を表す。確定した 4xx でもこの code のときだけ
+ * `hint: "settings"` にする（決定 8：画面上に無い設定値のエラーも直せる場所へ案内する）。
+ */
+const INVALID_RUN_SETTINGS_CODE = "invalid-run-settings";
 
 /** 失敗の原因が設定画面で直せるものかどうか。 */
 export type StartFailureHint = "none" | "settings";
@@ -116,9 +131,14 @@ export function useStartRun(deps: { client: ApiClient; connection: ConnectionApi
           updateOutcome({ kind: "failed", message: errorMessageFrom(cause), hint: "none" });
         } else {
           snapshotRef.current = null; // 確定（4xx）：破棄する
-          // 送信後に決まった失敗なので hint は "none"。
           setCanRetry(false);
-          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), hint: "none" });
+          // 送信後に決まった失敗なので hint は原則 "none"。ただし、サーバーだけが検証できる
+          // 設定エラー（code === INVALID_RUN_SETTINGS_CODE）だけは例外的に "settings"。
+          const hint: StartFailureHint =
+            cause instanceof ApiRequestError && cause.code === INVALID_RUN_SETTINGS_CODE
+              ? "settings"
+              : "none";
+          updateOutcome({ kind: "failed", message: errorMessageFrom(cause), hint });
         }
       }
     },

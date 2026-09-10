@@ -404,6 +404,56 @@ describe("useStartRun: failed の hint（決定 8。S6）", () => {
       }
     }
   });
+
+  /**
+   * PR #18 レビュー対応：サーバーだけが検証できる設定エラー（`validateHardTimeouts` の失敗など）は
+   * 送信後に決まった 4xx でも `hint: "settings"` にする。判定は `code` で行い、`status` だけを
+   * 見ないことを、同じ 400 で別の code のケースと対比して確かめる。
+   */
+  it("S6-5: 確定した 4xx でも invalid-run-settings なら hint が settings になる（同じ 400 でも別 code なら none）", async () => {
+    // 経路 1：code が "invalid-run-settings" のとき、settings に案内する。
+    {
+      const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+      const startRun = vi.fn(() =>
+        Promise.reject(
+          new ApiRequestError(
+            400,
+            "invalid-run-settings",
+            "タイムアウトの合計が上限を超えています",
+          ),
+        ),
+      );
+      const connection = makeConnectionApi({ checkConnection });
+      const client = makeClient({ startRun });
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest());
+      });
+      expect(result.current.outcome).toEqual({
+        kind: "failed",
+        message: "タイムアウトの合計が上限を超えています",
+        hint: "settings",
+      });
+    }
+
+    // 経路 2：同じ 400 でも code が別（"validation"）なら none のまま。
+    {
+      const checkConnection = vi.fn(() => Promise.resolve(makeCheck()));
+      const startRun = vi.fn(() =>
+        Promise.reject(new ApiRequestError(400, "validation", "不正な要求です")),
+      );
+      const connection = makeConnectionApi({ checkConnection });
+      const client = makeClient({ startRun });
+      const { result } = renderHook(() => useStartRun({ client, connection }));
+      await act(async () => {
+        await result.current.start(buildRequest());
+      });
+      expect(result.current.outcome.kind).toBe("failed");
+      if (result.current.outcome.kind === "failed") {
+        expect(result.current.outcome.hint).toBe("none");
+      }
+    }
+  });
 });
 
 describe("useStartRun: 結果不明のあと、次の開始操作が送信前に失敗しても回収経路を失わない（レビュー対応）", () => {
