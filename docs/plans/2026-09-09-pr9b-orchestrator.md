@@ -336,7 +336,9 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 
 ### 決定 32：停止操作で打ち切った単位の `pending_note`（PR9a の持ち越し）
 
-決定 20 は 2 つの文言を定めている。PR9a は上限超過（`timeout`）側だけを実装した。停止側を足す。
+PR9a の時点で決定 20 が定めていた 2 つの文言のうち、上限超過（`timeout`）側だけを実装した
+（決定 20 は 2026-09-10 の PR11b で 3 つ目の文言を足しているが、それは本決定より後の話である）。
+停止側を足す。
 
 - `recoveryConfirmMs > 0` かつ `failure.origin === "chat"` かつ `failure.reason === "aborted"`
   → 「停止操作により打ち切った。生成終了は未確認」

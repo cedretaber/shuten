@@ -39,7 +39,9 @@ export function localFailure(reason: UnitFailure["reason"], message: string): Un
  * これは実行の終端状態を決める `run/state.ts` の `runStatusForStop` と、復旧ゲートを開ける
  * `run/executor.ts` の `finish` が見ているのと**同じ値**である。個別の理由名（`timeout` /
  * `connection` 等）で単位側だけ別の判定をすると、実行は `recovery-waiting` なのにその単位だけ
- * `failed` に残るというズレが起きる（このタスクが直すのはまさにこのズレ）。
+ * `failed` に残るというズレが起きる。PR11b（2026-09-10）でこのズレを解消し、判別子を
+ * `RunStop.generationUnconfirmed` に統一した（それ以前は接続断の判定に `failure.reason ===
+ * "timeout"` という個別の理由名を使っており、接続断は `pending` にならなかった）。
  *
  * - `origin` が `chat` 以外：生成要求を送っていない（門で止めた）か、`ensureLoaded` 由来。
  *   決定 5(b) のとおり当該単位は未完了のまま残す。

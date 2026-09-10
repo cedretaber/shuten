@@ -459,7 +459,8 @@ LLM 応答から得た候補が永久に失われる。逆順（候補を先に�
 `treatUnconfirmedAsPending && halt?.generationUnconfirmed === true` に改め、接続断も `pending` にして
 1 段の復旧（再開のみ）で再実行できるようにした。
 
-処理状態を `pending` にしても、**失敗の事実は捨てない**。`failure_reason`（`timeout` / `aborted`）・
+処理状態を `pending` にしても、**失敗の事実は捨てない**。`failure_reason`（`timeout` / `aborted` /
+`connection` 等）・
 `failure_message`・`failure_origin`・`attempts`・`elapsed_ms` を同じ更新で保存する。
 `check_units` では処理状態と失敗理由が別の列なので同時に持てる（PR8 のスキーマに制約はない）。
 「次に何をするか」（`status`）と「直前に何が起きたか」（`failure_*`）は別の情報で、
@@ -612,7 +613,9 @@ PR8 で `candidates.candidate_index` を「実行内の生成順の正本」に�
 - R2 上限を超えたら abort し、実行が `recovery-waiting`・`generation_unconfirmed = true` になること
 - R3 `recovery-waiting` の実行に対して自動で後続の生成要求が送られないこと
 - R4 `recovery-waiting` からの手動再開が、打ち切られた単位（`pending`）から続けられること（決定 20）
-- R4b 停止経路・タイムアウト経路のどちらでも、打ち切られた単位が `pending` になること（決定 20）
+- R4b 停止経路・タイムアウト経路・接続断経路のどれでも、打ち切られた単位が `pending` になること
+  （決定 20）。接続断の判別（`halt?.generationUnconfirmed === true` かどうかで `pending` / `failed`
+  が分かれること）は R4c・R4d（`orchestrator.stop.test.ts`。PR11b で追加）で検証する
 - R5 起動時照合：`running` の実行が `recovery-waiting` に、`running` の単位が `pending` になること（決定 13）
 - R6 起動時照合が `done` / `failed` / `not-applicable` の行を触らないこと
 
