@@ -30,69 +30,67 @@ PR9b からの持ち越しで、PR10 では決定 17 として先送りした（
 
 ## 決定
 
-### 決定 1：判別子を `UnitFailure.generationUnconfirmed` に一本化する
+### 決定 1：判別子は既にある `RunStop.generationUnconfirmed` を使う（新しい値を作らない）
 
-`isPendingFailure` に `reason === "connection" && status === null` の枝を足す形では直さない。
-それは同じ判断（生成終了が未確認か）を 2 か所に書き分けることになり、4 つ目の経路が
-増えたときに同じ漏れが起きる。
+**改訂（2026-09-10、レビュー指摘 1 を受けて）**：当初案は `UnitFailure` に
+`generationUnconfirmed` を足して `toFailure` を唯一の決定箇所にする形だった。しかし同じ判断は
+既に `RunStop.generationUnconfirmed` として存在し（`executor.ts:105` の `makeStop`、
+128-175 行の `haltForChatError`）、復旧ゲート（`executor.ts:236` の `finish`）も実行の終端化
+（`state.ts:88-103`）もその値を見ている。単位の側だけが別の値を持つ理由はない。
 
-`UnitFailure` に真偽値 1 つを足し、`run/executor.ts` の `toFailure` が**唯一の決定箇所**にする。
-
-```ts
-// run/result.ts
-export interface UnitFailure {
-  readonly reason: FailureReason;
-  readonly message: string;
-  readonly finishReason: string | null;
-  readonly origin: "ensure-loaded" | "chat" | "local";
-  /**
-   * 生成が LM Studio 側で走り続けている可能性があるか。
-   * 生成要求を送った後に、応答を受け取れないまま終わったときだけ true。
-   */
-  readonly generationUnconfirmed: boolean;
-}
-```
-
-決め方（`toFailure` が `origin` と `LmStudioError` から導く。`origin !== "chat"` は常に false）：
-
-| `origin` | `kind` | `status` | `generationUnconfirmed` |
-| --- | --- | --- | --- |
-| `chat` | `timeout` | — | true |
-| `chat` | `aborted` | — | true |
-| `chat` | `connection` | null | **true（本 PR で変わるのはここ）** |
-| `chat` | `connection` | 非 null | false |
-| `chat` | `malformed` / `truncated` / `model-not-loaded` / `input-too-long` | — | false |
-| `ensure-loaded` / `local` | いずれも | — | false |
-
-`isPendingFailure` は次の 1 本になる。
+**単位の判定にも同じ `halt` を渡す。** `isPendingFailure` と `pendingNote`（`run/units.ts`）の
+引数に `halt: RunStop | null` を足す。
 
 ```ts
-function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boolean): boolean {
+function isPendingFailure(
+  failure: UnitFailure,
+  halt: RunStop | null,
+  treatUnconfirmedAsPending: boolean,
+): boolean {
   if (failure.origin !== "chat") {
     return true;                                   // 送っていない（決定 5(b)）
   }
   if (failure.reason === "model-not-loaded" || failure.reason === "aborted") {
     return true;                                   // 仕様書 7 節・8.2 節
   }
-  return treatUnconfirmedAsPending && failure.generationUnconfirmed;
+  return treatUnconfirmedAsPending && halt?.generationUnconfirmed === true;
 }
 ```
+
+`reason === "timeout"` という**個別の理由名**が消え、「生成終了が未確認なら `pending`」という
+決定 20 の趣旨がそのまま条件になる。**実行の状態（`recovery-waiting`）と単位の状態（`pending`）が
+文字どおり同じ 1 つの値から決まる**。接続断（`connection` かつ `status === null`）は
+`haltForChatError` が既に `generationUnconfirmed: true` にしているので、**production の
+判定ロジックの変更はこの 1 行だけ**になる。
 
 `aborted` を `generationUnconfirmed` の枝に統合しない（フラグに関係なく `pending`）。CLI が
 `signal` で中断したときの非退行（`units.test.ts` U6、`pipeline.test.ts` E1）がこれに依存している。
 
-なお `chat` 由来の `aborted` には送信前の中断（`client.ts:103` の `isAborted` 検査）も混ざるため、
-上表の `true` は「未確認かもしれない」側への過剰近似である。これは本 PR 以前からの性質で、
-`aborted` は上の 2 本目の枝で無条件に `pending` になるため帰結は変わらない。
+#### この判定が前提にする不変条件
 
-`executor.ts` の `finish()`（236 行）は既に `halt.generationUnconfirmed` だけを見て
-`onRecoveryRequired`（復旧ゲートを閉じる。決定 39）を呼んでいる。接続断の経路でも門は
-正しく閉じており、本 PR で触る必要はない。決定 1 は、単位の状態をこの同じ値に合わせる作業である。
+`halt` は executor 内で共有される 1 つの変数で、単位ごとの値ではない（`executor.ts` の
+`runOne` が `halt ??= stop` で書く）。したがってこの判定が正しいのは、次が成り立つ限りである。
 
-`haltForChatError`（`executor.ts:128-175`）が `makeStop(...)` に渡している
-`generationUnconfirmed` も、リテラルの `true` / `false` ではなく `failure.generationUnconfirmed`
-から取る。同じ判断を 2 か所に持たない。**実行の状態（`recovery-waiting`）と単位の状態
-（`pending`）が同じ 1 つの値から決まること**が、この PR で守りたい不変条件である。
+> **`origin === "chat"` の失敗と一緒に返る `halt` は、その失敗自身から導いたものである。**
+
+根拠は既存の 2 つの決定である。
+
+- `halt` を**書く**のは `runOne` の中だけで、`runOne` はキュー（または `tail`）で直列化される
+  （決定 45-2。`execute` の `QueueCancelledError` の catch が共有 `halt` を書かないのは
+  まさにこのためで、`executor.ts:441-470` に理由が書いてある）。
+- 保持済みの `halt` があるときは `runOne` の冒頭で `blocked()` を返し、**生成要求を送らない**。
+  その失敗は `origin: "local"` なので上の 1 本目の枝で `pending` になり、`halt` の値を見ない。
+- 決定 45-3 が同じ性質を明記している：「直列化の下では `halt` が立った後に `chat` を送らないので
+  到達せず、『最初の halt が勝つ』という規則を崩すだけ」。
+
+この不変条件は**テスト U12 で固定する**（下記）。将来 `halt` を `runOne` の外から書く経路を
+作るときは、この判定も一緒に見直すこと。その旨を `units.ts` のコメントに残す。
+
+**代案（採らない）**：`UnitFailure` に `generationUnconfirmed` を足す。単位ごとの値になるので
+上の不変条件に依存しないが、同じ判断の表現が 2 つになり、`RunStop` 側との整合を別途保つ必要が
+生じる。CLI の結果 JSON（`CheckUnitResult.failure`）にもフィールドが増え、`RESULT_VERSION` の
+判断と多数のテストリテラルの修正を招く。不変条件は既に 2 つの決定で守られており、
+テストで固定できるので、表現を増やさないほうを採る。
 
 ### 決定 2：`treatUnconfirmedAsPending` の役割は変えない
 
@@ -103,6 +101,10 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 `failed` で、結果 JSON に残る。CLI には再開の概念がないので `pending` にする意味がない。
 
 ### 決定 3：「応答を受け取った」＝ HTTP 状態行と本文を読み切ったこと
+
+この定義は既に `haltForChatError` が実装している（`connection` かつ `status === null` →
+`generationUnconfirmed: true`）。本 PR で書き換えるのではなく、**単位の側がその判断に従うようにする**
+（決定 1）。以下はその定義が妥当であることの確認である。
 
 `client.ts` の `sendRequest` は `fetch` と `response.text()` を同じ `try` に入れており、
 **本文の読み取り中に切れた場合も `status` は null** になる（`client.ts:117-129`。
@@ -149,9 +151,6 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 「LM Studio 側で生成が走っているかもしれない」を単位ごとに出せるようにする。実行単位では
 `runs.generation_unconfirmed` で既に出せており、単位ごとの表示は合意した機能範囲にない。
 
-`UnitFailure` は CLI の結果 JSON（`CheckUnitResult.failure`）に載るので、出力に真偽値が
-1 つ増える。追加であって形の破壊ではないため `RESULT_VERSION` は `"1"` のままにする。
-
 ### 決定 5：`pendingNote` に 3 本目の固定文言を足す
 
 `units.ts:77-87` の `pendingNote` に枝を足す。
@@ -161,6 +160,10 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 | ハード上限超過（`timeout`） | 応答が上限内に届かなかった。生成終了は未確認（既存） |
 | 停止操作（`aborted`） | 停止操作により打ち切った。生成終了は未確認（既存） |
 | **接続断（`connection` かつ `generationUnconfirmed`）** | **応答を受け取らずに接続が切れた。生成終了は未確認** |
+
+`pendingNote` にも `halt` を渡し、3 本目の条件は
+`treatUnconfirmedAsPending && failure.origin === "chat" && failure.reason === "connection" &&
+halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変えない）。
 
 固定文言にするのは、`failure.message` を素通しすると将来 `message` に接続先の情報が入ったときに
 `pending_note` 経由で漏れるため（`test-support.ts` の裁定 R12 と同じ考え方）。既存の 2 本と同じく
@@ -184,12 +187,13 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 | 文書 | いまの記述 | 改める内容 |
 | --- | --- | --- |
 | `2026-09-09-pr9-orchestration.md` の決定 20 | 「停止からの打ち切り…と、タイムアウトからの打ち切り…はどちらも」と 2 経路で書いている | 3 経路（停止・タイムアウト・接続断）に改め、**規則は「生成終了が未確認なら `pending`」の 1 本**で、判別子は `UnitFailure.generationUnconfirmed` であると書く。2026-09-10 に PR11b で改訂した旨と経緯を残す |
+| `2026-09-09-pr9b-orchestrator.md` の決定 32 | `pending_note` をタイムアウトと停止操作の 2 経路として説明している | 接続断の 3 本目を足す。判別を `recoveryConfirmMs > 0` ではなく `treatUnconfirmedAsPending` と `halt.generationUnconfirmed` で書く（45-3 の改訂後の姿に合わせる） |
+| `2026-09-09-pr9b-orchestrator.md` の 45-3 | `isPendingFailure` / `pendingNote` が「フラグだけを見る」と書いている | フラグに加えて `halt.generationUnconfirmed` を見る形に改める。`reason === "timeout"` を条件から外したことと、その前提になる不変条件（決定 1）を書く |
 | `2026-09-09-pr10-http-api.md` の決定 17 | 「接続断で `failed` になった単位の復旧は 2 段のまま」 | 見出しはそのままに、末尾へ「→ PR11b（`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）で 1 段にした」を追記する（PR10 時点の判断の記録は消さない） |
 | `2026-09-07-mvp-roadmap.md` | PR11b の項、PR10 の持ち越し表 | 実施済みにし、本計画書へのリンクを足す |
 | `README.md` | 現在の状態 | PR11b まで完了に更新する |
 
-`run/units.ts` の JSDoc（33-59 行、62-76 行）と `run/result.ts` の `UnitFailure` の
-コメントも同じコミットで実態に合わせる。
+`run/units.ts` の JSDoc（33-59 行、62-76 行）も同じコミットで実態に合わせる。
 
 ### 決定 8：起動時照合（`reconcileOnStartup`）は変えない
 
@@ -200,20 +204,28 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 
 | ファイル | 変更 |
 | --- | --- |
-| `packages/server/src/run/result.ts` | `UnitFailure` に `generationUnconfirmed: boolean` を足す（JSDoc も） |
-| `packages/server/src/run/executor.ts` | `toFailure`（96 行）が同フィールドを決める。`haltForChatError` はそれを使う。送信前の中断（216 行）と `ensureLoaded` 由来（310 行）は `false` |
-| `packages/server/src/run/orchestrator.ts` | 1210 行の `input-too-long` の `UnitFailure` に `false` を足す（送信前なので常に確認済み） |
-| `packages/server/src/run/units.ts` | `localFailure` に `generationUnconfirmed: false`。`isPendingFailure` を決定 1 の形に。`pendingNote` に 3 本目。JSDoc |
-| `packages/server/src/run/*.test.ts` | 新規テスト（下記）。既存の `UnitFailure` リテラルにフィールドを足す |
+| `packages/server/src/run/units.ts` | `isPendingFailure` / `pendingNote` に `halt` を渡し、判定を決定 1 の形にする。`pendingNote` に 3 本目の文言。呼び出し 2 か所（`executeCheckUnit` 276-282 行、`executeRecheckUnit` 447-453 行）に `outcome.halt` を渡す。JSDoc と不変条件のコメント |
+| `packages/server/src/run/*.test.ts` | 新規テスト（下記） |
 | `packages/server/src/run/test-support.ts` | 台本の失敗に `status` を渡せるようにする（下記 U9・R4d 用） |
-| 計画書 4 本と `README.md` | 決定 7 のとおり |
+| 計画書 6 本と `README.md` | 決定 7 のとおり |
 
-`db/`、`api/`、`shared/`、`packages/web/`、`packages/cli/` の実装には触らない。
+**`result.ts`・`executor.ts`・`orchestrator.ts` は変更しない**（決定 1 の改訂により、
+`UnitFailure` に足すフィールドが無くなったため）。`db/`、`api/`、`shared/`、`packages/web/`、
+`packages/cli/` にも触らない。
+
+`isPendingFailure` に渡すのは **executor が返した `outcome.halt`** である。`units.ts` が
+`input-too-long` のために合成する `halt`（266-275 行）ではない。合成する側も
+`generationUnconfirmed: false` なので結果は同じだが、判定の根拠を「executor がその失敗から
+導いた停止理由」に固定しておく。
 
 ## テスト
 
 **すべて、直しを戻すと落ちることを確認する（変異検査）。** 特に U9・R4d は
 「`connection` を全部 `pending` にする」実装を弾くためのもので、これが落ちなければ意味がない。
+
+**U8・U9 は `halt.generationUnconfirmed` を反転させても落ちること**を確かめる。偽の executor が
+返す `failure.reason` だけで通ってしまうと、決定 1 が意図した「halt が判別子である」という
+性質を検査できていない（レビュー指摘 1）。
 
 ### 単位の層（`run/units.test.ts`。既存は U1〜U7）
 
@@ -225,6 +237,10 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 - **U10**：`treatUnconfirmedAsPending` を渡さない（CLI 経路）と、`status: null` の `connection` は
   `failed` のままであること（U6 と同じ趣旨の非退行）。
 - **U11**：再確認単位でも U8 と同じになること（`executeRecheckUnit` の側の配線）。
+- **U12（決定 1 の不変条件）**：保持済みの `halt`（`generationUnconfirmed: true`）がある状態で
+  次の単位を実行すると、生成要求を送らずに `origin: "local"` の失敗で返ること。
+  ＝**他の単位の `halt` が `chat` 由来の失敗と組になることはない**。決定 1 の判定が
+  `halt` を見てよい根拠を固定する。実装は変えないので、既存の挙動の性質を書き留めるテストである。
 
 ### オーケストレーターの層（`run/orchestrator.stop.test.ts`。R4b・45-3 の隣に置く）
 
@@ -244,20 +260,19 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 ### 既存テストの非退行
 
 - `pipeline.test.ts`（E1、P18c）と `packages/cli` のテストを**変更せずに**緑に保つ。
-  `UnitFailure` を組み立てているテストヘルパーだけは、フィールド追加に伴う型エラーの分を直す
-  （期待値の変更ではない）。
+  型の変更が `UnitFailure` に及ばなくなったので、既存のテストリテラルの修正も発生しない。
 - `api/leak.test.ts` は変更しない。`pending_note` は固定文言のみになる。
 
 ## タスク
 
 小さい PR なので 3 つに分ける。**状態機械（決定 1・3・5）は委譲しない**（ロードマップの担当欄）。
 
-1. **判別子の導入と単位の層**（Claude）：`result.ts`・`executor.ts`・`units.ts` の変更と
-   U8〜U11、`test-support.ts` の `status` 対応。既存テストのフィールド追加も含める。
-   完了条件：`pnpm check` が通り、U9・U10 が変異検査で落ちること。
+1. **判別の付け替えと単位の層**（Claude）：`units.ts` の変更と U8〜U12、
+   `test-support.ts` の `status` 対応。
+   完了条件：`pnpm check` が通り、U9・U10 と、`halt` の反転で U8・U9 が落ちること。
 2. **オーケストレーターの結合テスト**（サブエージェント可）：R4c・R4d。実装は変えない。
    既存の 45-3 のテストを手本にする。
-3. **文書**（Claude）：決定 7 の 4 本と `README.md`。
+3. **文書**（Claude）：決定 7 の 6 本と `README.md`。
 
 ## やらないこと（MUST NOT）
 
@@ -265,7 +280,8 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 - DB の列・マイグレーション・`api/dto.ts`・`shared/src/api/` を触らない（決定 4）。
 - `isRetryable` の判断（HTTP 応答ありの `connection` だけ再試行）を変えない。
 - `treatUnconfirmedAsPending` の意味を変えない。待機時間（`recoveryConfirmMs`）を経路の判別子にしない（決定 45-3）。
-- CLI（`runPipeline`）の挙動と結果 JSON の既存フィールドを変えない。
+- CLI（`runPipeline`）の挙動と結果 JSON の形を変えない（`UnitFailure` に項目を足さない。決定 1 の代案）。
+- `RunStop.generationUnconfirmed` の決め方（`haltForChatError` / `haltForEnsureLoadedError`）を変えない。
 - `packages/web/` を触らない。画面での案内は PR12b の範囲。
 - 失敗の事実（`failure_reason` 等）を捨てない（決定 20 の後半）。
 
