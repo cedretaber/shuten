@@ -229,15 +229,17 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
 
 ### 単位の層（`run/units.test.ts`。既存は U1〜U7）
 
-- **U8**：`chat` 由来の `connection`（`status: null`）に `treatUnconfirmedAsPending: true` を渡すと、
+- **U8**：偽 executor が `halt.generationUnconfirmed: true` の `ExecOutcome`（`chat` 由来の
+  `connection`、`attempts: 1`）を直接返す形で `treatUnconfirmedAsPending: true` を渡すと、
   単位が `pending` になり、`note` が「応答を受け取らずに接続が切れた。生成終了は未確認」で、
   失敗の事実（`failure.reason === "connection"`、`attempts === 1`）が残ること。
 - **U9（判別子）**：偽 executor が `halt.generationUnconfirmed: false` の `ExecOutcome` を
   直接返す形（再試行は起きず `attempts` は 1）でも、単位は `failed` のままであること。
   `status: 503`（HTTP 応答あり）を使って実際に再試行 1 回を通す検査は
   R4d（`orchestrator.stop.test.ts`）が担う。
-- **U10**：`treatUnconfirmedAsPending` を渡さない（CLI 経路）と、`status: null` の `connection` は
-  `failed` のままであること（U6 と同じ趣旨の非退行）。
+- **U10**：U8 と同じ `halt.generationUnconfirmed: true` の `ExecOutcome` を返しても、
+  `treatUnconfirmedAsPending` を渡さなければ（CLI 経路）単位は `failed` のままであること
+  （U6 と同じ趣旨の非退行）。
 - **U11**：再確認単位でも U8 と同じになること（`executeRecheckUnit` の側の配線）。
 - **E28（`executor.test.ts`。決定 1 の不変条件）**：保持済みの `halt`
   （`generationUnconfirmed: true`）がある状態で次の単位を実行すると、生成要求を送らずに
