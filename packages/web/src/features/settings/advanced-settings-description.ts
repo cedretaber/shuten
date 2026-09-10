@@ -45,7 +45,8 @@ export interface AdvancedChange {
  * 並び順は固定：最大トークン数 → 温度 → シード → 思考の強さ → 丸め許容 → 入力上限 →
  * 初回検査のタイムアウト → 再確認のタイムアウト。
  *
- * シードは既定値では**キーごと無い**（`exactOptionalPropertyTypes`）。`undefined` が入っている
+ * シードは既定値では**キーごと無い**（`exactOptionalPropertyTypes`）。他の 7 項目と同じく
+ * 既定値（`defaults.generation.seed`＝`undefined`）と比べるので、`undefined` が入っている
  * 場合も「未設定＝既定値」として扱い、要約には出さない。
  */
 export function describeAdvancedChanges(settings: AdvancedRunSettings): readonly AdvancedChange[] {
@@ -58,7 +59,7 @@ export function describeAdvancedChanges(settings: AdvancedRunSettings): readonly
   if (settings.generation.temperature !== defaults.generation.temperature) {
     changes.push({ label: "温度", value: String(settings.generation.temperature) });
   }
-  if (settings.generation.seed !== undefined) {
+  if (settings.generation.seed !== defaults.generation.seed) {
     changes.push({ label: "シード", value: String(settings.generation.seed) });
   }
   if (settings.generation.reasoningEffort !== defaults.generation.reasoningEffort) {

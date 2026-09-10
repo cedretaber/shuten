@@ -6,6 +6,11 @@
  * `localStorage` に値を仕込んでから描画する。詳細 8 項目の初期値と単位表示（W7-1 の残り）は
  * `advanced-settings-section.test.tsx` へ移した。
  *
+ * S7-2 は決定 7（開始要求は要約に出しているのと同じ `advanced` state から組む）を固定する。
+ * 描画したあとに保存値だけを書き換えて state と食い違わせ、送られた本文が「画面に出ているほう」に
+ * 一致することを見る。`localStorage.getItem` が呼ばれないことは見ない（実装ではなく、
+ * 観測できる不変条件＝画面に出ている値と送る値が一致すること、で縛る）。
+ *
  * W7-1・W7-16・W7-19 は fake の `StartRunApi`（`start`/`retry` を呼ばれたことだけ確認できればよい）
  * で足りるが、W7-7（`validateChunkSettings` の失敗がフォーム全体のエラーとして出て `startRun` が
  * 呼ばれないこと）は、実際に `use-start-run.ts` の検証ロジックを通す必要があるため、
@@ -382,6 +387,38 @@ describe("RunSettingsForm × useStartRun: 単位変換の配線（決定 12）",
       timeouts: { checkMs: 600_000, recheckMs: 600_000 },
       chunkSettings: expect.objectContaining({ roundingTolerance: 0.3 }),
     });
+  });
+});
+
+describe("RunSettingsForm × useStartRun: 開始要求は要約と同じ値から組む（決定 7）", () => {
+  it("S7-2: 保存値だけが変わっても、送るのは画面に出ている値のまま（開始直前に localStorage を読み直さない）", async () => {
+    const startRun = vi.fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto));
+    const client = makeFakeClient(startRun);
+    const connection = makeConnectionApi();
+    renderHarness(client, connection);
+
+    // 画面をまたがずに保存値だけを書き換える（別タブでの変更に相当）。フォームの `advanced`
+    // state はマウント時に読んだ既定値のままなので、要約も「既定値」のまま動かない。
+    writeAdvancedRunSettings({
+      ...ADVANCED_RUN_SETTINGS_DEFAULTS,
+      generation: { ...ADVANCED_RUN_SETTINGS_DEFAULTS.generation, temperature: 1.5 },
+      timeouts: { checkMs: 600_000, recheckMs: 600_000 },
+    });
+    expect(screen.getByText("詳細設定：既定値")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(1));
+
+    // 画面に出ている要約（＝既定値）と、実際に送る値が一致すること。
+    // `handleStart` が開始直前に `readAdvancedRunSettings()` を読む実装なら、
+    // 要約が「既定値」のままなのに 1.5 と 600 秒が送られて落ちる。
+    const body = startRun.mock.calls[0]?.[0];
+    expect(body?.generation.temperature).toBe(0);
+    expect(body?.timeouts).toEqual({ checkMs: 300_000, recheckMs: 300_000 });
   });
 });
 
