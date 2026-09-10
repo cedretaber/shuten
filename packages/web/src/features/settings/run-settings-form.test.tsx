@@ -140,6 +140,34 @@ describe("RunSettingsForm: 許容語は原稿版と組で復元する（W7-16、
 
     expect(screen.getByLabelText("許容語（改行区切り）")).toHaveValue("");
   });
+
+  it("原稿確定前は許容語欄が disabled（確定時の復元 effect による黙った上書きを避ける）", () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId={null}
+          modelId={null}
+          restoring={false}
+          startApi={makeStartApi()}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText("許容語（改行区切り）")).toBeDisabled();
+
+    rerender(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId={null}
+          restoring={false}
+          startApi={makeStartApi()}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByLabelText("許容語（改行区切り）")).not.toBeDisabled();
+  });
 });
 
 describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
@@ -186,6 +214,17 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
     });
 
     expect(screen.getByRole("button", { name: "検査を開始する" })).not.toBeDisabled();
+  });
+
+  it('送信中（outcome.kind === "sending"）は disabled（連打防止）', () => {
+    renderForm({
+      manuscriptVersionId: "mv-1",
+      modelId: "model-a",
+      restoring: false,
+      startApi: makeStartApi({ outcome: { kind: "sending" } }),
+    });
+
+    expect(screen.getByRole("button", { name: "検査を開始する" })).toBeDisabled();
   });
 });
 

@@ -279,7 +279,59 @@ describe("useStartRun: start()", () => {
     });
 
     expect(startRun).not.toHaveBeenCalled();
-    expect(result.current.outcome.kind).not.toBe("failed");
+    // "sending" のまま残ると開始ボタンが永久に disabled になる。idle に戻ることを厳密に見る
+    // （`.kind).not.toBe("failed")` だけだと "sending" のままでも通ってしまい、レビューで
+    // 指摘された：実装で `updateOutcome(outcomeBeforeStart)` を消し忘れても赤にならない）。
+    expect(result.current.outcome).toEqual({ kind: "idle" });
+  });
+});
+
+describe("useStartRun: 意図した中断でスナップショットと再試行手段を失わない（レビュー対応）", () => {
+  it("5xx で結果不明のあと、押し直しの接続確認が中断されても元の実行を retry() で回収できる", async () => {
+    const checkConnection = vi
+      .fn<ConnectionApi["checkConnection"]>()
+      .mockResolvedValueOnce(makeCheck()) // 1 回目の start(): 接続確認は成功する
+      .mockResolvedValueOnce(null); // 2 回目の start(): 接続確認が中断される
+    const startRun = vi
+      .fn<ApiClient["startRun"]>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"))
+      .mockResolvedValueOnce(RUN_DTO);
+    const connection = makeConnectionApi({ checkConnection });
+    const client = makeClient({ startRun });
+    const { result } = renderHook(() => useStartRun({ client, connection }));
+
+    // 1 回目：5xx で「結果不明・再試行できる」になる。
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: expect.any(String),
+      retryable: true,
+    });
+    expect(startRun).toHaveBeenCalledTimes(1);
+    const originalBody = nthStartRunBody(startRun, 0);
+
+    // 利用者が「検査を開始する」を押し直す。その接続確認が（何らかの理由で）中断される。
+    await act(async () => {
+      await result.current.start(buildRequest());
+    });
+    // この開始操作は何も起きなかったものとして扱う：直前の「結果不明・再試行できる」状態が
+    // そのまま残る（再試行ボタンが画面から消えない）。新しい送信もしていない。
+    expect(result.current.outcome).toEqual({
+      kind: "failed",
+      message: expect.any(String),
+      retryable: true,
+    });
+    expect(startRun).toHaveBeenCalledTimes(1);
+
+    // 中断のあとも、元の不明な実行を retry() で回収できる（同じ本文で再送される）。
+    await act(async () => {
+      await result.current.retry();
+    });
+    expect(startRun).toHaveBeenCalledTimes(2);
+    expect(nthStartRunBody(startRun, 1)).toEqual(originalBody);
+    expect(result.current.outcome).toEqual({ kind: "started", runId: RUN_DTO.id });
   });
 });
 

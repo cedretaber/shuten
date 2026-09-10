@@ -332,7 +332,13 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
           className={styles.textarea}
           value={allowedWordsRaw}
           onChange={(event) => handleAllowedWordsChange(event.target.value)}
+          disabled={manuscriptVersionId === null}
         />
+        {manuscriptVersionId === null && (
+          <p className={styles.modelNote}>
+            原稿を確定すると入力できます（原稿版ごとに保存されるため）。
+          </p>
+        )}
       </div>
 
       <details
