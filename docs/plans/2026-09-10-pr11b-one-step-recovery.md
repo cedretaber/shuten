@@ -81,6 +81,14 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 `aborted` を `generationUnconfirmed` の枝に統合しない（フラグに関係なく `pending`）。CLI が
 `signal` で中断したときの非退行（`units.test.ts` U6、`pipeline.test.ts` E1）がこれに依存している。
 
+なお `chat` 由来の `aborted` には送信前の中断（`client.ts:103` の `isAborted` 検査）も混ざるため、
+上表の `true` は「未確認かもしれない」側への過剰近似である。これは本 PR 以前からの性質で、
+`aborted` は上の 2 本目の枝で無条件に `pending` になるため帰結は変わらない。
+
+`executor.ts` の `finish()`（236 行）は既に `halt.generationUnconfirmed` だけを見て
+`onRecoveryRequired`（復旧ゲートを閉じる。決定 39）を呼んでいる。接続断の経路でも門は
+正しく閉じており、本 PR で触る必要はない。決定 1 は、単位の状態をこの同じ値に合わせる作業である。
+
 `haltForChatError`（`executor.ts:128-175`）が `makeStop(...)` に渡している
 `generationUnconfirmed` も、リテラルの `true` / `false` ではなく `failure.generationUnconfirmed`
 から取る。同じ判断を 2 か所に持たない。**実行の状態（`recovery-waiting`）と単位の状態
@@ -122,6 +130,16 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 | --- | --- |
 | `status = pending` かつ `failure_reason = connection` | 応答を受け取らずに切れた（再開が拾う） |
 | `status = failed` かつ `failure_reason = connection` | HTTP 応答を受け取った拒否（個別再試行の対象） |
+
+ただしこの読み分けが成り立つのは**本 PR 以降に書かれた行**だけである。それ以前の
+`failed` + `connection` の行は両方の意味を含む。復旧手段（失敗単位の個別再試行）は残るので
+実害はない。
+
+**HTTP・SSE には波及しない**ことを確認済みである。`UnitFailure` は `run/save.ts` の
+`toFailureRecord`（46-57 行）で 4 項目を明示的に選んで `UnitFailureRecord` になり、
+`api/dto.ts` の `toUnitFailureDto` がそこから DTO を作る。`shared/src/api/dto.ts` の
+`unitFailureDtoSchema`（204-211 行）は `.strict()` だが、新しいフィールドは記録の境界で
+落ちるため到達しない。`run/events.ts` も `UnitFailure` をそのまま載せていない。
 
 さらに `pending_note`（決定 5）に経路が文言として残る。列を足せばマイグレーション、
 `db/records.ts`、`api/dto.ts` の射影、`shared/src/api/` の zod スキーマ、`api/leak.test.ts` の
@@ -210,12 +228,18 @@ function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boole
 
 ### オーケストレーターの層（`run/orchestrator.stop.test.ts`。R4b・45-3 の隣に置く）
 
-- **R4c**：生成中に接続が切れる（`status: null`）と、実行が `recovery-waiting`・
-  `generationUnconfirmed: true` になり、**その単位が `pending`** で `pending_note` が決定 5 の文言に
-  なること。続けて `resumeRun` を呼ぶと、`retryFailedUnits` を**一度も呼ばずに**その単位が
-  再実行され、実行が `completed` になること（これが「1 段」の意味。既存の 45-3 のテストが手本）。
-- **R4d（判別子）**：`status: 503` の `connection` では、実行が `stopped`（`generationUnconfirmed`
-  は false）で単位は `failed` のままであること。`resumeRun` ではその単位が再実行されないこと。
+- **R4c**：生成中に接続が切れる（`connection`・`status: null`）と、
+  実行が `recovery-waiting`・`generationUnconfirmed: true`・`stopReason: "connection-lost"` になり、
+  **その単位が `pending`**、`pending_note` が決定 5 の文言、`failure.reason` が `connection`、
+  `scripted.requests` が 1 件（再試行なし）であること。続けて `resumeRun` を呼ぶと、
+  `retryFailedUnits` を**一度も呼ばずに**要求が 2 件目として送られ、単位が `done`、
+  実行が `completed` になること（これが「1 段」の意味。既存の 45-3 のテストが手本）。
+- **R4d（判別子）**：`connection`・`status: 503` では、再試行 1 回のあと（`scripted.requests`
+  は 2 件）実行が `stopped`・`generationUnconfirmed: false` で、単位は `failed` のまま。
+  続けて `resumeRun` を呼ぶと `accepted: true` だが、`pending` の単位が無いので新しい要求は
+  送られず（`scripted.requests` は 2 件のまま）、実行は `partially-failed` に決着し、
+  単位は `failed` のままであること（`loop.ts` の `finalizeRun`）。復旧には
+  `retryFailedUnits` が要る＝**この経路は 2 段のままでよい**ことの記録でもある。
 
 ### 既存テストの非退行
 
