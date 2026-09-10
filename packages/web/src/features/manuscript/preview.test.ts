@@ -63,6 +63,38 @@ describe("buildPreview", () => {
     expect(result.text).toContain(crlf);
   });
 
+  it("W6-6: ZWJ 絵文字自体がちょうど 500 書記素目（切り出しの境界）に来ても丸ごと含む", () => {
+    // レビュー指摘：先の「500 番目付近」テストは特殊クラスタが書記素 495〜497 にあり、正しい
+    // 切り出し境界（グラフィム番号 500）自体には重ならない。ここでは 499 個の「あ」の直後に
+    // 特殊クラスタを置き、その特殊クラスタ自体が先頭 500 書記素の最後（境界のすぐ内側）に
+    // 来るケースを検証する。
+    const zwjEmoji = "👨‍👩‍👧"; // 1 書記素、UTF-16 で 8 コード単位
+    const body = `${"あ".repeat(499)}${zwjEmoji}${"い".repeat(20)}`;
+    expect(countGraphemes(body)).toBe(520);
+
+    const result = buildPreview(body);
+
+    expect(result.truncated).toBe(true);
+    expect(countGraphemes(result.text)).toBe(PREVIEW_GRAPHEMES);
+    expect(result.text).toBe(expectedHead(body, PREVIEW_GRAPHEMES));
+    expect(result.text.endsWith(zwjEmoji)).toBe(true); // 特殊クラスタを丸ごと含んで終わる
+    expect(result.text).not.toBe(body.slice(0, PREVIEW_GRAPHEMES));
+  });
+
+  it("W6-6: CRLF 自体がちょうど 500 書記素目（切り出しの境界）に来ても丸ごと含む", () => {
+    const crlf = "\r\n"; // 1 書記素、UTF-16 で 2 コード単位
+    const body = `${"あ".repeat(499)}${crlf}${"い".repeat(20)}`;
+    expect(countGraphemes(body)).toBe(520);
+
+    const result = buildPreview(body);
+
+    expect(result.truncated).toBe(true);
+    expect(countGraphemes(result.text)).toBe(PREVIEW_GRAPHEMES);
+    expect(result.text).toBe(expectedHead(body, PREVIEW_GRAPHEMES));
+    expect(result.text.endsWith(crlf)).toBe(true); // CRLF を \r と \n に割らずに丸ごと含む
+    expect(result.text).not.toBe(body.slice(0, PREVIEW_GRAPHEMES));
+  });
+
   it("W6-7: 500 書記素ちょうどのとき truncated は false", () => {
     const body = "あ".repeat(500);
     expect(buildPreview(body).truncated).toBe(false);
