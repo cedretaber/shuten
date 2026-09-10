@@ -1,7 +1,9 @@
 /** アプリ内の画面パス。パス文字列はここ以外に書かない。 */
 export const ROUTES = {
   home: "/",
-  connectionSettings: "/settings/connection",
+  settings: "/settings",
+  // 旧パス。リダイレクトのためだけに残している。
+  legacyConnectionSettings: "/settings/connection",
   run: "/runs/:id",
 } as const;
 

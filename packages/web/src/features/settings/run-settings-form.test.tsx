@@ -1,6 +1,16 @@
 /**
  * 検査設定フォーム（決定 7・12。W7-1、W7-4、W7-7、W7-16、W7-17、W7-19）。
  *
+ * 詳細設定の 8 項目は設定画面（`/settings`）へ移った（PR11c 決定 1）。この画面には入力欄が
+ * 無いので、詳細の値を含む検証（W7-7・単位変換の配線）は `writeAdvancedRunSettings` で
+ * `localStorage` に値を仕込んでから描画する。詳細 8 項目の初期値と単位表示（W7-1 の残り）は
+ * `advanced-settings-section.test.tsx` へ移した。
+ *
+ * S7-2 は決定 7（開始要求は要約に出しているのと同じ `advanced` state から組む）を固定する。
+ * 描画したあとに保存値だけを書き換えて state と食い違わせ、送られた本文が「画面に出ているほう」に
+ * 一致することを見る。`localStorage.getItem` が呼ばれないことは見ない（実装ではなく、
+ * 観測できる不変条件＝画面に出ている値と送る値が一致すること、で縛る）。
+ *
  * W7-1・W7-16・W7-19 は fake の `StartRunApi`（`start`/`retry` を呼ばれたことだけ確認できればよい）
  * で足りるが、W7-7（`validateChunkSettings` の失敗がフォーム全体のエラーとして出て `startRun` が
  * 呼ばれないこと）は、実際に `use-start-run.ts` の検証ロジックを通す必要があるため、
@@ -20,6 +30,10 @@ import { ApiRequestError } from "../../api/errors.ts";
 import type { ConnectionApi } from "../../app/connection-context.tsx";
 import { STORAGE_KEYS } from "../../storage/keys.ts";
 import { writeStored } from "../../storage/local.ts";
+import {
+  ADVANCED_RUN_SETTINGS_DEFAULTS,
+  writeAdvancedRunSettings,
+} from "../../storage/run-settings.ts";
 import { RunSettingsForm } from "./run-settings-form.tsx";
 import type { StartRunApi } from "./use-start-run.ts";
 import { useStartRun } from "./use-start-run.ts";
@@ -47,16 +61,12 @@ function renderForm(props: {
   );
 }
 
-function openAdvanced() {
-  fireEvent.click(screen.getByText("詳細設定"));
-}
-
 beforeEach(() => {
   localStorage.clear();
 });
 
-describe("RunSettingsForm: 初期値と単位表示（W7-1）", () => {
-  it("初期値が RUN_SETTINGS_DEFAULTS と一致する（タイムアウトは秒、丸め許容はパーセントで表示）", () => {
+describe("RunSettingsForm: 基本 6 項目の初期値（W7-1）", () => {
+  it("初期値が RUN_SETTINGS_DEFAULTS と一致し、詳細 8 項目はこの画面に無い", () => {
     renderForm({
       manuscriptVersionId: null,
       modelId: null,
@@ -72,17 +82,9 @@ describe("RunSettingsForm: 初期値と単位表示（W7-1）", () => {
     expect(screen.getByLabelText("日本語の自然さ")).toBeChecked();
     expect(screen.getByLabelText("許容語（改行区切り）")).toHaveValue("");
 
-    openAdvanced();
-
-    expect(screen.getByLabelText("初回検査のタイムアウト（秒）")).toHaveValue(300); // 秒表示
-    expect(screen.getByLabelText("再確認のタイムアウト（秒）")).toHaveValue(300);
-    expect(screen.getByLabelText("段落境界への丸め許容（%）")).toHaveValue(20); // パーセント表示
-    expect(screen.getByLabelText("最大トークン数")).toHaveValue(16_000);
-    expect(screen.getByLabelText("温度")).toHaveValue(0);
-    expect(screen.getByLabelText("入力上限（字）")).toHaveValue(12_000);
-    // type="number" の空欄は jest-dom の toHaveValue では null になる。
-    expect(screen.getByLabelText("シード（空欄で省略）")).toHaveValue(null);
-    expect(screen.getByLabelText("思考の強さ")).toHaveValue("none");
+    // 詳細 8 項目はこの画面に無い（設定画面へ移した）。要約だけが出る。
+    expect(screen.queryByLabelText("最大トークン数")).toBeNull();
+    expect(screen.getByText("詳細設定：既定値")).toBeInTheDocument();
   });
 });
 
@@ -183,7 +185,7 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
     expect(screen.getByRole("button", { name: "検査を開始する" })).toBeDisabled();
   });
 
-  it("モデル未選択のとき disabled で、接続設定へのリンクが出る", () => {
+  it("モデル未選択のとき disabled で、設定へのリンクが出る", () => {
     renderForm({
       manuscriptVersionId: "mv-1",
       modelId: null,
@@ -192,7 +194,7 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
     });
 
     expect(screen.getByRole("button", { name: "検査を開始する" })).toBeDisabled();
-    expect(screen.getByRole("link", { name: "接続設定" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "設定" })).toBeInTheDocument();
   });
 
   it("原稿の復元中は disabled", () => {
@@ -226,6 +228,43 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
     });
 
     expect(screen.getByRole("button", { name: "検査を開始する" })).toBeDisabled();
+  });
+});
+
+describe("RunSettingsForm: 失敗時の設定画面へのリンク（決定 8。S6-3）", () => {
+  it("S6-3: hint が settings のときだけ、エラーの下に設定画面へのリンクが出る", () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId="model-a"
+          restoring={false}
+          startApi={makeStartApi({
+            outcome: { kind: "failed", message: "設定を見直してください", hint: "settings" },
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("設定を見直してください");
+    expect(screen.getByRole("link", { name: "設定" })).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId="model-a"
+          restoring={false}
+          startApi={makeStartApi({
+            outcome: { kind: "failed", message: "サーバーでエラーが起きました", hint: "none" },
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("サーバーでエラーが起きました");
+    expect(screen.queryByRole("link", { name: "設定" })).toBeNull();
   });
 });
 
@@ -337,32 +376,42 @@ function renderHarness(client: ApiClient, connection: ConnectionApi) {
   );
 }
 
-describe("RunSettingsForm × useStartRun: クライアント検証（W7-7）", () => {
-  it("validateChunkSettings に反する値ではフォーム全体のエラーを出し、startRun を呼ばない", async () => {
+describe("RunSettingsForm × useStartRun: クライアント検証（W7-7、S6-4）", () => {
+  it("validateChunkSettings に反する保存値ではフォーム全体のエラーを出し、startRun を呼ばない（設定画面へのリンクも出る）", async () => {
     const startRun = vi.fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto));
     const client = makeFakeClient(startRun);
     const connection = makeConnectionApi();
-    renderHarness(client, connection);
 
-    openAdvanced();
-    // 100% → roundingTolerance 1.0（1 未満でなければならない、という不変条件に反する）。
-    fireEvent.change(screen.getByLabelText("段落境界への丸め許容（%）"), {
-      target: { value: "100" },
-    });
+    // roundingTolerance 1.0（1 未満でなければならない、という不変条件に反する）。画面から
+    // 丸め許容を変えられなくなったので、設定画面が書いた保存値として仕込む。
+    writeAdvancedRunSettings({ ...ADVANCED_RUN_SETTINGS_DEFAULTS, roundingTolerance: 1.0 });
+
+    renderHarness(client, connection);
 
     fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
     expect(screen.getByRole("alert").textContent).toContain("roundingTolerance");
+    // クライアント側の検証で送信前に止まった失敗なので、設定画面へのリンクが出る（決定 8、S6-4）。
+    expect(screen.getByRole("link", { name: "設定" })).toBeInTheDocument();
     expect(startRun).not.toHaveBeenCalled();
   });
 });
 
 describe("RunSettingsForm × useStartRun: 単位変換の配線（決定 12）", () => {
-  it("既定値のまま開始すると、秒とパーセントが API の単位に変換されて送信される", async () => {
+  it("保存されている詳細設定が API の単位（ミリ秒・0〜1）のまま送信される", async () => {
     const startRun = vi.fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto));
     const client = makeFakeClient(startRun);
     const connection = makeConnectionApi();
+
+    // 既定値のままだと、`advanced` を無視して既定値を送る実装でも通ってしまう。
+    // 設定画面が書いた既定値と違う保存値を仕込み、それがそのまま届くことを見る。
+    writeAdvancedRunSettings({
+      ...ADVANCED_RUN_SETTINGS_DEFAULTS,
+      roundingTolerance: 0.3,
+      timeouts: { checkMs: 600_000, recheckMs: 600_000 },
+    });
+
     renderHarness(client, connection);
 
     await act(async () => {
@@ -374,9 +423,41 @@ describe("RunSettingsForm × useStartRun: 単位変換の配線（決定 12）",
     await waitFor(() => expect(startRun).toHaveBeenCalledTimes(1));
     const body = startRun.mock.calls[0]?.[0];
     expect(body).toMatchObject({
-      timeouts: { checkMs: 300_000, recheckMs: 300_000 },
-      chunkSettings: expect.objectContaining({ roundingTolerance: 0.2 }),
+      timeouts: { checkMs: 600_000, recheckMs: 600_000 },
+      chunkSettings: expect.objectContaining({ roundingTolerance: 0.3 }),
     });
+  });
+});
+
+describe("RunSettingsForm × useStartRun: 開始要求は要約と同じ値から組む（決定 7）", () => {
+  it("S7-2: 保存値だけが変わっても、送るのは画面に出ている値のまま（開始直前に localStorage を読み直さない）", async () => {
+    const startRun = vi.fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto));
+    const client = makeFakeClient(startRun);
+    const connection = makeConnectionApi();
+    renderHarness(client, connection);
+
+    // 画面をまたがずに保存値だけを書き換える（別タブでの変更に相当）。フォームの `advanced`
+    // state はマウント時に読んだ既定値のままなので、要約も「既定値」のまま動かない。
+    writeAdvancedRunSettings({
+      ...ADVANCED_RUN_SETTINGS_DEFAULTS,
+      generation: { ...ADVANCED_RUN_SETTINGS_DEFAULTS.generation, temperature: 1.5 },
+      timeouts: { checkMs: 600_000, recheckMs: 600_000 },
+    });
+    expect(screen.getByText("詳細設定：既定値")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(1));
+
+    // 画面に出ている要約（＝既定値）と、実際に送る値が一致すること。
+    // `handleStart` が開始直前に `readAdvancedRunSettings()` を読む実装なら、
+    // 要約が「既定値」のままなのに 1.5 と 600 秒が送られて落ちる。
+    const body = startRun.mock.calls[0]?.[0];
+    expect(body?.generation.temperature).toBe(0);
+    expect(body?.timeouts).toEqual({ checkMs: 300_000, recheckMs: 300_000 });
   });
 });
 

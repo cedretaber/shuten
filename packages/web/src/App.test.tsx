@@ -4,6 +4,7 @@ import { MemoryRouter, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.tsx";
 import type { ApiClient } from "./api/client.ts";
+import { ROUTES } from "./app/routes.ts";
 
 /**
  * テスト内で戻る・進むを操作するための最小コンポーネント。
@@ -25,7 +26,7 @@ function HistoryControls() {
 
 /**
  * `App` に注入する fake クライアント。`ConnectionProvider` はマウント時に必ず
- * `checkConnection` を呼び、`/settings/connection` は `getConnection` を、
+ * `checkConnection` を呼び、`/settings` は `getConnection` を、
  * `/runs/:id` は `getRun` を呼ぶ。このテストはいずれの応答内容も読まないので、
  * 解決しない Promise を返して実 `fetch` を呼ばせないことだけを担保する。
  */
@@ -71,14 +72,34 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "原稿と検査設定" })).toBeInTheDocument();
   });
 
-  it("W9-1: '/settings/connection' で接続設定画面が描画される", () => {
+  it("S1-1: '/settings' で設定画面が描画される", () => {
     render(
-      <MemoryRouter initialEntries={["/settings/connection"]}>
+      <MemoryRouter initialEntries={[ROUTES.settings]}>
         <App client={makeClient()} />
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("heading", { name: "接続設定" })).toBeInTheDocument();
+    // 見出しの文言には依存させない。安定した目印（接続先 URL のラベル）で、
+    // 設定画面が描かれたことだけを断言する。
+    expect(screen.getByLabelText("接続先 URL")).toBeInTheDocument();
+  });
+
+  it("S1-2: '/settings/connection' を開くと '/settings' へ置き換え遷移し、履歴に旧パスが残らない", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/", ROUTES.legacyConnectionSettings]} initialIndex={1}>
+        <HistoryControls />
+        <App client={makeClient()} />
+      </MemoryRouter>,
+    );
+
+    // 旧パスを開いた直後に設定画面へ置き換え遷移している
+    expect(screen.getByLabelText("接続先 URL")).toBeInTheDocument();
+
+    // replace により履歴に旧パスは積まれていないため、「戻る」は 1 回で "/" に着く
+    // （旧パスへ戻らない）。`replace` を外すとここが「接続先 URL」のまま変わらず落ちる。
+    await user.click(screen.getByRole("button", { name: "戻る" }));
+    expect(screen.getByRole("heading", { name: "原稿と検査設定" })).toBeInTheDocument();
   });
 
   it("W9-1: '/runs/:id' で受付表示画面が描画される", () => {

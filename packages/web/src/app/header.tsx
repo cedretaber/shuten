@@ -1,5 +1,5 @@
 /**
- * 全画面共通のヘッダー。接続状態・選択モデル・最終確認時刻・「再確認」・接続設定へのリンクを出す。
+ * 全画面共通のヘッダー。接続状態・選択モデル・最終確認時刻・「再確認」・設定画面へのリンクを出す。
  * 接続先 URL はここには出さない（接続設定画面だけが持つ、決定 18）。
  *
  * 表示は「最後に確認した時点の状態」であり、ポーリングはしない（決定 8）。
@@ -37,7 +37,9 @@ export function Header() {
 
   return (
     <header className={styles.header}>
-      <p className={styles.title}>朱点</p>
+      <Link to={ROUTES.home} className={styles.title}>
+        朱点
+      </Link>
       <div className={styles.status}>
         <span>{connectionStatusLabel(connection)}</span>
         <span>選択モデル：{connection.selectedModelId ?? "未選択"}</span>
@@ -51,8 +53,8 @@ export function Header() {
         >
           再確認
         </button>
-        <Link to={ROUTES.connectionSettings} className={styles.settingsLink}>
-          接続設定
+        <Link to={ROUTES.settings} className={styles.settingsLink}>
+          設定
         </Link>
       </div>
     </header>

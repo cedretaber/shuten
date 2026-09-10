@@ -71,7 +71,7 @@ describe("Header", () => {
   // （このブランチで見つかった「実装を誤っても落ちない」パターンの一種）。
   // 接続先 URL が接続設定画面以外に出ないことのクロスページ検証は W9-7（`leak.test.tsx`、後続タスク）が担う。
 
-  it("接続設定へのリンクがある", () => {
+  it("S2-1: 「朱点」がホームへのリンクである", () => {
     const checkConnection = vi.fn(() => new Promise<ConnectionCheckDto>(() => {}));
     const client = makeFakeClient(checkConnection as ApiClient["checkConnection"]);
 
@@ -83,10 +83,22 @@ describe("Header", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("link", { name: "接続設定" })).toHaveAttribute(
-      "href",
-      "/settings/connection",
+    expect(screen.getByRole("link", { name: "朱点" })).toHaveAttribute("href", "/");
+  });
+
+  it("S2-2: 「設定」リンクがある", () => {
+    const checkConnection = vi.fn(() => new Promise<ConnectionCheckDto>(() => {}));
+    const client = makeFakeClient(checkConnection as ApiClient["checkConnection"]);
+
+    render(
+      <MemoryRouter>
+        <ConnectionProvider client={client}>
+          <Header />
+        </ConnectionProvider>
+      </MemoryRouter>,
     );
+
+    expect(screen.getByRole("link", { name: "設定" })).toHaveAttribute("href", "/settings");
   });
 
   it("「再確認」ボタンがある", () => {

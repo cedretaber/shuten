@@ -1,8 +1,8 @@
 /**
- * `/settings/connection` — 接続設定の画面（決定 9・18）。
+ * 設定画面（`/settings`）の「LM Studio への接続」節（決定 9・18）。
  *
- * LM Studio の接続先 URL・API キーの設定と、生成に使うモデルの選択を扱う。
- * 接続先 URL を画面へ出してよいのはここだけ（決定 18）。他の画面（ヘッダーなど）には出さない。
+ * LM Studio の接続先 URL・API キーの設定を扱う。接続先 URL を画面へ出してよいのはここだけ
+ * （決定 18）。他の画面（ヘッダーなど）には出さない。
  *
  * API キーは `input[type="password"]` の書き込み専用欄で受け取り、以下を守る（決定 18）。
  * - 入力値以外のテキストとして描画しない（エラー表示・接続済み表示に含めない）。
@@ -18,31 +18,17 @@
  * サーバーからのメッセージだけを出す（打ち直しを強いない）。
  */
 
-import { isGenerationCapable, type ModelInfoDto } from "@shuten/shared";
 import { type SubmitEvent, useEffect, useRef, useState } from "react";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { useConnection } from "../../app/connection-context.tsx";
-import styles from "./connection-settings-page.module.css";
-
-/** モデル一覧の選択肢に出すのは `llm` / `vlm` だけ（決定 9）。`embeddings` と `null` は出さない。 */
-function isSelectableModelType(model: ModelInfoDto): boolean {
-  return model.type === "llm" || model.type === "vlm";
-}
+import styles from "./connection.module.css";
 
 function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "接続設定の取得に失敗しました";
 }
 
-/**
- * モデル状態の画面向け文言。LM Studio の内部の生文字列（`"not-loaded"` など）を
- * そのまま日本語の画面へ出さない（画面の文言は日本語、という規約に合わせる）。
- */
-function modelStateLabel(state: string | null): string {
-  return state === "not-loaded" ? "未ロード" : "不明";
-}
-
-export function ConnectionSettingsPage() {
+export function ConnectionSection() {
   const apiClient = useApiClient();
   const connection = useConnection();
 
@@ -131,99 +117,65 @@ export function ConnectionSettingsPage() {
       });
   };
 
-  const models = (connection.check?.models ?? []).filter(isSelectableModelType);
-
   return (
-    <div className={styles.page}>
-      <h1>接続設定</h1>
+    <section className={styles.section}>
+      <h2>LM Studio への接続</h2>
+      <p className={styles.description}>
+        「保存」を押した時点でサーバーへ反映します。検査の実行中は変更できません。
+      </p>
 
       {loadError !== null && <p className={styles.error}>{loadError}</p>}
 
       <form onSubmit={handleSubmit}>
-        <fieldset className={styles.section}>
-          <legend className={styles.legend}>LM Studio への接続</legend>
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="connection-url">
+            接続先 URL
+          </label>
+          <input
+            id="connection-url"
+            className={styles.input}
+            type="text"
+            value={endpointUrl}
+            onChange={(event) => {
+              settingsDirtyRef.current = true;
+              setEndpointUrl(event.target.value);
+            }}
+            required
+          />
+        </div>
 
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="connection-url">
-              接続先 URL
-            </label>
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="connection-api-key">
+            API キー
+          </label>
+          <input
+            id="connection-api-key"
+            className={styles.input}
+            type="password"
+            value={apiKeyInput}
+            disabled={clearApiKey}
+            onChange={(event) => setApiKeyInput(event.target.value)}
+            placeholder="変更しない場合は空のまま"
+            autoComplete="off"
+          />
+          <p className={styles.apiKeyStatus}>API キー：{hasApiKey ? "設定済み" : "未設定"}</p>
+          <label className={styles.checkboxField}>
             <input
-              id="connection-url"
-              className={styles.input}
-              type="text"
-              value={endpointUrl}
-              onChange={(event) => {
-                settingsDirtyRef.current = true;
-                setEndpointUrl(event.target.value);
-              }}
-              required
+              type="checkbox"
+              checked={clearApiKey}
+              onChange={(event) => handleClearApiKeyChange(event.target.checked)}
             />
-          </div>
+            API キーを消去
+          </label>
+        </div>
 
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="connection-api-key">
-              API キー
-            </label>
-            <input
-              id="connection-api-key"
-              className={styles.input}
-              type="password"
-              value={apiKeyInput}
-              disabled={clearApiKey}
-              onChange={(event) => setApiKeyInput(event.target.value)}
-              placeholder="変更しない場合は空のまま"
-              autoComplete="off"
-            />
-            <p className={styles.apiKeyStatus}>API キー：{hasApiKey ? "設定済み" : "未設定"}</p>
-            <label className={styles.checkboxField}>
-              <input
-                type="checkbox"
-                checked={clearApiKey}
-                onChange={(event) => handleClearApiKeyChange(event.target.checked)}
-              />
-              API キーを消去
-            </label>
-          </div>
+        <button type="submit" className={styles.saveButton} disabled={saving}>
+          保存
+        </button>
 
-          <button type="submit" className={styles.saveButton} disabled={saving}>
-            保存
-          </button>
-
-          {saveError !== null && <p className={styles.error}>{saveError}</p>}
-          {saved && <p className={styles.success}>保存しました</p>}
-        </fieldset>
-
-        <fieldset className={styles.section}>
-          <legend className={styles.legend}>生成に使うモデル</legend>
-
-          {models.length === 0 ? (
-            <p className={styles.empty}>選べるモデルがありません。接続を確認してください。</p>
-          ) : (
-            <ul className={styles.modelList}>
-              {models.map((model) => (
-                <li key={model.id} className={styles.modelItem}>
-                  <label className={styles.modelLabel}>
-                    <input
-                      type="radio"
-                      name="selected-model"
-                      value={model.id}
-                      checked={connection.selectedModelId === model.id}
-                      onChange={() => connection.selectModel(model.id)}
-                    />
-                    {model.id}
-                  </label>
-                  {!isGenerationCapable(model) && (
-                    <p className={styles.modelNote}>
-                      LM Studio でロードしてください（現在の状態：
-                      {modelStateLabel(model.state)}）。ロードするまで検査を開始できません。
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </fieldset>
+        {saveError !== null && <p className={styles.error}>{saveError}</p>}
+        {saved && <p className={styles.success}>保存しました</p>}
       </form>
-    </div>
+    </section>
   );
 }

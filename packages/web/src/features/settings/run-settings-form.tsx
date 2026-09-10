@@ -1,32 +1,33 @@
 /**
  * 検査設定フォームと開始ボタン（決定 7・12・13・15）。
  *
- * 既定表示は仕様 5.2 の 6 項目（検査観点、分割長、初回の参考文脈、再確認の有無、
- * 再確認の参考文脈、許容語）。残り（`maxTokens` / `temperature` / `seed` / `reasoningEffort` /
- * `roundingTolerance` / `maxInputGraphemes` / `checkMs` / `recheckMs`）は折りたたみの
- * 「詳細設定」に入れる（決定 12）。タイムアウトは秒、丸め許容はパーセントで入力させ、
- * 送信時に `units.ts` で API の単位へ変換する。
+ * ここに出すのは仕様 5.2 の 6 項目（検査観点、分割長、初回の参考文脈、再確認の有無、
+ * 再確認の参考文脈、許容語）だけ。残りの 8 項目（`maxTokens` / `temperature` / `seed` /
+ * `reasoningEffort` / `roundingTolerance` / `maxInputGraphemes` / `checkMs` / `recheckMs`）は
+ * 設定画面（`/settings`）の「詳細な検査設定」へ移した（PR11c 決定 1）。この画面には
+ * `AdvancedSettingsSummary` で**要約と入口だけ**を残す。要約を残すのは、詳細を別画面へ移した
+ * だけだと「自分が変えた覚えの無い設定で検査が走る」状態を作れてしまうため。
+ *
+ * 詳細設定は `advanced` という 1 つの state に**保存形式のまま**（丸め許容は 0〜1、
+ * タイムアウトはミリ秒）持ち、マウント時に一度だけ読む（決定 7）。要約に出す値と開始要求に
+ * 載せる値はどちらもこの `advanced` から作る。開始の直前に `localStorage` を読み直すと、
+ * 画面に出ている要約と実際に送る値が食い違いうる。単位の変換（秒・パーセント）は
+ * 設定画面の入力欄側が担い、ここでは行わない。
  *
  * 許容語は原稿版と組で保存し、同じ原稿版のときだけ復元する（決定 7）。復元は
  * `manuscriptVersionId` が変わるたびに効かせる `useEffect` で行い、書き込みは入力の
  * `onChange` で直接行う（restore 用の effect と write 用の effect を両方持つと、マウント時に
  * どちらが先に走るかで復元前の値を上書きしてしまう競合が起きるため、書き込み側は effect にしない）。
  *
- * 検査設定（`runSettings`）は原稿版に依存しないので、初期値は `useState` の遅延初期化子で
- * 一度だけ `localStorage` から読み、変更のたびに `useEffect` で書き戻す。
+ * 基本の検査設定（`runSettings` の自分の持ち分）は原稿版に依存しないので、初期値は `useState` の
+ * 遅延初期化子で一度だけ `localStorage` から読み、変更のたびに `useEffect` で書き戻す。
  *
  * `startOperationId` の生成・接続確認・クライアント検証・スナップショットの固定・再送は
  * すべて `useStartRun`（`use-start-run.ts`）に任せる。ここでは画面の入力を集め、
  * `StartRunRequest`（`startOperationId` を除く）を組み立てて渡すだけ。
  */
 
-import {
-  type ChunkSettingsRequest,
-  type GenerationSettingsRequest,
-  type Perspective,
-  type ReasoningEffort,
-  RUN_SETTINGS_DEFAULTS,
-} from "@shuten/shared";
+import type { ChunkSettingsRequest, GenerationSettingsRequest, Perspective } from "@shuten/shared";
 import { type ChangeEvent, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { ROUTES } from "../../app/routes.ts";
@@ -34,19 +35,17 @@ import { STORAGE_KEYS } from "../../storage/keys.ts";
 import {
   readStored,
   type StoredAllowedWords,
-  type StoredRunSettings,
   storedAllowedWordsSchema,
-  storedRunSettingsSchema,
   writeStored,
 } from "../../storage/local.ts";
-import styles from "./settings.module.css";
 import {
-  MAX_TIMEOUT_SECONDS,
-  msToSeconds,
-  percentToTolerance,
-  secondsToMs,
-  toleranceToPercent,
-} from "./units.ts";
+  readAdvancedRunSettings,
+  readBasicRunSettings,
+  resetAdvancedRunSettings,
+  writeBasicRunSettings,
+} from "../../storage/run-settings.ts";
+import { AdvancedSettingsSummary } from "./advanced-settings-summary.tsx";
+import styles from "./settings.module.css";
 import type { StartRunApi } from "./use-start-run.ts";
 
 const EMPTY_ALLOWED_WORDS: StoredAllowedWords = { manuscriptVersionId: "", allowedWordsRaw: "" };
@@ -62,23 +61,10 @@ function restoreAllowedWords(manuscriptVersionId: string | null): string {
   return stored.manuscriptVersionId === manuscriptVersionId ? stored.allowedWordsRaw : "";
 }
 
-function readStoredRunSettings(): StoredRunSettings {
-  return readStored(STORAGE_KEYS.runSettings, storedRunSettingsSchema, RUN_SETTINGS_DEFAULTS);
-}
-
 const PERSPECTIVE_LABELS: Record<Perspective, string> = {
   typo: "誤字・脱字",
   naturalness: "日本語の自然さ",
 };
-
-const REASONING_EFFORT_LABELS: Record<ReasoningEffort, string> = {
-  none: "なし",
-  low: "弱い",
-  medium: "普通",
-  high: "強い",
-};
-
-const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", "high"];
 
 export interface RunSettingsFormProps {
   /** 確定済みの原稿版 ID。未確定なら null（このとき開始ボタンは disabled）。 */
@@ -94,46 +80,22 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
   const { manuscriptVersionId, modelId, restoring, startApi } = props;
 
   // 遅延初期化子でマウント時に一度だけ読む（毎レンダーで localStorage を読み直さない）。
-  const [initialRunSettings] = useState(readStoredRunSettings);
+  const [initialBasic] = useState(readBasicRunSettings);
 
   const [perspectives, setPerspectives] = useState<readonly Perspective[]>(
-    initialRunSettings.perspectives,
+    initialBasic.perspectives,
   );
-  const [targetGraphemes, setTargetGraphemes] = useState(
-    initialRunSettings.chunkSettings.targetGraphemes,
-  );
-  const [contextGraphemes, setContextGraphemes] = useState(
-    initialRunSettings.chunkSettings.contextGraphemes,
-  );
-  const [recheckEnabled, setRecheckEnabled] = useState(initialRunSettings.recheckEnabled);
+  const [targetGraphemes, setTargetGraphemes] = useState(initialBasic.targetGraphemes);
+  const [contextGraphemes, setContextGraphemes] = useState(initialBasic.contextGraphemes);
+  const [recheckEnabled, setRecheckEnabled] = useState(initialBasic.recheckEnabled);
   const [recheckContextGraphemes, setRecheckContextGraphemes] = useState(
-    initialRunSettings.chunkSettings.recheckContextGraphemes,
+    initialBasic.recheckContextGraphemes,
   );
 
-  // 詳細設定（決定 12）。
-  const [maxTokens, setMaxTokens] = useState(initialRunSettings.generation.maxTokens);
-  const [temperature, setTemperature] = useState(initialRunSettings.generation.temperature);
-  const [seedInput, setSeedInput] = useState(
-    initialRunSettings.generation.seed === undefined
-      ? ""
-      : String(initialRunSettings.generation.seed),
-  );
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
-    initialRunSettings.generation.reasoningEffort,
-  );
-  const [roundingTolerancePercent, setRoundingTolerancePercent] = useState(
-    toleranceToPercent(initialRunSettings.chunkSettings.roundingTolerance),
-  );
-  const [maxInputGraphemes, setMaxInputGraphemes] = useState(
-    initialRunSettings.chunkSettings.maxInputGraphemes,
-  );
-  const [checkSeconds, setCheckSeconds] = useState(
-    msToSeconds(initialRunSettings.timeouts.checkMs),
-  );
-  const [recheckSeconds, setRecheckSeconds] = useState(
-    msToSeconds(initialRunSettings.timeouts.recheckMs),
-  );
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // 詳細設定は設定画面が編集する。ここは要約の表示と開始要求の組み立てのために、
+  // 保存形式のまま 1 つの state として持つだけ（決定 7）。入力欄はこの画面には無いので、
+  // 保存の書き戻し（`useEffect`）も持たない。書くのは「既定値に戻す」のときだけ。
+  const [advanced, setAdvanced] = useState(readAdvancedRunSettings);
 
   // 許容語は原稿版と組で保存する（決定 7）。遅延初期化子で最初の一度だけ読み、
   // `manuscriptVersionId` が変わるたびに復元し直す。書き込みは textarea の onChange で行う
@@ -145,43 +107,27 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
     setAllowedWordsRaw(restoreAllowedWords(manuscriptVersionId));
   }, [manuscriptVersionId]);
 
-  // 検査設定は変更のたびに保存する（W7-19）。原稿版に依存しないため、復元用の effect は無い
-  // （初期値は上の useState の遅延初期化子で読み込み済み）。
+  // 基本の検査設定は変更のたびに保存する（W7-19）。原稿版に依存しないため、復元用の effect は無い
+  // （初期値は上の useState の遅延初期化子で読み込み済み）。詳細の持ち分には触らない
+  // （`writeBasicRunSettings` が保存値の自分の持ち分だけを差し替える）。
   useEffect(() => {
-    const settings: StoredRunSettings = {
-      generation: {
-        maxTokens,
-        temperature,
-        reasoningEffort,
-        ...(seedInput.trim() === "" ? {} : { seed: Number(seedInput) }),
-      },
-      chunkSettings: {
-        targetGraphemes,
-        contextGraphemes,
-        recheckContextGraphemes,
-        roundingTolerance: percentToTolerance(roundingTolerancePercent),
-        maxInputGraphemes,
-      },
-      timeouts: { checkMs: secondsToMs(checkSeconds), recheckMs: secondsToMs(recheckSeconds) },
+    writeBasicRunSettings({
       perspectives,
       recheckEnabled,
-    };
-    writeStored(STORAGE_KEYS.runSettings, settings);
-  }, [
-    maxTokens,
-    temperature,
-    seedInput,
-    reasoningEffort,
-    targetGraphemes,
-    contextGraphemes,
-    recheckContextGraphemes,
-    roundingTolerancePercent,
-    maxInputGraphemes,
-    checkSeconds,
-    recheckSeconds,
-    perspectives,
-    recheckEnabled,
-  ]);
+      targetGraphemes,
+      contextGraphemes,
+      recheckContextGraphemes,
+    });
+  }, [perspectives, recheckEnabled, targetGraphemes, contextGraphemes, recheckContextGraphemes]);
+
+  /**
+   * 詳細設定を既定値に戻す（決定 5）。`localStorage` を書くだけにすると、この画面が持っている
+   * `advanced` が古いまま残り、要約と次の開始要求だけが「戻す前」に取り残される。
+   * `resetAdvancedRunSettings()` の**戻り値**で state も同時に更新する。
+   */
+  const handleResetAdvanced = () => {
+    setAdvanced(resetAdvancedRunSettings());
+  };
 
   const handleAllowedWordsChange = (value: string) => {
     setAllowedWordsRaw(value);
@@ -205,17 +151,6 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
       setter(Number(event.target.value));
     };
 
-  const advancedChanged =
-    maxTokens !== RUN_SETTINGS_DEFAULTS.generation.maxTokens ||
-    temperature !== RUN_SETTINGS_DEFAULTS.generation.temperature ||
-    seedInput.trim() !== "" ||
-    reasoningEffort !== RUN_SETTINGS_DEFAULTS.generation.reasoningEffort ||
-    roundingTolerancePercent !==
-      toleranceToPercent(RUN_SETTINGS_DEFAULTS.chunkSettings.roundingTolerance) ||
-    maxInputGraphemes !== RUN_SETTINGS_DEFAULTS.chunkSettings.maxInputGraphemes ||
-    checkSeconds !== msToSeconds(RUN_SETTINGS_DEFAULTS.timeouts.checkMs) ||
-    recheckSeconds !== msToSeconds(RUN_SETTINGS_DEFAULTS.timeouts.recheckMs);
-
   const startDisabled =
     restoring ||
     manuscriptVersionId === null ||
@@ -225,18 +160,15 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
   const handleStart = () => {
     if (manuscriptVersionId === null || modelId === null) return;
 
-    const generation: GenerationSettingsRequest = {
-      maxTokens,
-      temperature,
-      reasoningEffort,
-      ...(seedInput.trim() === "" ? {} : { seed: Number(seedInput) }),
-    };
+    // 詳細の持ち分は、要約に出しているのと同じ `advanced` から取る（決定 7）。
+    // ここで `localStorage` を読み直すと、画面に出ている要約と送る値が食い違いうる。
+    const generation: GenerationSettingsRequest = { ...advanced.generation };
     const chunkSettings: ChunkSettingsRequest = {
       targetGraphemes,
       contextGraphemes,
       recheckContextGraphemes,
-      roundingTolerance: percentToTolerance(roundingTolerancePercent),
-      maxInputGraphemes,
+      roundingTolerance: advanced.roundingTolerance,
+      maxInputGraphemes: advanced.maxInputGraphemes,
     };
 
     void startApi.start({
@@ -244,7 +176,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
       modelId,
       generation,
       chunkSettings,
-      timeouts: { checkMs: secondsToMs(checkSeconds), recheckMs: secondsToMs(recheckSeconds) },
+      timeouts: { checkMs: advanced.timeouts.checkMs, recheckMs: advanced.timeouts.recheckMs },
       perspectives: [...perspectives],
       recheckEnabled,
       allowedWordsRaw,
@@ -341,141 +273,11 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
         )}
       </div>
 
-      <details
-        className={styles.advanced}
-        open={advancedOpen}
-        onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
-      >
-        <summary className={styles.advancedSummary}>
-          詳細設定
-          {advancedChanged && <span className={styles.advancedBadge}>（既定値から変更あり）</span>}
-        </summary>
-
-        <div className={styles.advancedFields}>
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-max-tokens">
-              最大トークン数
-            </label>
-            <input
-              id="settings-max-tokens"
-              className={styles.input}
-              type="number"
-              min={1}
-              value={maxTokens}
-              onChange={numberField(setMaxTokens)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-temperature">
-              温度
-            </label>
-            <input
-              id="settings-temperature"
-              className={styles.input}
-              type="number"
-              step="any"
-              value={temperature}
-              onChange={numberField(setTemperature)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-seed">
-              シード（空欄で省略）
-            </label>
-            <input
-              id="settings-seed"
-              className={styles.input}
-              type="number"
-              min={0}
-              value={seedInput}
-              onChange={(event) => setSeedInput(event.target.value)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-reasoning-effort">
-              思考の強さ
-            </label>
-            <select
-              id="settings-reasoning-effort"
-              className={styles.select}
-              value={reasoningEffort}
-              onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
-            >
-              {REASONING_EFFORTS.map((effort) => (
-                <option key={effort} value={effort}>
-                  {REASONING_EFFORT_LABELS[effort]}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-rounding-tolerance">
-              段落境界への丸め許容（%）
-            </label>
-            <input
-              id="settings-rounding-tolerance"
-              className={styles.input}
-              type="number"
-              min={0}
-              max={99}
-              value={roundingTolerancePercent}
-              onChange={numberField(setRoundingTolerancePercent)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-max-input-graphemes">
-              入力上限（字）
-            </label>
-            <input
-              id="settings-max-input-graphemes"
-              className={styles.input}
-              type="number"
-              min={1}
-              value={maxInputGraphemes}
-              onChange={numberField(setMaxInputGraphemes)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-check-seconds">
-              初回検査のタイムアウト（秒）
-            </label>
-            <input
-              id="settings-check-seconds"
-              className={styles.input}
-              type="number"
-              min={1}
-              max={MAX_TIMEOUT_SECONDS}
-              value={checkSeconds}
-              onChange={numberField(setCheckSeconds)}
-            />
-          </div>
-
-          <div className={styles.field}>
-            <label className={styles.label} htmlFor="settings-recheck-seconds">
-              再確認のタイムアウト（秒）
-            </label>
-            <input
-              id="settings-recheck-seconds"
-              className={styles.input}
-              type="number"
-              min={1}
-              max={MAX_TIMEOUT_SECONDS}
-              value={recheckSeconds}
-              onChange={numberField(setRecheckSeconds)}
-            />
-          </div>
-        </div>
-      </details>
+      <AdvancedSettingsSummary settings={advanced} onReset={handleResetAdvanced} />
 
       {modelId === null && (
         <p className={styles.modelNote}>
-          モデルが未選択です。<Link to={ROUTES.connectionSettings}>接続設定</Link>
+          モデルが未選択です。<Link to={ROUTES.settings}>設定</Link>
           で検査に使うモデルを選んでください。
         </p>
       )}
@@ -492,6 +294,11 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
       {startApi.outcome.kind === "failed" && (
         <div role="alert" className={styles.error}>
           <p>{startApi.outcome.message}</p>
+          {startApi.outcome.hint === "settings" && (
+            <p>
+              値を見直すには<Link to={ROUTES.settings}>設定</Link>を開いてください。
+            </p>
+          )}
         </div>
       )}
 
