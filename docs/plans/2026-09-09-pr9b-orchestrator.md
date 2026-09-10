@@ -350,6 +350,13 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 `treatUnconfirmedAsPending`（呼び出し元が渡すフラグ。既定 `false`、オーケストレーターは常に `true`）
 に置き換えている。読むときは上の 2 箇所を `treatUnconfirmedAsPending` と読み替えること。
 
+**改訂（2026-09-10、PR11b。`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）**：3 本目の文言を足す。
+
+- `treatUnconfirmedAsPending` かつ `failure.origin === "chat"` かつ `failure.reason === "connection"`
+  かつ `halt?.generationUnconfirmed === true` → 「応答を受け取らずに接続が切れた。生成終了は未確認」
+- HTTP 応答を受け取った `connection`（`halt?.generationUnconfirmed === false`）はこの分岐に当たらず、
+  従来どおり `failure.message` のまま。
+
 ### 決定 33：想定外の例外の扱い（決定 14 の具体化）
 
 ループの最上位で `LmStudioError` でも `InputTooLongError` でもない例外を捕まえ、次を行う。
@@ -754,6 +761,19 @@ executor はこの決着を、既存の「送信しなかった」経路（`bloc
 「上限まで待つ時間」の意味だけに戻す（`recoveryConfirmMs <= 0` で遅延通知のタイマーを作らない
 早期 return はそのまま残す。待機時間の話であって `pending` 化とは別のため）。CLI は
 どちらも渡さないので従来どおり（E1）。
+
+**改訂（2026-09-10、PR11b。`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）**：`isPendingFailure`
+はこのフラグだけでなく、`halt?.generationUnconfirmed === true` も見るようになった（`pendingNote` の
+接続断の枝も同様）。あわせて、`chat` 由来の失敗のうち `pending` にする最後の分岐が使っていた個別の
+理由名判定 `failure.reason === "timeout"` を外し、`halt?.generationUnconfirmed === true` に一本化した
+（同じ判定で接続断も `pending` になる）。
+
+**この判定が前提にする不変条件**：`origin === "chat"` の失敗と一緒に返る `halt` は、その失敗自身から
+導いたものである。根拠は「`halt` を**書く**のは `executor.ts` の `runOne` の中だけで、`runOne` は
+直列化される」（保持済みの `halt` があるときは `runOne` の冒頭で生成要求を送らずに返り、その失敗は
+`origin: "local"` になる）。これを固定しているテストは `executor.test.ts` の E20・E21・E28。
+
+待機時間 `recoveryConfirmMs` を経路の判別子に使わないという 45-3 の本来の主張は変わらない。
 
 #### 45-4：抑制が外れた再確認単位を `pending` に戻す（決定 3・34 の改訂）
 

@@ -437,14 +437,27 @@ LLM 応答から得た候補が永久に失われる。逆順（候補を先に�
 
 ### 決定 20：`recovery-waiting` に入るときの単位は `pending` にする
 
-停止からの打ち切り（決定 6 の 4）と、タイムアウトからの打ち切り（決定 7）は、どちらも「生成終了を確認できない」
-という同じ理由で `recovery-waiting` に入る。ところが素の挙動では前者は `aborted` → `pending`、後者は
-`timeout` → `failed` になり、再開の対象が変わってしまう（`failed` は通常の再開では拾われず、
-失敗単位の個別再試行が必要になる）。
+停止からの打ち切り（決定 6 の 4）、タイムアウトからの打ち切り（決定 7）、接続断による打ち切り
+（応答を受け取れないまま接続が切れた場合）は、いずれも「生成終了を確認できない」という同じ理由で
+`recovery-waiting` に入る。ところが素の挙動では停止は `aborted` → `pending`、タイムアウトと接続断は
+`failed` になり、再開の対象が変わってしまう（`failed` は通常の再開では拾われず、失敗単位の個別
+再試行が必要になる）。
 
-**打ち切られた実行中の単位は、どちらの経路でも `pending`** とし、`pending_note` に理由を書く
-（「停止操作により打ち切った。生成終了は未確認」「応答が上限内に届かなかった。生成終了は未確認」）。
+規則は「**生成終了が未確認なら `pending`**」の 1 本であり、`timeout` のような個別の理由名では
+判定しない。判別子は **`RunStop.generationUnconfirmed`**（決定 23）で、単位側の判定
+（`run/units.ts` の `isPendingFailure` / `pendingNote`）は `outcome.halt` 経由で、実行の終端状態を
+決めるのと同じ値を見る。
+
+**打ち切られた実行中の単位は、どの経路でも `pending`** とし、`pending_note` に理由を書く
+（「停止操作により打ち切った。生成終了は未確認」「応答が上限内に届かなかった。生成終了は未確認」
+「応答を受け取らずに接続が切れた。生成終了は未確認」）。
 仕様 8.2 が言う手動「再開」は、この単位から続けられることを意味する。
+
+**改訂（2026-09-10、PR11b。`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）**：当初の本決定は
+停止操作とタイムアウトの 2 経路しか「生成終了が未確認」として扱っておらず、接続断（応答を受け取れない
+まま切れた場合）が漏れていた。判別子を `treatUnconfirmedAsPending && failure.reason === "timeout"` から
+`treatUnconfirmedAsPending && halt?.generationUnconfirmed === true` に改め、接続断も `pending` にして
+1 段の復旧（再開のみ）で再実行できるようにした。
 
 処理状態を `pending` にしても、**失敗の事実は捨てない**。`failure_reason`（`timeout` / `aborted`）・
 `failure_message`・`failure_origin`・`attempts`・`elapsed_ms` を同じ更新で保存する。

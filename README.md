@@ -27,6 +27,8 @@ scaffold と CI（Ubuntu / Windows）が完了。LM Studio との接続検証は
 `settings` 表に保存して API（`PUT /api/settings/connection`）から上書きでき、API キーは
 プロセスのメモリにだけ置く（応答・ログ・SSE・エラーには接続先 URL も API キーも出さない。
 `packages/server/src/api/leak.test.ts` が全エンドポイントで検査している）。
+2026-09-10 には PR11b（接続断で失敗した単位の復旧を 1 段にする）が完了し、接続断で失敗した検査単位も
+再開だけで再実行できるようになった（それ以前は再開と失敗単位の個別再試行の 2 段が要った）。
 受け入れ条件のうち 11 節 3・4・5・11・14・15・16・18 項をサーバー側で満たした。**PR11（接続・入力・設定画面）と
 PR11c（設定画面の統合とナビゲーション）まで完了**し、ブラウザの画面から設定（`/settings`。「LM Studio への接続」
 「生成に使うモデル」「詳細な検査設定」の 3 節）、原稿の確定（貼り付け／ファイル読み込み）、検査設定の入力と検査の
@@ -37,11 +39,12 @@ API キー・接続先 URL が画面の描画やブラウザの保存領域・�
 `packages/web/src/leak.test.tsx` が検査している。詳細計画は `docs/plans/2026-09-09-pr9-orchestration.md`
 （決定 1〜23）、`docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）、
 `docs/plans/2026-09-09-pr10-http-api.md`（HTTP API と SSE）、`docs/plans/2026-09-10-pr11-web-shell.md`
-（画面とクライアント）、`docs/plans/2026-09-10-pr11c-settings-consolidation.md`（設定画面の統合とナビゲーション）。
+（画面とクライアント）、`docs/plans/2026-09-10-pr11c-settings-consolidation.md`（設定画面の統合とナビゲーション）、
+`docs/plans/2026-09-10-pr11b-one-step-recovery.md`（接続断で失敗した単位の 1 段復旧）。
 Windows でのローカル確認は PR11 分の 9 項目（`docs/decisions/0002-scaffold-conventions.md`）で完了しており、
 PR11c は実機確認を行っていない。SPA フォールバックがパス非依存（`app.get("*")`）で、旧パスの
 リダイレクトはブラウザ内で完結するため、PR11 の実機確認と Windows CI で担保できると判断した
-（PR11c 計画書の「Windows での再確認」節）。次は PR11b（接続断で失敗した単位の復旧）、
+（PR11c 計画書の「Windows での再確認」節）。次は強調表示のスパイク（PR12a の設計前のチェックポイント）と
 PR12a・PR12b（結果閲覧・実行制御）。2026-09-09 に残りの工程を見直し、
 PR11b・PR12a/12b・PR13a/13b に分け直した（ロードマップの「2026-09-09 の見直し」節）。評価原稿と
 正解データの準備は並行して進める。
