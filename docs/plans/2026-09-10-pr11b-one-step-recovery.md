@@ -186,7 +186,7 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
 
 | 文書 | いまの記述 | 改める内容 |
 | --- | --- | --- |
-| `2026-09-09-pr9-orchestration.md` の決定 20 | 「停止からの打ち切り…と、タイムアウトからの打ち切り…はどちらも」と 2 経路で書いている | 3 経路（停止・タイムアウト・接続断）に改め、**規則は「生成終了が未確認なら `pending`」の 1 本**で、判別子は `UnitFailure.generationUnconfirmed` であると書く。2026-09-10 に PR11b で改訂した旨と経緯を残す |
+| `2026-09-09-pr9-orchestration.md` の決定 20 | 「停止からの打ち切り…と、タイムアウトからの打ち切り…はどちらも」と 2 経路で書いている | 3 経路（停止・タイムアウト・接続断）に改め、**規則は「生成終了が未確認なら `pending`」の 1 本**で、判別子は `RunStop.generationUnconfirmed`（`outcome.halt` 経由で単位の判定にも使う）であると書く。2026-09-10 に PR11b で改訂した旨と経緯を残す |
 | `2026-09-09-pr9b-orchestrator.md` の決定 32 | `pending_note` をタイムアウトと停止操作の 2 経路として説明している | 接続断の 3 本目を足す。判別を `recoveryConfirmMs > 0` ではなく `treatUnconfirmedAsPending` と `halt.generationUnconfirmed` で書く（45-3 の改訂後の姿に合わせる） |
 | `2026-09-09-pr9b-orchestrator.md` の 45-3 | `isPendingFailure` / `pendingNote` が「フラグだけを見る」と書いている | フラグに加えて `halt.generationUnconfirmed` を見る形に改める。`reason === "timeout"` を条件から外したことと、その前提になる不変条件（決定 1）を書く |
 | `2026-09-09-pr10-http-api.md` の決定 17 | 「接続断で `failed` になった単位の復旧は 2 段のまま」 | 見出しはそのままに、末尾へ「→ PR11b（`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）で 1 段にした」を追記する（PR10 時点の判断の記録は消さない） |
@@ -207,7 +207,7 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
 | `packages/server/src/run/units.ts` | `isPendingFailure` / `pendingNote` に `halt` を渡し、判定を決定 1 の形にする。`pendingNote` に 3 本目の文言。呼び出し 2 か所（`executeCheckUnit` 276-282 行、`executeRecheckUnit` 447-453 行）に `outcome.halt` を渡す。JSDoc と不変条件のコメント |
 | `packages/server/src/run/*.test.ts` | 新規テスト（下記） |
 | `packages/server/src/run/test-support.ts` | 台本の失敗に `status` を渡せるようにする（下記 U9・R4d 用） |
-| 計画書 6 本と `README.md` | 決定 7 のとおり |
+| 計画書 4 本（PR9・PR9b・PR10・ロードマップ）と `README.md` | 決定 7 のとおり。PR9b は決定 32 と 45-3 の 2 か所 |
 
 **`result.ts`・`executor.ts`・`orchestrator.ts` は変更しない**（決定 1 の改訂により、
 `UnitFailure` に足すフィールドが無くなったため）。`db/`、`api/`、`shared/`、`packages/web/`、
@@ -272,7 +272,7 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
    完了条件：`pnpm check` が通り、U9・U10 と、`halt` の反転で U8・U9 が落ちること。
 2. **オーケストレーターの結合テスト**（サブエージェント可）：R4c・R4d。実装は変えない。
    既存の 45-3 のテストを手本にする。
-3. **文書**（Claude）：決定 7 の 6 本と `README.md`。
+3. **文書**（Claude）：決定 7 の計画書 4 本（PR9b は 2 か所）と `README.md`。
 
 ## やらないこと（MUST NOT）
 
