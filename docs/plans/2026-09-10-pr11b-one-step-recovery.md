@@ -83,8 +83,8 @@ function isPendingFailure(
 - 決定 45-3 が同じ性質を明記している：「直列化の下では `halt` が立った後に `chat` を送らないので
   到達せず、『最初の halt が勝つ』という規則を崩すだけ」。
 
-この不変条件は**テスト U12 で固定する**（下記）。将来 `halt` を `runOne` の外から書く経路を
-作るときは、この判定も一緒に見直すこと。その旨を `units.ts` のコメントに残す。
+この不変条件は**`executor.test.ts` の E28 で固定する**（下記）。将来 `halt` を `runOne` の外から
+書く経路を作るときは、この判定も一緒に見直すこと。その旨を `units.ts` のコメントに残す。
 
 **代案（採らない）**：`UnitFailure` に `generationUnconfirmed` を足す。単位ごとの値になるので
 上の不変条件に依存しないが、同じ判断の表現が 2 つになり、`RunStop` 側との整合を別途保つ必要が
@@ -206,7 +206,7 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
 | --- | --- |
 | `packages/server/src/run/units.ts` | `isPendingFailure` / `pendingNote` に `halt` を渡し、判定を決定 1 の形にする。`pendingNote` に 3 本目の文言。呼び出し 2 か所（`executeCheckUnit` 276-282 行、`executeRecheckUnit` 447-453 行）に `outcome.halt` を渡す。JSDoc と不変条件のコメント |
 | `packages/server/src/run/*.test.ts` | 新規テスト（下記） |
-| `packages/server/src/run/test-support.ts` | 台本の失敗に `status` を渡せるようにする（下記 U9・R4d 用） |
+| `packages/server/src/run/test-support.ts` | （実施時に不要と判断し変更しなかった。単位の層の U9 は偽 executor が `ExecOutcome` のリテラルを直接返す形で検査でき、R4d は既存の `connectionLost()` の隣に `connectionRefused()` を足すだけで足りた） |
 | 計画書 4 本（PR9・PR9b・PR10・ロードマップ）と `README.md` | 決定 7 のとおり。PR9b は決定 32 と 45-3 の 2 か所 |
 
 **`result.ts`・`executor.ts`・`orchestrator.ts` は変更しない**（決定 1 の改訂により、
@@ -232,15 +232,20 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
 - **U8**：`chat` 由来の `connection`（`status: null`）に `treatUnconfirmedAsPending: true` を渡すと、
   単位が `pending` になり、`note` が「応答を受け取らずに接続が切れた。生成終了は未確認」で、
   失敗の事実（`failure.reason === "connection"`、`attempts === 1`）が残ること。
-- **U9（判別子）**：同じ `connection` でも `status: 503`（HTTP 応答あり）なら、
-  再試行 1 回のあと単位は `failed` のままであること。
+- **U9（判別子）**：偽 executor が `halt.generationUnconfirmed: false` の `ExecOutcome` を
+  直接返す形（再試行は起きず `attempts` は 1）でも、単位は `failed` のままであること。
+  `status: 503`（HTTP 応答あり）を使って実際に再試行 1 回を通す検査は
+  R4d（`orchestrator.stop.test.ts`）が担う。
 - **U10**：`treatUnconfirmedAsPending` を渡さない（CLI 経路）と、`status: null` の `connection` は
   `failed` のままであること（U6 と同じ趣旨の非退行）。
 - **U11**：再確認単位でも U8 と同じになること（`executeRecheckUnit` の側の配線）。
-- **U12（決定 1 の不変条件）**：保持済みの `halt`（`generationUnconfirmed: true`）がある状態で
-  次の単位を実行すると、生成要求を送らずに `origin: "local"` の失敗で返ること。
-  ＝**他の単位の `halt` が `chat` 由来の失敗と組になることはない**。決定 1 の判定が
-  `halt` を見てよい根拠を固定する。実装は変えないので、既存の挙動の性質を書き留めるテストである。
+- **E28（`executor.test.ts`。決定 1 の不変条件）**：保持済みの `halt`
+  （`generationUnconfirmed: true`）がある状態で次の単位を実行すると、生成要求を送らずに
+  `origin: "local"` の失敗で返ること。＝**他の単位の `halt` が `chat` 由来の失敗と組になることは
+  ない**。決定 1 の判定が `halt` を見てよい根拠を固定する。実装は変えないので、既存の挙動の性質を
+  書き留めるテストである。固定したい性質は executor 自身の挙動（保持済み `halt` があるとき
+  `chat` を送らない）なので、偽 executor を使う `units.test.ts` では検査できず、
+  `executor.test.ts` に置いた。
 
 ### オーケストレーターの層（`run/orchestrator.stop.test.ts`。R4b・45-3 の隣に置く）
 
@@ -267,8 +272,8 @@ halt?.generationUnconfirmed === true` とする（既存 2 本の条件は変え
 
 小さい PR なので 3 つに分ける。**状態機械（決定 1・3・5）は委譲しない**（ロードマップの担当欄）。
 
-1. **判別の付け替えと単位の層**（Claude）：`units.ts` の変更と U8〜U12、
-   `test-support.ts` の `status` 対応。
+1. **判別の付け替えと単位の層**（Claude）：`units.ts` の変更と U8〜U11（`units.test.ts`）、
+   E28（`executor.test.ts`）。
    完了条件：`pnpm check` が通り、U9・U10 と、`halt` の反転で U8・U9 が落ちること。
 2. **オーケストレーターの結合テスト**（サブエージェント可）：R4c・R4d。実装は変えない。
    既存の 45-3 のテストを手本にする。

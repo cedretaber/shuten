@@ -561,6 +561,7 @@ describe("createExecutor", () => {
     expect(first.ok).toBe(false);
     expect(second.ok).toBe(false);
     if (first.ok || second.ok) return;
+    expect(first.failure?.origin).toBe("chat");
     expect(second.failure?.origin).toBe("local");
     expect(second.attempts).toBe(0);
     expect(second.halt).toBe(first.halt);

@@ -105,7 +105,12 @@ function isPendingFailure(
  * 接続断の枝にだけ `halt?.generationUnconfirmed === true` を条件に含めるのは、HTTP 応答を
  * 受け取った `connection`（LM Studio が 4xx / 5xx を返した）はこの文言に当たらないため。
  * この場合は生成終了そのものは確認できている（応答が返ってきている）ので、通常の失敗
- * メッセージのままにする。
+ * メッセージのままにする。この関数が呼ばれるのは `isPendingFailure` が true を返したときだけで、
+ * `origin === "chat"` かつ `reason === "connection"` でそれが成り立つ経路は
+ * `treatUnconfirmedAsPending && halt?.generationUnconfirmed === true` の枝しか無いため、
+ * この枝に入った時点で `halt?.generationUnconfirmed === true` は既に成立している。それでも
+ * 条件式自体は残す：`pendingNote` が将来 `isPendingFailure` を経由しない入口を持ったときの
+ * 多重防御として意味がある。
  *
  * `isPendingFailure` と同じく、`treatUnconfirmedAsPending` の役割は変わらない：呼び出し元が
  * 経路を明示するフラグである（決定 45-3）。オーケストレーター（`run/loop.ts`）は常に true を渡し、
