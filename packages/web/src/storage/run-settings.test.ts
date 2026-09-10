@@ -13,6 +13,7 @@ import {
   BASIC_RUN_SETTINGS_DEFAULTS,
   readAdvancedRunSettings,
   readBasicRunSettings,
+  resetAdvancedRunSettings,
   writeAdvancedRunSettings,
   writeBasicRunSettings,
 } from "./run-settings.ts";
@@ -70,5 +71,37 @@ describe("readBasicRunSettings / readAdvancedRunSettings / writeBasicRunSettings
     // biome-ignore lint/style/noNonNullAssertion: 直前で null でないことを確認済み
     const parsed = JSON.parse(raw!);
     expect("seed" in parsed.generation).toBe(false);
+  });
+});
+
+describe("resetAdvancedRunSettings（PR11c 決定 5）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("S4-5: 詳細の持ち分を既定値へ戻して書き込み、その既定値を返す。基本の持ち分は残る", () => {
+    // 基本・詳細のどちらも既定値と違う状態から始める（基本が既定値のままだと、
+    // 基本まで既定値へ踏みつぶす実装でもこのテストが通ってしまう）。
+    const basic = {
+      ...BASIC_RUN_SETTINGS_DEFAULTS,
+      perspectives: ["typo"] as const,
+      targetGraphemes: 2_000,
+    };
+    writeBasicRunSettings(basic);
+    writeAdvancedRunSettings({
+      ...ADVANCED_RUN_SETTINGS_DEFAULTS,
+      generation: { ...ADVANCED_RUN_SETTINGS_DEFAULTS.generation, temperature: 0.8, seed: 42 },
+      roundingTolerance: 0.3,
+      timeouts: { checkMs: 600_000, recheckMs: 600_000 },
+    });
+
+    const returned = resetAdvancedRunSettings();
+
+    // 戻り値が既定値であること（呼び出し側はこれで state を更新する）。
+    expect(returned).toEqual(ADVANCED_RUN_SETTINGS_DEFAULTS);
+    // 保存値にも書き込まれていること（戻り値だけ返して書かない実装では落ちる）。
+    expect(readAdvancedRunSettings()).toEqual(ADVANCED_RUN_SETTINGS_DEFAULTS);
+    // 基本の持ち分は巻き添えにならない（キーごと消す実装では落ちる）。
+    expect(readBasicRunSettings()).toEqual(basic);
   });
 });

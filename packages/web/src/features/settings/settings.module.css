@@ -63,30 +63,70 @@
   font-family: monospace;
 }
 
-.advanced {
+/*
+ * 設定画面（/settings）の 3 節目の外枠。上の 2 節（connection.module.css の .section /
+ * .description）と同じ見え方に揃える。接続の節と同じクラスを別の feature から import すると
+ * 依存の向きが分かりにくくなるため、同じ宣言をこちらにも置く。
+ */
+.pageSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  max-width: 32rem;
+  padding: var(--space-lg);
+}
+
+.pageSectionDescription {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+/* 設定画面の詳細設定の入力欄をまとめる箱。 */
+.advancedFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/*
+ * メイン画面に残す詳細設定の要約（PR11c 決定 6）。詳細設定そのものは設定画面へ移したので、
+ * ここは「いま既定値と違う項目」と入口だけを出す枠。
+ */
+.advancedSummaryBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: var(--space-sm) var(--space-md);
 }
 
-.advancedSummary {
-  cursor: pointer;
+.advancedSummaryText {
+  margin: 0;
   font-size: var(--font-size-md);
-  font-weight: bold;
   color: var(--color-fg);
 }
 
-.advancedBadge {
-  font-weight: normal;
+.advancedSummaryActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
   font-size: var(--font-size-sm);
-  color: var(--color-fg-muted);
 }
 
-.advancedFields {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-md);
-  margin-top: var(--space-md);
+.advancedResetButton {
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.advancedResetButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .modelNote {

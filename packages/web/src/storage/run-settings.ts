@@ -127,3 +127,14 @@ export function writeAdvancedRunSettings(next: AdvancedRunSettings): void {
   };
   writeStored(STORAGE_KEYS.runSettings, updated);
 }
+
+/**
+ * 詳細の持ち分だけを既定値へ戻し、**書き込んだ既定値を返す**。
+ * 呼び出し側はこの戻り値で state を更新する。`localStorage` を書くだけにすると、
+ * 画面が持っている値が古いまま残り、要約と次の開始要求だけが「戻す前」に取り残される。
+ * キーごと消さないのは、メイン画面の持ち分（検査観点・分割長）まで巻き添えになるため。
+ */
+export function resetAdvancedRunSettings(): AdvancedRunSettings {
+  writeAdvancedRunSettings(ADVANCED_RUN_SETTINGS_DEFAULTS);
+  return ADVANCED_RUN_SETTINGS_DEFAULTS;
+}
