@@ -11,6 +11,7 @@ export default defineConfig({
   },
   test: {
     name: "web",
-    environment: "node",
+    environment: "jsdom",
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

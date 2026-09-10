@@ -1,38 +1,36 @@
-import { countGraphemes } from "@shuten/shared";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { Route, Routes } from "react-router";
+import { type ApiClient, createApiClient } from "./api/client.ts";
+import { ApiClientProvider } from "./api/context.tsx";
+import { ConnectionProvider } from "./app/connection-context.tsx";
+import { HomePage } from "./app/home-page.tsx";
+import { Layout } from "./app/layout.tsx";
+import { NotFound } from "./app/not-found.tsx";
+import { ROUTES } from "./app/routes.ts";
+import { ConnectionSettingsPage } from "./features/connection/connection-settings-page.tsx";
+import { RunReceiptPage } from "./features/run-receipt/run-receipt-page.tsx";
 
-interface Health {
-  status: string;
-  node: string;
-  graphemeCheck: number;
+export interface AppProps {
+  /** 省略時は `createApiClient()`（既定の `globalThis.fetch`）。テストは fake を注入する。 */
+  client?: ApiClient;
 }
 
-/** scaffold の動作確認用の最小画面。実装設計後に置き換える。 */
-export function App() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then((res) => res.json() as Promise<Health>)
-      .then(setHealth)
-      .catch((e: unknown) => setError(String(e)));
-  }, []);
+export function App({ client: injectedClient }: AppProps = {}) {
+  // `createApiClient()` はここで 1 回だけ呼ぶ（Task 5）。
+  const [client] = useState(() => injectedClient ?? createApiClient());
 
   return (
-    <main>
-      <h1>朱点</h1>
-      <p>ブラウザ側の書記素計数: {countGraphemes("👨‍👩‍👧")}</p>
-      {health ? (
-        <p>
-          サーバー: {health.status} / Node {health.node} / サーバー側の書記素計数:{" "}
-          {health.graphemeCheck}
-        </p>
-      ) : error ? (
-        <p>サーバーに接続できません: {error}</p>
-      ) : (
-        <p>サーバーに接続中…</p>
-      )}
-    </main>
+    <ApiClientProvider client={client}>
+      <ConnectionProvider client={client}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path={ROUTES.home} element={<HomePage />} />
+            <Route path={ROUTES.connectionSettings} element={<ConnectionSettingsPage />} />
+            <Route path={ROUTES.run} element={<RunReceiptPage />} />
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+      </ConnectionProvider>
+    </ApiClientProvider>
   );
 }

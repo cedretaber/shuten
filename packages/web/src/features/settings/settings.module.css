@@ -1,0 +1,162 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-width: 40rem;
+  padding: var(--space-lg);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+.legend {
+  padding: 0;
+  font-size: var(--font-size-md);
+  font-weight: bold;
+  color: var(--color-fg);
+}
+
+.perspectiveChoice {
+  display: flex;
+  gap: var(--space-md);
+}
+
+.checkboxField {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.label {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.input,
+.select,
+.textarea {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+  background-color: var(--color-bg);
+}
+
+.textarea {
+  min-height: 6rem;
+  resize: vertical;
+  font-family: monospace;
+}
+
+.advanced {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.advancedSummary {
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  font-weight: bold;
+  color: var(--color-fg);
+}
+
+.advancedBadge {
+  font-weight: normal;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.advancedFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.modelNote {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.startButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-accent);
+  color: var(--color-bg);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.startButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+.error p {
+  margin: 0;
+}
+
+/*
+ * 再試行の案内。失敗メッセージ（.error）とは別の塊で出す：結果不明のあとに新しい開始操作が
+ * 送信前に失敗した場合、上に出ているメッセージは別の試行のものになるため。
+ */
+.retryNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+  margin-top: var(--space-sm);
+}
+
+.retryNotice p {
+  margin: 0;
+}
+
+/*
+ * 結果不明（5xx など）からの正しい回収経路は、同じ startOperationId での再送（「再試行」）。
+ * 「検査を開始する」を押すと新しい実行 ID になり、元の実行がサーバー側で成功していた場合に
+ * 実行が 2 つになりうる（その操作自体は仕様上禁止しない）。塗り潰しにして「検査を開始する」
+ * より視覚的に優先し、利用者が正しいほうを選びやすくする（レビュー対応）。
+ */
+.retryButton {
+  flex-shrink: 0;
+  padding: var(--space-xs) var(--space-md);
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  background-color: var(--color-danger);
+  color: var(--color-bg);
+  font-size: var(--font-size-md);
+  font-weight: bold;
+  cursor: pointer;
+}

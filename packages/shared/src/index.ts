@@ -127,6 +127,7 @@ export type { FailureReason } from "./run/failure-reason.ts";
 export { FAILURE_REASONS } from "./run/failure-reason.ts";
 export type { JudgmentStatus } from "./run/judgment.ts";
 export { JUDGMENT_STATUSES } from "./run/judgment.ts";
+export { isGenerationCapable, LOADED_STATE } from "./run/model-capability.ts";
 export type { ReasoningEffort } from "./run/reasoning-effort.ts";
 export type { RunStatus, UnitStatus } from "./run/status.ts";
 export { RUN_STATUSES, UNIT_STATUSES } from "./run/status.ts";
