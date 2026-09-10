@@ -157,6 +157,24 @@ describe("RunReceiptPage", () => {
     expect(screen.queryByText("検査は開始できませんでした")).not.toBeInTheDocument();
   });
 
+  it("W8-4c: stopReason が settings でも status が stopped 以外なら、通常の状態表示のままにする", async () => {
+    // isSettingsStop は「status === stopped」かつ「stopReason === settings」の両方を見る。
+    // RunDto の zod スキーマは status と stopReason の組み合わせを相互検証しないため、
+    // 型の上では status: "running" かつ stopReason: "settings" も作れる（現在のサーバー実装
+    // では reason: "settings" は必ず status: "stopped" になるが、決定 16 が「かつ」と
+    // 書いている以上、この非対称も境界として確認しておく）。
+    const client = makeClient({
+      getRun: vi.fn(() =>
+        Promise.resolve(makeDetail({ status: "running", stopReason: "settings" })),
+      ),
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText(/状態:\s*実行中/)).toBeInTheDocument());
+    expect(screen.getByText(/停止理由:\s*検査設定/)).toBeInTheDocument();
+    expect(screen.queryByText("検査は開始できませんでした")).not.toBeInTheDocument();
+  });
+
   it("W8-5: 存在しない実行 ID（404）のとき「その実行はありません」とトップへのリンクを出す", async () => {
     const client = makeClient({
       getRun: vi.fn(() =>
@@ -222,7 +240,7 @@ describe("RunReceiptPage", () => {
     expect(getRun).not.toHaveBeenCalled();
   });
 
-  it("取得に失敗した（404 以外）とき、エラーメッセージを表示する", async () => {
+  it("付随テスト：取得に失敗した（404 以外）とき、エラーメッセージを表示する", async () => {
     const client = makeClient({
       getRun: vi.fn(() =>
         Promise.reject(new ApiRequestError(500, "unknown", "サーバーへの要求が失敗しました")),

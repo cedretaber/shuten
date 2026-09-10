@@ -23,6 +23,6 @@ export const RUN_STOP_REASON_LABELS = {
   settings: "検査設定",
   aborted: "中断",
   "internal-error": "内部エラー",
-  "recovery-blocked": "復旧待ちのため保留",
+  "recovery-blocked": "別の実行の復旧待ち",
   "backend-restarted": "サーバー再起動",
 } as const satisfies Record<RunStopReason, string>;
