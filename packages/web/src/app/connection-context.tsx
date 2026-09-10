@@ -7,6 +7,10 @@
  *   たびに前の要求を中断し、応答は最新の要求のものだけを状態へ反映する。
  * - 中断の判別は例外名ではなく、その要求に渡した `controller.signal.aborted` で行う。API クライアントは
  *   `fetch` の `AbortError` も `ApiTransportError` に包むため、例外の型では区別できない（決定 10）。
+ * - **`nextSelectedModelId`（決定 6 の 5 行の規則）は、成功したすべての接続確認へ適用する**
+ *   （レビュー対応）。起動時だけに適用していると、別の LM Studio 接続先へ変えて以前のモデル ID が
+ *   存在しなくなっても、context と `localStorage` に古い ID が残り、開始ボタンも有効なままになる
+ *   （開始直前の確認で誤送信自体は防げるが、画面の選択状態と規則が食い違う）。
  */
 
 import type { ConnectionCheckDto } from "@shuten/shared";
@@ -70,6 +74,22 @@ export function ConnectionProvider(props: {
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 
+  // 選択中のモデル ID を ref にも持つ。接続確認の応答が返ったときに「いま選ばれている ID」を
+  // 読むため（state はクロージャに古い値が残る）。確認の最中に利用者がモデルを選び直した場合、
+  // 古い ID で判定すると、その一覧に無いという理由で選び直したばかりの選択を消してしまう。
+  const selectedModelIdRef = useRef<string | null>(selectedModelId);
+
+  /** 選択の変更を state・ref・`localStorage` へまとめて反映する（決定 6）。 */
+  const applySelectedModelId = useCallback((next: string | null) => {
+    selectedModelIdRef.current = next;
+    setSelectedModelId(next);
+    if (next === null) {
+      removeStored(STORAGE_KEYS.selectedModelId);
+    } else {
+      writeStored(STORAGE_KEYS.selectedModelId, next);
+    }
+  }, []);
+
   // 世代番号：最新の要求の応答だけを状態へ反映する（決定 10）。
   const generationRef = useRef(0);
   // 直前の要求。新しい要求を出すときに中断し、アンマウント時にも中断する。
@@ -91,6 +111,9 @@ export function ConnectionProvider(props: {
           setCheckedAt(new Date());
           setError(null);
           setChecking(false);
+          // 決定 6 の規則を、成功したすべての接続確認へ適用する（レビュー対応）。
+          const next = nextSelectedModelId(result, selectedModelIdRef.current);
+          if (next !== selectedModelIdRef.current) applySelectedModelId(next);
         }
         return result;
       } catch (cause) {
@@ -102,33 +125,23 @@ export function ConnectionProvider(props: {
         throw cause; // 中断していない失敗は呼び出し側が判定できるよう例外にする
       }
     },
-    [client],
+    [client, applySelectedModelId],
   );
 
-  const selectModel = useCallback((modelId: string) => {
-    setSelectedModelId(modelId);
-    writeStored(STORAGE_KEYS.selectedModelId, modelId);
-  }, []);
+  const selectModel = useCallback(
+    (modelId: string) => {
+      applySelectedModelId(modelId);
+    },
+    [applySelectedModelId],
+  );
 
   // 起動時に 1 回だけ、保存済みモデル ID を添えて確認する（決定 8）。
+  // 選択の見直し（決定 6 の規則）は `checkConnection` が成功時に行うので、ここでは呼ぶだけでよい。
   useEffect(() => {
-    const storedId = readStoredSelectedModelId();
-
-    checkConnection(storedId ?? undefined)
-      .then((result) => {
-        if (result === null) return; // 中断された：選択には触れない
-        const next = nextSelectedModelId(result, storedId);
-        setSelectedModelId(next);
-        if (next === null) {
-          removeStored(STORAGE_KEYS.selectedModelId);
-        } else {
-          writeStored(STORAGE_KEYS.selectedModelId, next);
-        }
-      })
-      .catch(() => {
-        // 中断していない失敗は checkConnection 内で `error` に反映済み。
-        // 決定 6 のとおり、接続失敗時は保存済みの選択を維持する（何もしない）。
-      });
+    checkConnection(readStoredSelectedModelId() ?? undefined).catch(() => {
+      // 中断していない失敗は checkConnection 内で `error` に反映済み。
+      // 決定 6 のとおり、接続失敗時は保存済みの選択を維持する（何もしない）。
+    });
     // `checkConnection` は `client`（Provider の生存期間中は不変）にのみ依存するため、
     // 実質的にマウント時 1 回だけ実行される。
   }, [checkConnection]);

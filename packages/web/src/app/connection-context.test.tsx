@@ -1,4 +1,4 @@
-import type { ConnectionCheckDto } from "@shuten/shared";
+import type { ConnectionCheckDto, ModelInfoDto } from "@shuten/shared";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,18 @@ import { ConnectionProvider, useConnection } from "./connection-context.tsx";
 
 function makeCheck(overrides: Partial<ConnectionCheckDto> = {}): ConnectionCheckDto {
   return { reachable: true, error: null, models: [], model: null, ...overrides };
+}
+
+function makeModel(overrides: Partial<ModelInfoDto> = {}): ModelInfoDto {
+  return {
+    id: "model-a",
+    type: "llm",
+    state: "loaded",
+    quantization: null,
+    maxContextLength: null,
+    loadedContextLength: null,
+    ...overrides,
+  };
 }
 
 /** `checkConnection` 以外は呼ばれない前提の最小 fake。呼ばれたら失敗させる。 */
@@ -271,5 +283,97 @@ describe("ConnectionProvider", () => {
     );
 
     expect(screen.getByTestId("selected")).toHaveTextContent("model-x");
+  });
+});
+
+describe("ConnectionProvider: 選択モデルの見直しは成功した確認すべてに適用する（レビュー対応）", () => {
+  /**
+   * `nextSelectedModelId`（決定 6 の 5 行の規則）を起動時にしか適用しないと、別の LM Studio
+   * 接続先へ変えて以前のモデル ID が存在しなくなっても、context と `localStorage` に古い ID が
+   * 残り、開始ボタンも有効なままになる。以下は**起動時ではなく 2 回目の確認**で規則が働くことを見る
+   * （起動時だけの実装でも通ってしまうテストにしない）。
+   */
+  const STORED = "model-a";
+
+  /** 保存済み選択を置いて起動し、起動時の確認では選択が維持される状態まで進める。 */
+  async function renderWithStoredSelection(secondCheck: ConnectionCheckDto) {
+    localStorage.setItem(STORAGE_KEYS.selectedModelId, JSON.stringify(STORED));
+    const checkConnection = vi
+      .fn<ApiClient["checkConnection"]>()
+      .mockResolvedValueOnce(makeCheck({ models: [makeModel()] })) // 起動時：維持される
+      .mockResolvedValueOnce(secondCheck);
+    const client = makeFakeClient(checkConnection);
+
+    render(
+      <ConnectionProvider client={client}>
+        <Probe />
+      </ConnectionProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent(STORED));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "再確認" }));
+    await waitFor(() => expect(checkConnection).toHaveBeenCalledTimes(2));
+  }
+
+  it("2 回目の確認の一覧に ID が無ければ、選択と保存値を解除する", async () => {
+    await renderWithStoredSelection(makeCheck({ models: [makeModel({ id: "model-z" })] }));
+
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent("none"));
+    expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBeNull();
+  });
+
+  it("2 回目の確認で種別が llm / vlm でなくなれば、選択と保存値を解除する", async () => {
+    await renderWithStoredSelection(makeCheck({ models: [makeModel({ type: "embeddings" })] }));
+
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent("none"));
+    expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBeNull();
+  });
+
+  it("2 回目の確認で未ロードの llm なら、選択を維持する", async () => {
+    await renderWithStoredSelection(makeCheck({ models: [makeModel({ state: "not-loaded" })] }));
+
+    expect(screen.getByTestId("selected")).toHaveTextContent(STORED);
+    expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBe(JSON.stringify(STORED));
+  });
+
+  it("2 回目の確認が接続失敗（reachable: false）なら、選択を維持する", async () => {
+    await renderWithStoredSelection(makeCheck({ reachable: false, models: [] }));
+
+    expect(screen.getByTestId("selected")).toHaveTextContent(STORED);
+    expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBe(JSON.stringify(STORED));
+  });
+
+  it("確認の最中に選び直したモデルを、遅れて届いた結果が消さない", async () => {
+    localStorage.setItem(STORAGE_KEYS.selectedModelId, JSON.stringify(STORED));
+    const pending = deferred<ConnectionCheckDto>();
+    const checkConnection = vi
+      .fn<ApiClient["checkConnection"]>()
+      .mockResolvedValueOnce(makeCheck({ models: [makeModel()] })) // 起動時
+      .mockImplementationOnce(() => pending.promise);
+    const client = makeFakeClient(checkConnection);
+
+    render(
+      <ConnectionProvider client={client}>
+        <Probe />
+      </ConnectionProvider>,
+    );
+    await waitFor(() => expect(screen.getByTestId("selected")).toHaveTextContent(STORED));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "再確認" }));
+    // 応答が返る前に、利用者がモデルを選び直す（Probe の「選択」は model-x を選ぶ）。
+    await user.click(screen.getByRole("button", { name: "選択" }));
+    expect(screen.getByTestId("selected")).toHaveTextContent("model-x");
+
+    // 確認の結果には model-x だけがある。判定に古い選択（model-a）を使うと、
+    // 「一覧に無い」と解釈して選び直したばかりの選択を消してしまう。
+    await act(async () => {
+      pending.resolve(makeCheck({ models: [makeModel({ id: "model-x" })] }));
+      await pending.promise;
+    });
+
+    expect(screen.getByTestId("selected")).toHaveTextContent("model-x");
+    expect(localStorage.getItem(STORAGE_KEYS.selectedModelId)).toBe(JSON.stringify("model-x"));
   });
 });
