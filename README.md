@@ -38,8 +38,10 @@ API キー・接続先 URL が画面の描画やブラウザの保存領域・�
 （決定 1〜23）、`docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）、
 `docs/plans/2026-09-09-pr10-http-api.md`（HTTP API と SSE）、`docs/plans/2026-09-10-pr11-web-shell.md`
 （画面とクライアント）、`docs/plans/2026-09-10-pr11c-settings-consolidation.md`（設定画面の統合とナビゲーション）。
-Windows でのローカル確認（PR11 のマージ条件）も完了済み。次は PR11b（接続断で失敗した単位の復旧）、
-続いて PR12a・PR12b（結果閲覧・実行制御）。2026-09-09 に残りの工程を見直し、
+Windows でのローカル確認は PR11 分の 9 項目（`docs/decisions/0002-scaffold-conventions.md`）を完了済みだが、
+PR11c で足した 2 項目（`/settings` の直リンクと `/settings/connection` のリダイレクト）はまだ未実施。
+次はこの Windows 確認（PR11c のマージ条件）、続いて PR11b（接続断で失敗した単位の復旧）、
+PR12a・PR12b（結果閲覧・実行制御）。2026-09-09 に残りの工程を見直し、
 PR11b・PR12a/12b・PR13a/13b に分け直した（ロードマップの「2026-09-09 の見直し」節）。評価原稿と
 正解データの準備は並行して進める。
 
