@@ -15,6 +15,15 @@ import {
   GENERIC_REQUEST_ERROR,
 } from "./errors.ts";
 
+/**
+ * このファイルは計画書（`docs/plans/2026-09-10-pr11-web-shell.md`）の W1 節（API クライアント）を
+ * 全 5 項目カバーする。加えて、W2 節（例外の分類と解析順）の 7 項目（W2-1〜7）もここに置く：
+ * それらは「本文の読み取り・`JSON.parse`・状態コードによる分岐」という `client.ts` の応答処理
+ * そのものの検証であり、実際の `Response`（または本文の読み取りが失敗する fake）と `fetch` 経由の
+ * 呼び出しが要るため、`api/errors.ts` の単体テストでは再現できない（W2-8 だけは純粋な関数
+ * `isStartOutcomeUnknown` の真理値表なので `errors.test.ts` に置く）。
+ */
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -129,7 +138,7 @@ function fetchMock(response: Response): ReturnType<typeof vi.fn> {
 }
 
 describe("createApiClient", () => {
-  it("W1-1: 各メソッドが正しい URL・メソッド・本文で fetch を呼び、検証済みの DTO を返す", async () => {
+  it("W1-1: 8 つの口それぞれについて、fetch に渡るメソッド・パス・本文が正しい", async () => {
     {
       const dto = makeConnectionSettingsDto();
       const fetchImpl = fetchMock(jsonResponse(200, dto));
@@ -168,17 +177,6 @@ describe("createApiClient", () => {
       expect(url).toBe("/api/settings/connection/check");
       expect(init.method).toBe("POST");
       expect(JSON.parse(String(init.body))).toEqual({ modelId: "model-1" });
-      expect(init.signal).toBe(controller.signal);
-    }
-
-    {
-      // modelId を省略したときは要求本文にキーを含めない。
-      const dto = makeConnectionCheckDto();
-      const fetchImpl = fetchMock(jsonResponse(200, dto));
-      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
-      await expect(client.checkConnection()).resolves.toEqual(dto);
-      const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-      expect(JSON.parse(String(init.body))).toEqual({});
     }
 
     {
@@ -196,16 +194,23 @@ describe("createApiClient", () => {
 
     {
       const dto = makeManuscriptVersionDto();
+      const fetchImpl = fetchMock(jsonResponse(201, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      const file = new File(["本文"], "manuscript.txt", { type: "text/plain" });
+      await expect(client.uploadManuscript({ file, name: "テスト原稿" })).resolves.toEqual(dto);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/manuscripts/upload");
+      expect(init.method).toBe("POST");
+    }
+
+    {
+      const dto = makeManuscriptVersionDto();
       const fetchImpl = fetchMock(jsonResponse(200, dto));
       const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
-      const controller = new AbortController();
-      await expect(
-        client.getManuscript("manuscript-1", { signal: controller.signal }),
-      ).resolves.toEqual(dto);
+      await expect(client.getManuscript("manuscript-1")).resolves.toEqual(dto);
       const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("/api/manuscripts/manuscript-1");
       expect(init.method).toBe("GET");
-      expect(init.signal).toBe(controller.signal);
     }
 
     {
@@ -224,110 +229,162 @@ describe("createApiClient", () => {
       const dto = makeRunDetailDto();
       const fetchImpl = fetchMock(jsonResponse(200, dto));
       const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
-      const controller = new AbortController();
-      await expect(client.getRun("run-1", { signal: controller.signal })).resolves.toEqual(dto);
+      await expect(client.getRun("run-1")).resolves.toEqual(dto);
       const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("/api/runs/run-1");
       expect(init.method).toBe("GET");
-      expect(init.signal).toBe(controller.signal);
-    }
-
-    {
-      // uploadManuscript は FormData に file・name を入れ、Content-Type を自分で指定しない。
-      const dto = makeManuscriptVersionDto();
-      const fetchImpl = fetchMock(jsonResponse(201, dto));
-      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
-      const file = new File(["本文"], "manuscript.txt", { type: "text/plain" });
-      await expect(client.uploadManuscript({ file, name: "テスト原稿" })).resolves.toEqual(dto);
-      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe("/api/manuscripts/upload");
-      expect(init.method).toBe("POST");
-      expect(init.body).toBeInstanceOf(FormData);
-      const form = init.body as FormData;
-      expect(form.get("file")).toBe(file);
-      expect(form.get("name")).toBe("テスト原稿");
-      const headers = init.headers === undefined ? new Headers() : new Headers(init.headers);
-      expect(headers.has("content-type")).toBe(false);
     }
   });
 
-  it("W1-2: 非 2xx で apiErrorSchema に合う本文 → ApiRequestError(status, code, message)", async () => {
-    const fetchImpl = fetchMock(errorJsonResponse(409, "runs-active", "検査実行が走っています"));
+  it("W1-2: uploadManuscript の FormData に File がそのまま載り、Content-Type を指定していない", async () => {
+    const dto = makeManuscriptVersionDto();
+    const fetchImpl = fetchMock(jsonResponse(201, dto));
+    const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+    const file = new File(["本文"], "manuscript.txt", { type: "text/plain" });
+
+    await expect(client.uploadManuscript({ file, name: "テスト原稿" })).resolves.toEqual(dto);
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBeInstanceOf(FormData);
+    const form = init.body as FormData;
+    expect(form.get("file")).toBe(file);
+    expect(form.get("name")).toBe("テスト原稿");
+    const headers = init.headers === undefined ? new Headers() : new Headers(init.headers);
+    expect(headers.has("content-type")).toBe(false);
+  });
+
+  it("W1-3: checkConnection() を引数なしで呼ぶと本文に modelId を入れない", async () => {
+    const dto = makeConnectionCheckDto();
+    const fetchImpl = fetchMock(jsonResponse(200, dto));
     const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
 
-    await expect(
-      client.putConnection({ endpointUrl: "http://127.0.0.1:1234" }),
-    ).rejects.toMatchObject({
-      status: 409,
-      code: "runs-active",
-      message: "検査実行が走っています",
+    await expect(client.checkConnection()).resolves.toEqual(dto);
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const body: unknown = JSON.parse(String(init.body));
+    expect(body).toEqual({});
+    expect(body).not.toHaveProperty("modelId");
+  });
+
+  it("W1-4: getRun(id, { signal }) の signal が fetch に渡る", async () => {
+    const dto = makeRunDetailDto();
+    const fetchImpl = fetchMock(jsonResponse(200, dto));
+    const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+    const controller = new AbortController();
+
+    await expect(client.getRun("run-1", { signal: controller.signal })).resolves.toEqual(dto);
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  it("W1-5: 応答に余分なキーがあると ApiResponseError（.strict() が拒む）", async () => {
+    // 必須フィールドはすべて満たした上で、余分なキーを 1 つ足す。必須フィールド欠落
+    // （W2-7）と違い、.strict() を外した z.object() でも通ってしまう入力ではないことを確認する。
+    const bodyWithExtraKey = { ...makeConnectionSettingsDto(), extra: "余分な値" };
+    const client = createApiClient({
+      fetch: fetchMock(jsonResponse(200, bodyWithExtraKey)) as unknown as typeof fetch,
+    });
+
+    await expect(client.getConnection()).rejects.toBeInstanceOf(ApiResponseError);
+  });
+
+  it("W2-1: 応答本文の読み取りが失敗（reject）すると ApiTransportError", async () => {
+    const client = createApiClient({
+      fetch: fetchMock(brokenBodyResponse(200, true)) as unknown as typeof fetch,
+    });
+    await expect(client.getConnection()).rejects.toBeInstanceOf(ApiTransportError);
+
+    // 5xx でも本文の読み取りが切れたら ApiTransportError（apiErrorSchema での分類より前）。
+    const client5xx = createApiClient({
+      fetch: fetchMock(brokenBodyResponse(500, false)) as unknown as typeof fetch,
+    });
+    await expect(client5xx.getConnection()).rejects.toBeInstanceOf(ApiTransportError);
+  });
+
+  it("W2-2: fetch 自体が reject すると ApiTransportError", async () => {
+    const throwingFetch = vi.fn().mockRejectedValueOnce(new Error("network down"));
+    const client = createApiClient({ fetch: throwingFetch as unknown as typeof fetch });
+
+    await expect(client.getConnection()).rejects.toBeInstanceOf(ApiTransportError);
+  });
+
+  it("W2-3: 400 で apiErrorSchema に合う本文 → ApiRequestError(400, code, message)", async () => {
+    const client = createApiClient({
+      fetch: fetchMock(
+        errorJsonResponse(400, "validation", "入力の検証に失敗しました"),
+      ) as unknown as typeof fetch,
     });
 
     let caught: unknown;
-    const fetchImpl2 = fetchMock(errorJsonResponse(404, "not-found", "見つかりません"));
-    const client2 = createApiClient({ fetch: fetchImpl2 as unknown as typeof fetch });
     try {
-      await client2.getManuscript("nope");
+      await client.getConnection();
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(ApiRequestError);
+    expect(caught).toMatchObject({
+      status: 400,
+      code: "validation",
+      message: "入力の検証に失敗しました",
+    });
   });
 
-  it('W1-3: 非 2xx で本文が HTML／不正 JSON → ApiRequestError(status, "unknown", GENERIC_REQUEST_ERROR)', async () => {
-    const client4xx = createApiClient({
+  it('W2-4: 400 で HTML 本文 → ApiRequestError(400, "unknown", GENERIC_REQUEST_ERROR)。ApiResponseError にしない', async () => {
+    const client = createApiClient({
       fetch: fetchMock(htmlResponse(400)) as unknown as typeof fetch,
     });
-    await expect(client4xx.getConnection()).rejects.toMatchObject({
-      status: 400,
-      code: "unknown",
-      message: GENERIC_REQUEST_ERROR,
+
+    let caught: unknown;
+    try {
+      await client.getConnection();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ApiRequestError);
+    expect(caught).not.toBeInstanceOf(ApiResponseError);
+    expect(caught).toMatchObject({ status: 400, code: "unknown", message: GENERIC_REQUEST_ERROR });
+  });
+
+  it('W2-5: 500 で HTML 本文 → ApiRequestError(500, "unknown", GENERIC_REQUEST_ERROR)', async () => {
+    const client = createApiClient({
+      fetch: fetchMock(htmlResponse(500)) as unknown as typeof fetch,
     });
 
-    const client5xx = createApiClient({
-      fetch: fetchMock(htmlResponse(502)) as unknown as typeof fetch,
-    });
-    await expect(client5xx.getConnection()).rejects.toMatchObject({
-      status: 502,
+    await expect(client.getConnection()).rejects.toMatchObject({
+      status: 500,
       code: "unknown",
       message: GENERIC_REQUEST_ERROR,
     });
   });
 
-  it("W1-4: 2xx の契約違反は ApiResponseError、通信の失敗は ApiTransportError になる", async () => {
-    const nonJsonClient = createApiClient({
-      fetch: fetchMock(new Response("not json", { status: 200 })) as unknown as typeof fetch,
+  it("W2-6: 200 で HTML 本文 → ApiResponseError", async () => {
+    const client = createApiClient({
+      fetch: fetchMock(htmlResponse(200)) as unknown as typeof fetch,
     });
-    await expect(nonJsonClient.getConnection()).rejects.toBeInstanceOf(ApiResponseError);
 
-    const schemaViolationClient = createApiClient({
+    await expect(client.getConnection()).rejects.toBeInstanceOf(ApiResponseError);
+  });
+
+  it("W2-7: 200 で JSON だがスキーマ違反（必須フィールド欠落） → ApiResponseError", async () => {
+    const client = createApiClient({
       fetch: fetchMock(jsonResponse(200, { unexpected: "field" })) as unknown as typeof fetch,
     });
-    await expect(schemaViolationClient.getConnection()).rejects.toBeInstanceOf(ApiResponseError);
 
-    const throwingFetch = vi.fn().mockRejectedValueOnce(new Error("network down"));
-    const transportClient = createApiClient({ fetch: throwingFetch as unknown as typeof fetch });
-    await expect(transportClient.getConnection()).rejects.toBeInstanceOf(ApiTransportError);
-
-    const brokenBodyClient = createApiClient({
-      fetch: fetchMock(brokenBodyResponse(200, true)) as unknown as typeof fetch,
-    });
-    await expect(brokenBodyClient.getConnection()).rejects.toBeInstanceOf(ApiTransportError);
-
-    // 5xx でも本文の読み取りが切れたら ApiTransportError（apiErrorSchema での分類より前）。
-    const brokenBody5xxClient = createApiClient({
-      fetch: fetchMock(brokenBodyResponse(500, false)) as unknown as typeof fetch,
-    });
-    await expect(brokenBody5xxClient.getConnection()).rejects.toBeInstanceOf(ApiTransportError);
+    await expect(client.getConnection()).rejects.toBeInstanceOf(ApiResponseError);
   });
 
-  it("W1-5: startRun の再送（200 で既存実行）も RunDto として扱い、apiKey は例外にも console にも出ない", async () => {
+  it("付随テスト：startRun の再送（200 で既存実行）も RunDto として扱う（決定 15）", async () => {
     const existingRun = makeRunDto({ id: "run-existing" });
     const fetchImpl = fetchMock(jsonResponse(200, existingRun));
     const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
-    const result = await client.startRun(makeStartRunRequest({ startOperationId: "op-existing" }));
-    expect(result).toEqual(existingRun);
 
+    const result = await client.startRun(makeStartRunRequest({ startOperationId: "op-existing" }));
+
+    expect(result).toEqual(existingRun);
+  });
+
+  it("付随テスト：putConnection の apiKey は失敗時の例外にも console にも出ない（決定 18）", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const apiKey = "sk-super-secret";
     const failingFetch = fetchMock(errorJsonResponse(409, "runs-active", "検査実行が走っています"));
