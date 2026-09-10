@@ -15,9 +15,10 @@ import { ConnectionProvider } from "../../app/connection-context.tsx";
 import { ConnectionSettingsPage } from "./connection-settings-page.tsx";
 
 /**
- * `/settings/connection` の検証（W5-1〜9、決定 9・18）。
- * API キーの三状態（W5-1〜3）と 409 `runs-active`（W5-5）は、実装を意図的に誤らせて
- * このテストが実際に赤くなることを確認した（作業報告に記録する）。
+ * `/settings/connection` の検証（W5-1〜10、決定 9・18）。
+ * API キーの三状態（W5-1〜3・W5-10）と 409 `runs-active`（W5-5）、ロード済みモデルに
+ * 注記が出ないこと（W5-8）は、実装を意図的に誤らせてこのテストが実際に赤くなることを
+ * 確認した（作業報告に記録する）。
  */
 
 const DEFAULT_URL = "http://127.0.0.1:1234";
@@ -227,6 +228,8 @@ describe("ConnectionSettingsPage", () => {
     expect(screen.getByText("model-vlm")).toBeInTheDocument();
     expect(screen.queryByText("model-embed")).not.toBeInTheDocument();
     expect(screen.queryByText("model-untyped")).not.toBeInTheDocument();
+    // ここに並ぶモデルは既定でロード済み（`makeModel` の既定値）：注記を出してはいけない。
+    expect(screen.queryByText(/LM Studio でロードしてください/)).not.toBeInTheDocument();
   });
 
   it("W5-9: 未ロードのモデルは選べるが「LM Studio でロードしてください」を添える", async () => {
@@ -248,5 +251,26 @@ describe("ConnectionSettingsPage", () => {
     const user = userEvent.setup();
     await user.click(radio);
     expect(radio).toBeChecked();
+  });
+
+  it("W5-10: API キー欄に空白のみを入力して保存すると、要求に apiKey を含めない（維持）", async () => {
+    // サーバー側（resolveNextApiKey / parseLmStudioApiKey）は空白のみの文字列を消去（null）として
+    // 扱う。「消去」を選んでいないのに気づかず API キーが消える事故を防ぐため、
+    // 空白のみは（真の空文字と同じく）「維持」として要求から apiKey を省略しなければならない。
+    const putConnection = vi.fn((_body: PutConnectionRequest) =>
+      Promise.resolve(makeSettings({ hasApiKey: true })),
+    );
+    const client = makeClient({ putConnection });
+    renderPage(client);
+    await waitForLoaded();
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("API キー"), "   ");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(putConnection).toHaveBeenCalledTimes(1));
+    const body = putConnection.mock.calls[0]?.[0];
+    expect(body).toEqual({ endpointUrl: DEFAULT_URL });
+    expect(body && Object.hasOwn(body, "apiKey")).toBe(false);
   });
 });

@@ -19,7 +19,7 @@
  */
 
 import { isGenerationCapable, type ModelInfoDto } from "@shuten/shared";
-import { type FormEvent, useEffect, useState } from "react";
+import { type SubmitEvent, useEffect, useState } from "react";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { useConnection } from "../../app/connection-context.tsx";
@@ -32,6 +32,14 @@ function isSelectableModelType(model: ModelInfoDto): boolean {
 
 function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "接続設定の取得に失敗しました";
+}
+
+/**
+ * モデル状態の画面向け文言。LM Studio の内部の生文字列（`"not-loaded"` など）を
+ * そのまま日本語の画面へ出さない（画面の文言は日本語、という規約に合わせる）。
+ */
+function modelStateLabel(state: string | null): string {
+  return state === "not-loaded" ? "未ロード" : "不明";
 }
 
 export function ConnectionSettingsPage() {
@@ -74,16 +82,19 @@ export function ConnectionSettingsPage() {
     }
   };
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     setSaving(true);
     setSaveError(null);
     setSaved(false);
 
-    // apiKey は三状態：消去＝null、空のまま＝キーごと省略（維持）、入力あり＝その文字列。
+    // apiKey は三状態：消去＝null、空のまま（空白のみを含む）＝キーごと省略（維持）、
+    // それ以外の入力あり＝その文字列。空白のみをここで「維持」に倒すのは、サーバー側の
+    // `resolveNextApiKey` / `parseLmStudioApiKey` が空白のみの文字列を消去（null）として
+    // 扱うため（決定 18）：ここで弾かずに送ると、消去を選んでいないのに気づかず消えてしまう。
     const body = clearApiKey
       ? { endpointUrl, apiKey: null }
-      : apiKeyInput === ""
+      : apiKeyInput.trim() === ""
         ? { endpointUrl }
         : { endpointUrl, apiKey: apiKeyInput };
 
@@ -193,7 +204,7 @@ export function ConnectionSettingsPage() {
                   {!isGenerationCapable(model) && (
                     <p className={styles.modelNote}>
                       LM Studio でロードしてください（現在の状態：
-                      {model.state ?? "不明"}）。ロードするまで検査を開始できません。
+                      {modelStateLabel(model.state)}）。ロードするまで検査を開始できません。
                     </p>
                   )}
                 </li>
