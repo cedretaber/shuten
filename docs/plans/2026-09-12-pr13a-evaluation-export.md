@@ -168,6 +168,13 @@
 - ただし**評価ツールは `bodyHash` の無い結果 JSON を拒否する**（既定値で埋めない。不変条件）。
   PR13a-1 より前に作った結果 JSON は採点できない。実 LLM を回した結果はまだ無いので実害はない。
 
+**ユーザーがハッシュ値を得る経路を用意する。** `hashBody` は `ingestUtf8Bytes` を通した後の
+文字列（BOM を除いた本文）を hash するので、ファイルに対する `sha256sum` とは**一致しない**
+（BOM 付きファイルで必ずずれる）。形式を「手で書けない値を要求する形式」にしないため、
+**`shuten hash --manuscript <原稿>` を足す**（本文を読んで `hashBody` の結果を標準出力に 1 行出すだけ。
+LLM に接続しない）。加えて、3 方向照合の不一致エラーには**計算したハッシュ値を出す**
+（ハッシュは原稿の内容ではないので出してよい。原稿を直した後に貼り直せる）。
+
 ### 決定 4：正解の位置は「段落 ID ＋引用＋出現番号」で解決する
 
 `paragraphId` の段落の範囲内で `quote` を**完全一致**で探し、`occurrence` 番目（1 起点、既定 1）を
@@ -181,6 +188,16 @@
 - 一致が 0 件
 - 一致が `occurrence` 件に満たない
 - `error` の項目と `normal` の項目の範囲が重なる（正解として矛盾している）
+
+**段落 ID は 0 起点で、空行も 1 段落として数える**（仕様 6.1「空行の保持」、PR1）。
+エディターの行番号（1 起点）とも、目で数えた「段落」とも一致しないので、
+`docs/reference/truth-format.md` と zod のエラー文言の両方に明記する。
+
+**解決に失敗したときの詳細は `--report` にだけ書く。** 標準出力・標準エラーには決定 9 のとおり
+`id` と `paragraphId` と見つかった件数しか出さないが、それだけでは「その段落に何があるのか」を
+確かめられない。`--report` が指定されているときに限り、**その段落の本文と見つかった一致の位置**を
+レポートファイルに書く（出力先はユーザーが選んだリポジトリ外のファイルで、原稿の断片が入るのは
+レポートの本来の役目と同じである）。`--report` なしでも集計は行える（失敗はエラーのまま）。
 
 **`locateQuote` は使わない。** あれは `CheckInput`（検査対象と参考文脈）に縛られ、複数一致を
 `ambiguous` として失敗にし、診断候補を作る。正解ファイルに要るのは「人が指定した n 番目の出現を
@@ -240,6 +257,12 @@
 撤回の判定は `RecheckResult.status === "done"` かつ `output.verdict === "withdraw"`。
 `confirm-with-author` は撤回ではない（指摘は残り、作者に確認を促す。`RECHECK_VERDICTS` は
 `keep` / `withdraw` / `confirm-with-author` の 3 値）。
+**`done` かつ `withdraw` 以外はすべて「残した」側に数える**（`failed`・`pending`・`disabled`・
+`suppressed`、および `confirm-with-author`）。再確認が失敗した指摘を、撤回されたものとしても
+検出されたものとしても扱わないという意味で、これは「未完了を成功にも失敗にも丸めない」
+（不変条件）の適用である。再確認が `failed` / `pending` の件数はレポートに別に出し、
+再確認後の数字がどれだけ未完了を含んでいるかを人が見られるようにする。
+
 `mode: "split"`（再確認なし）の結果 JSON では再確認後 = 再確認前になり、上の表は全 0 になる。
 
 ### 決定 8：抑制・位置特定失敗・実行性能の数え方
@@ -269,9 +292,12 @@
 | `run`（既定） | 既存 | 検査パイプラインを回して結果 JSON を出す |
 | `evaluate` | 13a-1 | 正解と結果 1 本を突き合わせて指標を出す |
 | `aggregate` | 13a-1 | 同条件の結果 N 本のぶれを集計する |
+| `hash` | 13a-1 | 原稿の `bodyHash` を 1 行出す（決定 3。LLM に接続しない） |
 | `full-chat` | 13a-2 | 全文チャット方式（自由形式プロンプト）で 1 回生成する |
 
 - 未知のサブコマンドはエラー（終了コード 1）。
+- 引数が 1 つも無いときは `run` に振られ、既存の「必須オプションがありません: --manuscript, --model」
+  になる（振る舞いを変えない）。
 - `collectRawOptions` は**サブコマンドごとの既知オプション集合**を受け取る形に変える。
   併せて「同じオプションを複数回書ける」ことを宣言できるようにする（`aggregate --result` で使う）。
   それ以外のオプションは今までどおり重複をエラーにする。
@@ -326,7 +352,8 @@ shuten aggregate --manuscript <原稿> --truth <正解.json> --result a.json --r
 
 `conditions.manuscript.bodyHash`、`mode`、`perspectives`、`generation`（`model` / `maxTokens` /
 `temperature` / `seed` / `reasoningEffort`）、`chunkSettings`、`timeouts`、`allowedWords`、
-`versions`（4 つすべて）。
+`versions`（4 つすべて）。`allowedWords` は**順序を含めて**比較する（並びが違えばプロンプトが違う）。
+`seed` は未指定どうし（`undefined`）を一致とみなす。
 
 - `conditions.model`（LM Studio が返した `ModelInfo`）は**一致を要求しない**。`state` や
   `loadedContextLength` は実行のたびに変わりうる値で、条件ではない。ただし `id` と `quantization` が
@@ -376,7 +403,8 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
 - `runPipeline` は経由せず、`ensureLoaded` → `chat` を直接呼ぶ。
 - タイムアウトは `--check-timeout-ms` を使う（意味は「この要求のハード上限」で一致する。
   CLI は `recoveryConfirmMs: 0` 相当なので既定の上限がそのまま効く）。1 万字を 1 回で投げるため
-  既定値では足りない可能性が高い旨をヘルプとドキュメントに書く。
+  既定値では足りない可能性が高い旨をヘルプとドキュメントに書く。上限は `MAX_TIMEOUT_MS`
+  （2,147,483,647 ms ≒ 24.8 日）なので、値域が制約になることはない。
 
 ### 決定 16：エクスポートは既存の DTO 射影だけを通す（PR13a-2）
 
@@ -435,7 +463,7 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 - **T1 本文ハッシュ**：同じ本文なら同じ `bodyHash`、1 文字違えば別の値。`RunConditions.manuscript`
   に載ること。移動後も `manuscript_versions.body_hash` が同じ値であること
   （変異：`hashBody` の入力を `body` 以外にする → 落ちる）。
-- **T2 サブコマンド**：`--` 始まりの argv は `run` に振られる（既存のテストが通る）。
+- **T2 サブコマンド**：`--` 始まりの argv と空の argv は `run` に振られる（既存のテストが通る）。
   `evaluate` / `aggregate` に振られる。未知の名前はエラー。`--result` は `aggregate` でだけ
   複数指定できて、`run` の `--out` は今までどおり重複でエラー。
 - **T3 正解の解決**：段落内の 2 回目の出現を `occurrence: 2` で取れる。書記素の内側に落ちる
@@ -485,7 +513,11 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 1. `docs/reference/truth-format.md` に正解ファイルの書き方が（合成の例だけで）書かれている。
 2. `shuten evaluate` が仕様 10 節の自動集計分をすべて出し、人手の指標は空欄として示す。
 3. `shuten aggregate` が N 本のぶれと k/N を出し、条件の不一致を拒否する。
-4. 既存の `shuten --manuscript ... --model ...` が今までどおり動く（既存テストが 1 行も変わらない）。
+4. 既存の `shuten --manuscript ... --model ...` が今までどおり動く。
+   **既存テストの期待値を変えない**——ただし型の追随は許す（`RunConditions.manuscript` に
+   `bodyHash` が増えるので `main.test.ts` と `run/pipeline.test.ts` の `PipelineResult` の組み立てに
+   1 項目足す、`args.ts` の置き場所を変えたなら import 行を直す、の 2 種類だけ）。
+   **期待値（`expect` の右辺）とテスト名は 1 つも書き換えない。**
 5. `pnpm check` が通る。Windows は CI の `windows-latest` で確認する（実機は未確認と明記する）。
 6. ロードマップの PR13a 節と依存関係を、分割（決定 1）に合わせて更新する。
 
@@ -505,14 +537,19 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 - `packages/server/src/db/hash.ts` を `packages/server/src/hash.ts` へ移す（中身は変えない）。
   `db/repositories/manuscripts.ts` の import と `db/hash.test.ts` も一緒に移す。
 - `RunConditions.manuscript` に `bodyHash: string` を足し、`run/pipeline.ts` で `hashBody(text)` を入れる。
+- `main.test.ts` と `run/pipeline.test.ts` が組み立てている `PipelineResult` に `bodyHash` を足す
+  （型の追随。期待値は変えない。完了条件 4）。
+- `hash` サブコマンドは Task 2 でサブコマンドの器ができてから足す。
 - T1 を書く。`RESULT_VERSION` は変えない（変えないことをコメントで明示する）。
 
 ### Task 2：CLI をサブコマンド化する（決定 9）
 
-- `args.ts` の共通部品（`collectRawOptions`、`parseIntegerOption` ほか）を
-  `packages/cli/src/args/common.ts` に出し、既存の `run` 用解釈器を `args/run.ts` にする。
+- `packages/cli/src/args.ts` は**動かさない**（`args.test.ts` と `main.ts` の import 行を触らないため）。
+  共通部品（`collectRawOptions`、`parseIntegerOption` ほか）を `packages/cli/src/args/common.ts` に
+  出して `args.ts` がそれを使う形にし、新しい解釈器は `args/evaluate.ts` のように `args/` 配下に置く。
 - `collectRawOptions` を「既知オプション集合」と「複数回指定を許すオプション集合」を受け取る形にする。
-- `main.ts` の入口でサブコマンドを振り分ける。`--` 始まりは `run`。未知の名前はエラー。
+- `main.ts` の入口でサブコマンドを振り分ける。`--` 始まりと空の argv は `run`。未知の名前はエラー。
+- `hash` サブコマンド（決定 3）をここで足す。
 - T2 を書く。**既存の `args.test.ts` / `main.test.ts` を書き換えない**（後方互換の証拠になる）。
 
 ### Task 3：正解ファイルの読み込みと位置解決（決定 2・4）
