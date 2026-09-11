@@ -14,6 +14,7 @@
   },
   "scripts": {
     "dev": "pnpm --parallel --filter ./packages/server --filter ./packages/web dev",
+    "eval": "node packages/cli/bin/shuten-eval.ts",
     "build": "pnpm --filter ./packages/web build",
     "start": "pnpm --filter ./packages/server start",
     "typecheck": "pnpm -r --sequential typecheck && tsc -p tsconfig.json",

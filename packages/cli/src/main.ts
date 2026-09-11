@@ -1,6 +1,7 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseLmStudioApiKey, parseLmStudioUrl } from "@shuten/server/config.ts";
+import { hashBody } from "@shuten/server/hash.ts";
 import { createLmStudioClient } from "@shuten/server/lmstudio/client.ts";
 import type { LmStudioClient, LmStudioClientOptions } from "@shuten/server/lmstudio/types.ts";
 import type { GenerationSettings } from "@shuten/server/prompts/types.ts";
@@ -10,6 +11,7 @@ import { runPipeline as runPipelineImpl } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus } from "@shuten/server/run/result.ts";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
+import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
 
 /**
@@ -26,7 +28,8 @@ export interface FileIdentity {
 
 /**
  * main の外界依存をすべてここにまとめる。テストでは `runPipeline` などをモックに差し替え、
- * 実際の LM Studio や実ファイルシステムに触れずに検証する。
+ * 実際の LM Studio や実ファイルシステムに触れずに検証する。`hash` サブコマンドも原稿読み込み・
+ * 結果書き出しは同じ入出力経路（`readManuscriptBytes` / `writeResult`）を使う。
  */
 export interface MainIO {
   readonly readManuscriptBytes: (path: string) => Promise<Uint8Array>;
@@ -156,15 +159,15 @@ function formatEvent(event: PipelineEvent): string {
 }
 
 /**
- * 評価用 CLI の本体。引数解釈・原稿読み込み・パイプライン実行・結果出力をつなぐだけで、
+ * `run` サブコマンドの本体。引数解釈・原稿読み込み・パイプライン実行・結果出力をつなぐだけで、
  * パイプラインの処理そのものは `@shuten/server` の `runPipeline` に委ねる。
  *
  * 戻り値は終了コード（決定 12）：0 = completed、2 = partially-failed、3 = stopped、1 = 引数・入出力の誤り。
  */
-export async function main(
+async function runRun(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
-  io: MainIO = defaultIO(),
+  io: MainIO,
 ): Promise<number> {
   const parsed = parseArgs(argv);
   if (!parsed.ok) {
@@ -203,8 +206,9 @@ export async function main(
   let manuscriptBytes: Uint8Array;
   try {
     manuscriptBytes = await io.readManuscriptBytes(args.manuscriptPath);
-  } catch (error) {
-    io.writeErrorLine(`原稿ファイルを読み込めません: ${messageOf(error)}`);
+  } catch {
+    // Node の fs の例外メッセージはパスを含むため、原因を連結せず固定文言だけを出す（決定 9）。
+    io.writeErrorLine("原稿ファイルを読み込めません");
     return 1;
   }
   let text: string;
@@ -220,8 +224,8 @@ export async function main(
     let allowedWordsBytes: Uint8Array;
     try {
       allowedWordsBytes = await io.readAllowedWordsBytes(args.allowedWordsPath);
-    } catch (error) {
-      io.writeErrorLine(`許容語ファイルを読み込めません: ${messageOf(error)}`);
+    } catch {
+      io.writeErrorLine("許容語ファイルを読み込めません");
       return 1;
     }
     try {
@@ -267,10 +271,94 @@ export async function main(
   const json = JSON.stringify(result, null, 2);
   try {
     await io.writeResult(args.outPath, json);
-  } catch (error) {
-    io.writeErrorLine(`結果の書き出しに失敗しました: ${messageOf(error)}`);
+  } catch {
+    // fs の書き出し失敗のメッセージも書き込み先パスを含みうるため、固定文言だけを出す（決定 9）。
+    io.writeErrorLine("結果の書き出しに失敗しました");
     return 1;
   }
 
   return exitCodeForStatus(result.status);
+}
+
+/**
+ * `hash` サブコマンドの本体（決定 3・9）。原稿を読み込んで `hashBody` の結果を標準出力に
+ * 1 行だけ書く。LM Studio には接続しない。
+ */
+async function runHash(argv: readonly string[], io: MainIO): Promise<number> {
+  const parsed = parseHashArgs(argv);
+  if (!parsed.ok) {
+    io.writeErrorLine(`引数エラー: ${parsed.error}`);
+    return 1;
+  }
+  const args = parsed.value;
+
+  let manuscriptBytes: Uint8Array;
+  try {
+    manuscriptBytes = await io.readManuscriptBytes(args.manuscriptPath);
+  } catch {
+    io.writeErrorLine("原稿ファイルを読み込めません");
+    return 1;
+  }
+  let text: string;
+  try {
+    text = ingestUtf8Bytes(manuscriptBytes);
+  } catch (error) {
+    io.writeErrorLine(`原稿ファイルを UTF-8 として読み込めません: ${messageOf(error)}`);
+    return 1;
+  }
+
+  const hash = hashBody(text);
+  try {
+    // outPath は常に null（標準出力への 1 行だけ）。末尾の改行のみで、ほかには何も出さない。
+    await io.writeResult(null, hash);
+  } catch {
+    io.writeErrorLine("結果の書き出しに失敗しました");
+    return 1;
+  }
+
+  return 0;
+}
+
+type SubcommandDispatch =
+  | { readonly subcommand: "run"; readonly rest: readonly string[] }
+  | { readonly subcommand: "hash"; readonly rest: readonly string[] }
+  | { readonly subcommand: "unknown"; readonly name: string };
+
+/**
+ * 先頭トークンでサブコマンドを振り分ける（決定 9）。`--` 始まりと空の argv は `run` を補う。
+ * サブコマンド名がハイフンで始まることはないので曖昧さがない。
+ */
+function dispatchSubcommand(argv: readonly string[]): SubcommandDispatch {
+  const first = argv[0];
+  if (first === undefined || first.startsWith("--")) {
+    return { subcommand: "run", rest: argv };
+  }
+  if (first === "run") {
+    return { subcommand: "run", rest: argv.slice(1) };
+  }
+  if (first === "hash") {
+    return { subcommand: "hash", rest: argv.slice(1) };
+  }
+  return { subcommand: "unknown", name: first };
+}
+
+/**
+ * 評価用 CLI の入口。先頭トークンでサブコマンドへ振り分ける（決定 9）。
+ * 既存の起動（`--manuscript ... --model ...`）は `run` にそのまま通る。
+ */
+export async function main(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  io: MainIO = defaultIO(),
+): Promise<number> {
+  const dispatch = dispatchSubcommand(argv);
+  switch (dispatch.subcommand) {
+    case "run":
+      return runRun(dispatch.rest, env, io);
+    case "hash":
+      return runHash(dispatch.rest, io);
+    case "unknown":
+      io.writeErrorLine(`引数エラー: 未知のサブコマンドです: ${dispatch.name}`);
+      return 1;
+  }
 }

@@ -1,3 +1,4 @@
+import { hashBody } from "@shuten/server/hash.ts";
 import type { LmStudioClient, LmStudioClientOptions } from "@shuten/server/lmstudio/types.ts";
 import type { PipelineArgs } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus, RunStop } from "@shuten/server/run/result.ts";
@@ -500,5 +501,152 @@ describe("main: --out が入力ファイルを上書きしないこと", () => {
     expect(code).toBe(0);
     expect(captured.receivedPipelineArgs).toHaveLength(1);
     expect(captured.writtenFiles.map((file) => file.path)).toEqual(["out.json"]);
+  });
+});
+
+describe("main T2: サブコマンドの振り分け（決定9）", () => {
+  it("空の argv は run に振られる（既存の「必須オプションがありません」のまま）", async () => {
+    const captured = buildIO();
+    const code = await main([], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("--manuscript");
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+  });
+
+  it("-- 始まりの argv は run に振られる（既存の起動をそのまま通す）", async () => {
+    const captured = buildIO();
+    const code = await main(REQUIRED, {}, captured.io);
+    expect(code).toBe(0);
+    expect(captured.receivedPipelineArgs).toHaveLength(1);
+  });
+
+  it("run を明示しても同じ結果になる", async () => {
+    const captured = buildIO();
+    const code = await main(["run", ...REQUIRED], {}, captured.io);
+    expect(code).toBe(0);
+    expect(captured.receivedPipelineArgs).toHaveLength(1);
+  });
+
+  it("hash サブコマンドに振り分けられ、パイプラインは実行しない", async () => {
+    const captured = buildIO();
+    const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(0);
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+  });
+
+  it("未知のサブコマンド名はエラーになる（終了コード1）", async () => {
+    const captured = buildIO();
+    const code = await main(["frobnicate", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("frobnicate");
+  });
+
+  it("run の --out は今までどおり重複を拒否する", async () => {
+    const captured = buildIO();
+    const code = await main([...REQUIRED, "--out", "a.json", "--out", "b.json"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.receivedPipelineArgs).toHaveLength(0);
+  });
+});
+
+describe("main T22: パスの漏えいを防ぐ（決定9）", () => {
+  // fs の例外メッセージにパスが混入する典型例を模した番兵。実在のパスではない。
+  const SENTINEL_PATH = "/private/leak-should-not-appear/manuscript.txt";
+  const sentinelError = (prefix: string) =>
+    new Error(`${prefix}: no such file or directory, open '${SENTINEL_PATH}'`);
+
+  it("run: 原稿読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildIO({
+      readManuscriptBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(REQUIRED, {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("run: 許容語読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildIO({
+      readAllowedWordsBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main([...REQUIRED, "--allowed-words", "words.txt"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("run: 結果の書き出し失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildIO({
+      writeResult: () => Promise.reject(sentinelError("EACCES")),
+    });
+    const code = await main([...REQUIRED, "--out", "out.json"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("hash: 原稿読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildIO({
+      readManuscriptBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("hash: 結果の書き出し失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildIO({
+      writeResult: () => Promise.reject(sentinelError("EACCES")),
+    });
+    const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+});
+
+describe("main T1後半: hash サブコマンド", () => {
+  it("hashBody(text) の結果を標準出力に1行だけ書く", async () => {
+    const captured = buildIO({
+      readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode("hello")),
+    });
+    const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(0);
+    expect(captured.stdout).toEqual([hashBody("hello")]);
+    expect(captured.stderr).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+  });
+
+  it("BOM 付きバイト列も ingestUtf8Bytes を通してからハッシュ化する", async () => {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("hello")]);
+    const captured = buildIO({ readManuscriptBytes: () => Promise.resolve(bom) });
+    const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(0);
+    expect(captured.stdout).toEqual([hashBody("hello")]);
+  });
+
+  it("LM Studio クライアントを作らない", async () => {
+    const captured = buildIO();
+    await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+  });
+
+  it("原稿が読めないと終了コード1になる", async () => {
+    const captured = buildIO({
+      readManuscriptBytes: () => Promise.reject(new Error("ENOENT")),
+    });
+    const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("--manuscript がないと引数エラーで終了コード1になる", async () => {
+    const captured = buildIO();
+    const code = await main(["hash"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("--manuscript");
   });
 });

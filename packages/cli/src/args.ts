@@ -7,6 +7,16 @@ import {
   RUN_SETTINGS_DEFAULTS,
 } from "@shuten/shared";
 
+import {
+  collectRawOptions,
+  err,
+  ok,
+  parseFiniteNumberOption,
+  parseIntegerOption,
+  parseRangedNumberOption,
+  type Result,
+} from "./args/common.ts";
+
 /**
  * CLI が受け付ける引数（決定 12）。接続先 URL と API キーはここに含めない
  * （シェル履歴に残さないため環境変数からだけ読む。main.ts の責務）。
@@ -64,18 +74,6 @@ const DEFAULTS = {
   recheckTimeoutMs: RUN_SETTINGS_DEFAULTS.timeouts.recheckMs,
 } as const;
 
-type Result<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: string };
-
-function ok<T>(value: T): Result<T> {
-  return { ok: true, value };
-}
-
-function err<T>(error: string): Result<T> {
-  return { ok: false, error };
-}
-
 /** 既知のオプション名の集合。値を取る形式（`--flag value`）のみを受け付ける。 */
 const KNOWN_OPTIONS = [
   "--manuscript",
@@ -96,82 +94,6 @@ const KNOWN_OPTIONS = [
   "--check-timeout-ms",
   "--recheck-timeout-ms",
 ] as const;
-type KnownOption = (typeof KNOWN_OPTIONS)[number];
-const KNOWN_OPTION_SET: ReadonlySet<string> = new Set(KNOWN_OPTIONS);
-
-/** `--flag value` の並びをオプション名ごとの生の文字列に集める。 */
-function collectRawOptions(argv: readonly string[]): Result<ReadonlyMap<KnownOption, string>> {
-  const raw = new Map<KnownOption, string>();
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
-    if (token === undefined) {
-      break;
-    }
-    if (!KNOWN_OPTION_SET.has(token)) {
-      return err(`未知のオプションです: ${token}`);
-    }
-    const name = token as KnownOption;
-    const value = argv[i + 1];
-    if (value === undefined) {
-      return err(`オプション ${name} に値がありません`);
-    }
-    if (raw.has(name)) {
-      return err(`オプション ${name} が重複しています`);
-    }
-    raw.set(name, value);
-    i += 1;
-  }
-  return ok(raw);
-}
-
-/** 十進の整数表記であることを確認してから変換する（`Number` の緩さを避ける）。 */
-function parseIntegerOption(raw: string, name: string, min: number, max: number): Result<number> {
-  if (!/^-?[0-9]+$/.test(raw)) {
-    return err(`${name} は整数でなければなりません: ${JSON.stringify(raw)}`);
-  }
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < min || value > max) {
-    return err(
-      `${name} は ${String(min)} 以上 ${String(max)} 以下の整数でなければなりません: ${raw}`,
-    );
-  }
-  return ok(value);
-}
-
-/**
- * 十進の小数表記（指数表記は不可）であることを確認してから変換する。範囲は課さない。
- * 桁数が極端な表記は `Number` で Infinity になりうるので、有限数であることまで確かめる。
- */
-function parseFiniteNumberOption(raw: string, name: string): Result<number> {
-  if (!/^-?[0-9]+(\.[0-9]+)?$/.test(raw)) {
-    return err(`${name} は数値でなければなりません: ${JSON.stringify(raw)}`);
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value)) {
-    return err(`${name} は有限の数値でなければなりません: ${raw}`);
-  }
-  return ok(value);
-}
-
-/** `parseFiniteNumberOption` に加えて範囲も検証する。 */
-function parseRangedNumberOption(
-  raw: string,
-  name: string,
-  min: number,
-  max: number,
-  maxInclusive: boolean,
-): Result<number> {
-  const parsed = parseFiniteNumberOption(raw, name);
-  if (!parsed.ok) {
-    return parsed;
-  }
-  const value = parsed.value;
-  if (value < min || (maxInclusive ? value > max : value >= max)) {
-    const upper = maxInclusive ? `${String(max)} 以下` : `${String(max)} 未満`;
-    return err(`${name} は ${String(min)} 以上 ${upper} でなければなりません: ${raw}`);
-  }
-  return ok(value);
-}
 
 /**
  * `--perspectives typo,naturalness` を分割し、未知の観点を拒否する。
@@ -210,14 +132,14 @@ function parseReasoningEffort(raw: string): Result<ReasoningEffort> {
 
 /** 引数を解釈する純粋関数。不正な値は例外ではなくエラー値で返す。 */
 export function parseArgs(argv: readonly string[]): ParseArgsResult {
-  const collected = collectRawOptions(argv);
+  const collected = collectRawOptions(argv, { known: KNOWN_OPTIONS });
   if (!collected.ok) {
     return collected;
   }
   const raw = collected.value;
 
-  const manuscriptPath = raw.get("--manuscript");
-  const model = raw.get("--model");
+  const manuscriptPath = raw.get("--manuscript")?.[0];
+  const model = raw.get("--model")?.[0];
   if (manuscriptPath === undefined && model === undefined) {
     return err("必須オプションがありません: --manuscript, --model");
   }
@@ -228,32 +150,32 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
     return err("必須オプションがありません: --model");
   }
 
-  const perspectivesRaw = raw.get("--perspectives");
+  const perspectivesRaw = raw.get("--perspectives")?.[0];
   const perspectives =
     perspectivesRaw === undefined ? ok(DEFAULTS.perspectives) : parsePerspectives(perspectivesRaw);
   if (!perspectives.ok) return perspectives;
 
-  const modeRaw = raw.get("--mode");
+  const modeRaw = raw.get("--mode")?.[0];
   const mode = modeRaw === undefined ? ok(DEFAULTS.mode) : parseMode(modeRaw);
   if (!mode.ok) return mode;
 
   // 既定は "none"（思考なし）。決定記録 0003 の 2026-09-09 の追記による暫定の方針で、
   // 思考ありで動かすときは --reasoning-effort low|medium|high を明示的に渡す。
-  const reasoningEffortRaw = raw.get("--reasoning-effort");
+  const reasoningEffortRaw = raw.get("--reasoning-effort")?.[0];
   const reasoningEffort =
     reasoningEffortRaw === undefined
       ? ok(DEFAULTS.reasoningEffort)
       : parseReasoningEffort(reasoningEffortRaw);
   if (!reasoningEffort.ok) return reasoningEffort;
 
-  const maxTokensRaw = raw.get("--max-tokens");
+  const maxTokensRaw = raw.get("--max-tokens")?.[0];
   const maxTokens =
     maxTokensRaw === undefined
       ? ok(DEFAULTS.maxTokens)
       : parseIntegerOption(maxTokensRaw, "--max-tokens", 1, Number.MAX_SAFE_INTEGER);
   if (!maxTokens.ok) return maxTokens;
 
-  const temperatureRaw = raw.get("--temperature");
+  const temperatureRaw = raw.get("--temperature")?.[0];
   // 範囲は課さない。妥当な範囲はモデルごとに異なり、仕様書 13 節の未決事項（モデルごとの
   // 生成パラメーター）に属するため、CLI では構文上の検証（有限数であること）だけを行う。
   const temperature =
@@ -262,21 +184,21 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
       : parseFiniteNumberOption(temperatureRaw, "--temperature");
   if (!temperature.ok) return temperature;
 
-  const seedRaw = raw.get("--seed");
+  const seedRaw = raw.get("--seed")?.[0];
   const seed =
     seedRaw === undefined
       ? ok<number | undefined>(undefined)
       : parseIntegerOption(seedRaw, "--seed", 0, Number.MAX_SAFE_INTEGER);
   if (!seed.ok) return seed;
 
-  const targetGraphemesRaw = raw.get("--target-graphemes");
+  const targetGraphemesRaw = raw.get("--target-graphemes")?.[0];
   const targetGraphemes =
     targetGraphemesRaw === undefined
       ? ok(DEFAULTS.targetGraphemes)
       : parseIntegerOption(targetGraphemesRaw, "--target-graphemes", 1, Number.MAX_SAFE_INTEGER);
   if (!targetGraphemes.ok) return targetGraphemes;
 
-  const contextGraphemesRaw = raw.get("--context-graphemes");
+  const contextGraphemesRaw = raw.get("--context-graphemes")?.[0];
   const contextGraphemes =
     contextGraphemesRaw === undefined
       ? ok(DEFAULTS.contextGraphemes)
@@ -284,7 +206,7 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
   if (!contextGraphemes.ok) return contextGraphemes;
 
   // --mode full-text でも検証する（使われないだけ）。conditions.chunkSettings に記録される。
-  const recheckContextGraphemesRaw = raw.get("--recheck-context-graphemes");
+  const recheckContextGraphemesRaw = raw.get("--recheck-context-graphemes")?.[0];
   const recheckContextGraphemes =
     recheckContextGraphemesRaw === undefined
       ? ok(DEFAULTS.recheckContextGraphemes)
@@ -296,14 +218,14 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
         );
   if (!recheckContextGraphemes.ok) return recheckContextGraphemes;
 
-  const roundingToleranceRaw = raw.get("--rounding-tolerance");
+  const roundingToleranceRaw = raw.get("--rounding-tolerance")?.[0];
   const roundingTolerance =
     roundingToleranceRaw === undefined
       ? ok(DEFAULTS.roundingTolerance)
       : parseRangedNumberOption(roundingToleranceRaw, "--rounding-tolerance", 0, 1, false);
   if (!roundingTolerance.ok) return roundingTolerance;
 
-  const maxInputGraphemesRaw = raw.get("--max-input-graphemes");
+  const maxInputGraphemesRaw = raw.get("--max-input-graphemes")?.[0];
   const maxInputGraphemes =
     maxInputGraphemesRaw === undefined
       ? ok(DEFAULTS.maxInputGraphemes)
@@ -315,14 +237,14 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
         );
   if (!maxInputGraphemes.ok) return maxInputGraphemes;
 
-  const checkTimeoutMsRaw = raw.get("--check-timeout-ms");
+  const checkTimeoutMsRaw = raw.get("--check-timeout-ms")?.[0];
   const checkTimeoutMs =
     checkTimeoutMsRaw === undefined
       ? ok(DEFAULTS.checkTimeoutMs)
       : parseIntegerOption(checkTimeoutMsRaw, "--check-timeout-ms", 1, TIMEOUT_MS_MAX);
   if (!checkTimeoutMs.ok) return checkTimeoutMs;
 
-  const recheckTimeoutMsRaw = raw.get("--recheck-timeout-ms");
+  const recheckTimeoutMsRaw = raw.get("--recheck-timeout-ms")?.[0];
   const recheckTimeoutMs =
     recheckTimeoutMsRaw === undefined
       ? ok(DEFAULTS.recheckTimeoutMs)
@@ -340,8 +262,8 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
   return ok({
     manuscriptPath,
     model,
-    allowedWordsPath: raw.get("--allowed-words") ?? DEFAULTS.allowedWordsPath,
-    outPath: raw.get("--out") ?? DEFAULTS.outPath,
+    allowedWordsPath: raw.get("--allowed-words")?.[0] ?? DEFAULTS.allowedWordsPath,
+    outPath: raw.get("--out")?.[0] ?? DEFAULTS.outPath,
     mode: mode.value,
     perspectives: perspectives.value,
     maxTokens: maxTokens.value,
