@@ -13,7 +13,11 @@
  *   better-sqlite3 上ではセーブポイントとしてネストする。800 件を個別コミットするより速く、
  *   プロダクションコードには一切触れない）。
  * - 判断に使う値はウォームアップ 1 回の後に測った 5 回の中央値。CI のばらつきに耐えるため、
- *   テストに残す上限は緩めの 1,000 ms とし、判断そのものは作業報告・計画書に残す実測値で行う。
+ *   テストに残す上限は緩めの 5,000 ms とし、判断そのものは作業報告・計画書に残す実測値で行う
+ *   （最終レビュー Minor 6：Windows 実機未確認の遅い CI ランナーでも 1,000 ms は落ちうる時間依存の
+ *   しきい値だったため引き上げた。この上限は桁違いの回帰を捕まえるための歯止めであって、
+ *   据え置き／後続 PR 送りの判断基準ではない——判断は決定 14 に残した実測値（WSL2/Linux で
+ *   中央値 110〜130 ms 台）で行う。決定 14 の実測値の記述そのものは変えていない）。
  * - 実測の中央値は `console.log` に出す（実行環境での値をテスト出力から追えるようにするため）。
  *   Vitest v5 の既定レポーターは**成功したテストの標準出力を畳んで表示しない**ため、値を見るには
  *   `npx vitest run findings.perf.test.ts --reporter=verbose`（または `pnpm --filter @shuten/server exec
@@ -221,7 +225,7 @@ function median(values: readonly number[]): number {
 }
 
 describe("GET /api/runs/:id/findings の性能（計測専用。決定 14）", () => {
-  it(`指摘 ${FINDING_COUNT} 件（理由・再確認・採否つき）を通しても、5 回測った中央値が 1,000 ms を下回る`, async () => {
+  it(`指摘 ${FINDING_COUNT} 件（理由・再確認・採否つき）を通しても、5 回測った中央値が 5,000 ms を下回る`, async () => {
     const harness = open();
     const runId = "perf-run";
     const { targetId, checkUnitId, manuscriptVersionId } = seedRun(harness, runId);
@@ -258,8 +262,9 @@ describe("GET /api/runs/:id/findings の性能（計測専用。決定 14）", (
         `median=${medianMs.toFixed(2)}ms samples=${samples.map((s) => s.toFixed(2)).join(",")}ms`,
     );
 
-    // CI のばらつきに耐える緩い歯止め。据え置き／後続 PR 送りの判断基準は 100 ms（決定 14）で、
-    // これはあくまで異常な遅さを検出するための上限。
-    expect(medianMs).toBeLessThan(1_000);
+    // CI のばらつきに耐える緩い歯止め（最終レビュー Minor 6：遅い Windows の CI ランナーでも
+    // 落ちないよう 1,000 ms から引き上げた）。据え置き／後続 PR 送りの判断基準は 100 ms（決定 14）で、
+    // これはあくまで桁違いの回帰を検出するための上限であり、据え置きの判断基準ではない。
+    expect(medianMs).toBeLessThan(5_000);
   }, 20_000);
 });
