@@ -717,3 +717,138 @@ describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新�
     expect(getFindings).toHaveBeenCalledTimes(1);
   });
 });
+
+// Task 9（指摘から本文への移動、決定 9、申し送り 3）：移動先の決定そのもの（位置確定なら強調、
+// 位置未確定なら検査対象範囲を含む段落）は navigate.test.ts の役割。ここでは配線、特に
+// 「一覧の行をクリックすると、正しい要素に対して scrollIntoView が呼ばれる」ことと、
+// 「本文の強調をクリックして選んだときは移動しない」という違いを固定する。
+// jsdom には scrollIntoView が無い（申し送り 3）ため、Element.prototype にテスト用のスタブを
+// 代入し、テストの後で元に戻す。
+describe("ResultsPage: Task 9 指摘から本文への移動", () => {
+  it("一覧の行をクリックすると移動し、本文の強調をクリックしたときは移動しない", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      renderPage(client);
+
+      await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+      const highlight = document.querySelector('[data-findings~="finding-1"]') as HTMLElement;
+      expect(highlight).not.toBeNull();
+
+      // 本文の強調をクリック：選択は変わる（詳細パネルが出る）が、移動はしない
+      // （すでに見えている場所なので画面を跳ねさせる必要が無いため）。
+      await user.click(highlight);
+      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      // 一覧の行をクリック：同じ指摘を選び直すだけでも、正しい要素（強調）に対して移動する。
+      const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+      await user.click(row);
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.instances[0]).toBe(highlight);
+    } finally {
+      if (originalScrollIntoView === undefined) {
+        delete (Element.prototype as { scrollIntoView?: () => void }).scrollIntoView;
+      } else {
+        Element.prototype.scrollIntoView = originalScrollIntoView;
+      }
+    }
+  });
+
+  it("詳細の『本文の該当箇所へ移動』を押すと移動する（位置未確定なら検査対象範囲の段落へ）", async () => {
+    const user = userEvent.setup();
+    // 位置未確定の指摘。検査対象（target-1）は三段落目（BODY の 10-14）の内側（10-12）を指す。
+    const finding1 = makeFinding({
+      id: "finding-1",
+      locateStatus: "not-found",
+      range: null,
+      targetId: "target-1",
+      quote: "未確認の引用",
+    });
+    const runDetail = {
+      ...makeRunDetail({ status: "completed" }),
+      targets: [
+        {
+          id: "target-1",
+          targetIndex: 0,
+          target: { start: 10, end: 12 },
+          contextBefore: null,
+          contextAfter: null,
+          input: { start: 10, end: 12 },
+          paragraphIds: [2],
+        },
+      ],
+    };
+    const getRun = vi.fn(() => Promise.resolve(runDetail));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      renderPage(client);
+
+      await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+      const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+      await user.click(row);
+      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+
+      // 一覧の行クリックでも移動するので、ここまでの呼び出しは無視し、詳細の操作子を押した
+      // 分だけを見る。
+      scrollIntoView.mockClear();
+
+      const navigateButton = await screen.findByRole("button", { name: "本文の該当箇所へ移動" });
+      await user.click(navigateButton);
+
+      const paragraph = document.querySelector('[data-paragraph-id="2"]') as HTMLElement;
+      expect(paragraph).not.toBeNull();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.instances[0]).toBe(paragraph);
+    } finally {
+      if (originalScrollIntoView === undefined) {
+        delete (Element.prototype as { scrollIntoView?: () => void }).scrollIntoView;
+      } else {
+        Element.prototype.scrollIntoView = originalScrollIntoView;
+      }
+    }
+  });
+
+  it("該当する検査対象が無ければ移動の操作子を出さない", async () => {
+    const finding1 = makeFinding({
+      id: "finding-1",
+      locateStatus: "not-found",
+      range: null,
+      targetId: "target-missing", // targets に無い
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" }))); // targets: []
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+    const user = userEvent.setup();
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+
+    expect(screen.queryByRole("button", { name: "本文の該当箇所へ移動" })).not.toBeInTheDocument();
+  });
+});

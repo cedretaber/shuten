@@ -34,8 +34,16 @@
  * カウンタにする。選択を解除しても・別の指摘を選び直しても本編の再取得は要らないため。
  * 取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲（引用・理由・判定など）は
  * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
- * `onNavigate` はまだ渡さない（Task 9 が本文へのスクロールを実装してから渡すようになる。
- * 渡らない間は `FindingDetail` 側が移動の操作子を出さない）。
+ * 本文への移動（Task 9、決定 9、仕様 4 の手順 5・5.3）：本文の容器（`.bodyColumn`）に
+ * `bodyContainerRef` を持たせ、`navigationTargetOf`（`navigate.ts`）で移動先を決めて
+ * `findTargetElement` で要素を探し、`scrollIntoViewIfPossible` で移動する。移動するのは
+ * 「一覧の行をクリックしたとき」（`handleSelectFindingFromList`）と「詳細の『本文の該当箇所へ
+ * 移動』を押したとき」（`FindingDetail` の `onNavigate`）の 2 経路だけ。本文の強調をクリックして
+ * 選んだとき（`handleSelectFinding`、`BodyView` に渡す方）と、詳細内の「関連する他の指摘」の
+ * リンクをクリックしたとき（`FindingDetail` の `onSelectFinding`）は移動しない
+ * （前者はすでに見えている場所なので画面を跳ねさせる必要が無いため。後者は仕様が求める 2 経路に
+ * 含まれないため、範囲を広げない）。該当する検査対象が `targets` に無い（`navigationTargetOf` が
+ * `null` を返す）ときは `FindingDetail` に `onNavigate` を渡さず、移動の操作子そのものを出さない。
  *
  * 採否と判断メモ（Task 8、決定 13）：`putJudgment` の呼び出しはこのコンポーネント（`handleSaveJudgment`）
  * に閉じる（状態の持ち主を 1 か所にするため。操作子そのものは `judgment-control.tsx`）。
@@ -70,6 +78,8 @@ import { DEFAULT_FINDING_FILTER, toHighlights, visibleFindings } from "./finding
 import { FindingFilterControls } from "./finding-filter.tsx";
 import { FindingList } from "./finding-list.tsx";
 import { RUN_STATUS_LABELS } from "./labels.ts";
+import type { NavigationTarget } from "./navigate.ts";
+import { findTargetElement, navigationTargetOf, scrollIntoViewIfPossible } from "./navigate.ts";
 import styles from "./results-page.module.css";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
 
@@ -197,9 +207,40 @@ export function ResultsPage() {
 
   // 本文の強調（クリック）と一覧の行（クリック）の両方から同じ状態を更新する。参照を安定させ、
   // `BodyView` 側の `React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
+  // ここでは選択するだけで本文への移動はしない（本文の強調はすでに見えている場所をクリックした
+  // ものなので、画面を跳ねさせる必要が無い。移動する経路は `handleSelectFindingFromList` と
+  // `FindingDetail` の `onNavigate` の 2 つだけ。Task 9）。
   const handleSelectFinding = useCallback((findingId: string) => {
     setSelectedFindingId(findingId);
   }, []);
+
+  // 本文の容器（`.bodyColumn`）。移動先の要素をここから探す（Task 9）。
+  const bodyContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // 移動先（`NavigationTarget`）が決まったあと、実際に DOM 要素を探してスクロールする共通処理。
+  const scrollToTarget = useCallback((target: NavigationTarget) => {
+    const container = bodyContainerRef.current;
+    if (container === null) return;
+    const element = findTargetElement(container, target);
+    if (element === null) return;
+    scrollIntoViewIfPossible(element);
+  }, []);
+
+  // 一覧の行をクリックしたとき（Task 9）：選択に加えて本文へ移動する。`state` が "loaded" でない、
+  // 選んだ指摘が見つからない、移動先が無い（`targets` に対応する検査対象が無い）のいずれかなら
+  // 選択だけ行い、移動はしない。
+  const handleSelectFindingFromList = useCallback(
+    (findingId: string) => {
+      setSelectedFindingId(findingId);
+      if (state.kind !== "loaded") return;
+      const finding = state.findings.find((f) => f.id === findingId);
+      if (finding === undefined) return;
+      const target = navigationTargetOf(finding, state.targets, state.manuscript.body);
+      if (target === null) return;
+      scrollToTarget(target);
+    },
+    [state, scrollToTarget],
+  );
 
   // 絞り込みの変更では、判定を絞り込み後の集合に対して行う（`setState` の関数形は現在の state
   // を渡すだけで、変更後の filter は見えないため）。選択中の指摘が新しい絞り込みで消えたら
@@ -290,6 +331,20 @@ export function ResultsPage() {
     [selectedFinding, visible],
   );
 
+  // 選択中の指摘の移動先（Task 9）。`null` なら `FindingDetail` に `onNavigate` を渡さず、
+  // 移動の操作子そのものを出さない（該当する検査対象が `targets` に無い場合など）。
+  const selectedNavigationTarget = useMemo(
+    () =>
+      selectedFinding === null || state.kind !== "loaded"
+        ? null
+        : navigationTargetOf(selectedFinding, state.targets, state.manuscript.body),
+    [selectedFinding, state],
+  );
+  const handleNavigate = useCallback(() => {
+    if (selectedNavigationTarget === null) return;
+    scrollToTarget(selectedNavigationTarget);
+  }, [selectedNavigationTarget, scrollToTarget]);
+
   const manuscriptBody = state.kind === "loaded" ? state.manuscript.body : null;
   // `body` と `highlights`（＝絞り込み結果由来）の両方に依存させる。`BodyView` 側の
   // `React.memo` は参照比較なので、依存が揃っていないと不要な再描画抑止に失敗する。
@@ -321,7 +376,7 @@ export function ResultsPage() {
 
           {!isSettingsStop(state.run) && (
             <div className={styles.layout}>
-              <div className={styles.bodyColumn}>
+              <div className={styles.bodyColumn} ref={bodyContainerRef}>
                 <BodyView
                   paragraphs={paragraphs}
                   selectedFindingId={selectedFindingId}
@@ -336,7 +391,7 @@ export function ResultsPage() {
                   filter={filter}
                   onFilterChange={handleFilterChange}
                   selectedFindingId={selectedFindingId}
-                  onSelectFinding={handleSelectFinding}
+                  onSelectFinding={handleSelectFindingFromList}
                 />
                 {selectedFinding !== null && related !== null && (
                   <FindingDetail
@@ -347,6 +402,10 @@ export function ResultsPage() {
                     sameRange={related.sameRange}
                     overlapping={related.overlapping}
                     onSelectFinding={handleSelectFinding}
+                    // `onNavigate` は省略可（`exactOptionalPropertyTypes` の下では `undefined` を
+                    // 明示的に渡すのと「キー自体を省く」のは別物）。移動先が無いときはキーごと省き、
+                    // `FindingDetail` 側に「渡されていない」と判定させて操作子を出させない。
+                    {...(selectedNavigationTarget !== null ? { onNavigate: handleNavigate } : {})}
                     onSaveJudgment={handleSaveJudgment}
                   />
                 )}
