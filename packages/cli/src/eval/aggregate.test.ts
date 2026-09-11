@@ -510,6 +510,85 @@ describe("aggregateRuns: model の扱い（決定12）", () => {
     expect(notice).toContain("4096");
     expect(notice).toContain("8192");
   });
+
+  // PR #24 レビュー指摘 2：欠損があっても、既知どうしは比較する
+  // （「1 本でも欠ければ全体の比較をやめる」ではない）。
+  describe("欠損があっても既知どうしは比較する（決定12・PR #24 レビュー指摘2）", () => {
+    it(
+      "quantization: 3本中2本が不一致・1本が欠損ならエラーになる" +
+        "（変異：全部揃っているときだけ比較する形に戻すと落ちる）",
+      () => {
+        const a = baseResult({
+          conditions: baseConditions({ model: modelInfo({ quantization: "Q4_K_M" }) }),
+        });
+        const b = baseResult({
+          conditions: baseConditions({ model: modelInfo({ quantization: "Q8_0" }) }),
+        });
+        const c = baseResult({ conditions: baseConditions({ model: null }) });
+        const outcome = aggregateRuns([baseMetrics(), baseMetrics(), baseMetrics()], [a, b, c]);
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) return;
+        expect(outcome.errors.some((e) => e.includes("quantization"))).toBe(true);
+      },
+    );
+
+    it(
+      "model.id: 3本中2本が不一致・1本が欠損ならエラーになる" +
+        "（変異：全部揃っているときだけ比較する形に戻すと落ちる）",
+      () => {
+        const a = baseResult({
+          conditions: baseConditions({ model: modelInfo({ id: "model-a" }) }),
+        });
+        const b = baseResult({
+          conditions: baseConditions({ model: modelInfo({ id: "model-b" }) }),
+        });
+        const c = baseResult({ conditions: baseConditions({ model: null }) });
+        const outcome = aggregateRuns([baseMetrics(), baseMetrics(), baseMetrics()], [a, b, c]);
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok) return;
+        expect(outcome.errors.some((e) => e.includes("model.id"))).toBe(true);
+      },
+    );
+
+    it("quantization: 3本中2本が一致・1本が欠損ならエラーにならず notice が出る", () => {
+      const a = baseResult({
+        conditions: baseConditions({ model: modelInfo({ quantization: "Q4_K_M" }) }),
+      });
+      const b = baseResult({
+        conditions: baseConditions({ model: modelInfo({ quantization: "Q4_K_M" }) }),
+      });
+      const c = baseResult({ conditions: baseConditions({ model: null }) });
+      const outcome = aggregateRuns([baseMetrics(), baseMetrics(), baseMetrics()], [a, b, c]);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.value.notices.some((n) => n.includes("量子化"))).toBe(true);
+    });
+
+    it("model.id: 3本中2本が一致・1本が欠損ならエラーにならず notice が出る", () => {
+      const a = baseResult({
+        conditions: baseConditions({ model: modelInfo({ id: "model-a" }) }),
+      });
+      const b = baseResult({
+        conditions: baseConditions({ model: modelInfo({ id: "model-a" }) }),
+      });
+      const c = baseResult({ conditions: baseConditions({ model: null }) });
+      const outcome = aggregateRuns([baseMetrics(), baseMetrics(), baseMetrics()], [a, b, c]);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.value.notices.some((n) => n.includes("モデル情報"))).toBe(true);
+    });
+
+    it("全部欠損なら比較せず notice だけでエラーにならない", () => {
+      const a = baseResult({ conditions: baseConditions({ model: null }) });
+      const b = baseResult({ conditions: baseConditions({ model: null }) });
+      const c = baseResult({ conditions: baseConditions({ model: null }) });
+      const outcome = aggregateRuns([baseMetrics(), baseMetrics(), baseMetrics()], [a, b, c]);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.value.notices.some((n) => n.includes("量子化"))).toBe(true);
+      expect(outcome.value.notices.some((n) => n.includes("モデル情報"))).toBe(true);
+    });
+  });
 });
 
 // --- 率の集計：rate が null の実行が混ざる場合（決定12） ------------------------------------------

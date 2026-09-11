@@ -157,16 +157,55 @@ function checkSame(
 }
 
 /**
+ * 非 null の値だけを取り出して一致を検査する（決定 12。PR #24 レビュー指摘 2）。
+ * **「1 本でも値が欠ければ全体の比較をやめる」ではない。** 非 null の値が 2 件以上あれば、
+ * その値どうしを比較する（1 件以下なら比較しようがないので何もしない）。欠損した実行が
+ * あることは、この関数の対象外——呼び出し側が別途 notices に出す。
+ *
+ * 値そのものを出してよいかは `showValues` で切り替える。実行番号（実行N）は元の実行順
+ * （1 起点）を使う。欠損分を詰めて数え直すと、どの実行が食い違ったのか読み手に伝わらない。
+ */
+function checkSameAmongPresent(
+  errors: string[],
+  label: string,
+  values: readonly (string | null)[],
+  showValues: boolean,
+): void {
+  const present: { readonly runIndex: number; readonly value: string }[] = [];
+  values.forEach((value, runIndex) => {
+    if (value !== null) {
+      present.push({ runIndex, value });
+    }
+  });
+  if (present.length < 2) return;
+  const first = present[0];
+  if (first === undefined) return;
+  for (let i = 1; i < present.length; i += 1) {
+    const entry = present[i];
+    if (entry === undefined) continue;
+    if (entry.value !== first.value) {
+      errors.push(
+        showValues
+          ? `${label}が実行間で一致しません（実行${String(first.runIndex + 1)}: ${first.value}、実行${String(entry.runIndex + 1)}: ${entry.value}）`
+          : `${label}が実行間で一致しません`,
+      );
+      return;
+    }
+  }
+}
+
+/**
  * 条件の一致検査（決定 12）。次が全ファイルで一致しなければエラー（警告で済ませない）：
  * `conditions.manuscript.bodyHash`、`mode`、`perspectives`、`generation`（`model` / `maxTokens` /
  * `temperature` / `seed` / `reasoningEffort`）、`chunkSettings`、`timeouts`、`allowedWords`（順序含む）、
  * `versions` の 4 つすべて。`seed` は未指定どうし（`undefined`）を一致とみなす。
  *
  * `conditions.model`（`ModelInfo | null`）は項目ごとに分ける：
- * - `id`：全実行で `model` が非 null のときだけ比較する（`model` が null なら id も取れていない）。
- * - `quantization`：全実行で `quantization` が非 null のときだけ比較する（`model` は非 null でも
- *   `quantization` 自体が null なことがある。LM Studio が返さなかった場合）。
- *   どちらも「値が取れていなければエラーにせず notices に出す」（取れなかったことを「一致」に丸めない）。
+ * - `id` / `quantization`：**非 null の値どうしを比較する**（`checkSameAmongPresent`）。
+ *   「1 本でも欠ければ比較全体をやめる」ではない——2 本以上で値が取れていれば、取れた値どうしを
+ *   比較し、食い違えばエラーにする。欠損（`model` が null、または `quantization` 自体が null。
+ *   LM Studio が返さなかった場合）はそれとは別に notices へ出す（取れなかったことを「一致」にも
+ *   「比較しない」にも丸めない）。
  * - `state` は比較しない。`loadedContextLength` は notices に出すだけ。
  *
  * `aggregateRuns` から内部で呼ばれるほか、`main.ts` が resolveTruthEntries・scoreRun という
@@ -274,31 +313,16 @@ export function checkRunConditions(
   );
 
   const models = conditionsList.map((c) => c.model);
-  const allModelPresent = models.every((m) => m !== null);
-  if (allModelPresent) {
-    checkSame(
-      errors,
-      "model.id",
-      models.map((m) => (m === null ? "" : m.id)),
-      true,
-    );
-  } else {
-    notices.push("モデル情報（id）を取得できなかった実行があります（比較を省略しました）");
+  const modelIds = models.map((m) => (m === null ? null : m.id));
+  checkSameAmongPresent(errors, "model.id", modelIds, true);
+  if (modelIds.some((id) => id === null)) {
+    notices.push("モデル情報（id）を取得できなかった実行があります");
   }
 
   const quantizations = models.map((m) => (m === null ? null : m.quantization));
-  const allQuantizationPresent = quantizations.every((q) => q !== null);
-  if (allQuantizationPresent) {
-    checkSame(
-      errors,
-      "model.quantization",
-      quantizations.map((q) => (q === null ? "" : q)),
-      true,
-    );
-  } else {
-    notices.push(
-      "量子化を確認できなかった実行があります（quantization が取得できなかったため比較を省略しました）",
-    );
+  checkSameAmongPresent(errors, "model.quantization", quantizations, true);
+  if (quantizations.some((q) => q === null)) {
+    notices.push("量子化を確認できなかった実行があります");
   }
 
   // loadedContextLength は比較しない（実行のたびに変わりうる）。記録上の注意として出すだけ。
