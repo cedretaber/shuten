@@ -1167,6 +1167,262 @@ describe("db/repositories/findings", () => {
     close();
   });
 
+  it("C1: listFindings は飛び番・交互の candidate_index でも各指摘の reasons を昇順で返す（決定 10）", () => {
+    const { db, close } = setupDb();
+    const { run, target, typoUnit } = setupTargets(db);
+
+    const findingA = insertFinding(db, {
+      id: "f-a",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字A",
+      suggestion: "修正案A",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key-a",
+      suppression: null,
+    });
+    const findingB = insertFinding(db, {
+      id: "f-b",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      paragraphId: 0,
+      quote: "誤字B",
+      suggestion: "修正案B",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key-b",
+      suppression: null,
+    });
+    const findingC = insertFinding(db, {
+      id: "f-c",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 6, end: 8 },
+      paragraphId: 0,
+      quote: "誤字C",
+      suggestion: "修正案C",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key-c",
+      suppression: null,
+    });
+
+    // A に candidate_index 0・4、B に 1・2、C に 3 を与える（飛び番かつ交互）。
+    // ID の辞書順を candidate_index の順とは指摘ごとに逆にする（各指摘内で "-z" が先、"-a" が後の
+    // candidate_index を持つ）。orderBy を asc(candidates.id) に取り違えても、この逆転がなければ
+    // 偶然一致してテストが通ってしまうため（R18b と同じ姿勢）。
+    insertCandidate(db, {
+      id: "c-a-z",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingA.id,
+      candidateIndex: 0,
+      llm: makeLlm({ reason: "A-0" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "key-a",
+    });
+    insertCandidate(db, {
+      id: "c-b-z",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingB.id,
+      candidateIndex: 1,
+      llm: makeLlm({ reason: "B-1" }),
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      mergeKey: "key-b",
+    });
+    insertCandidate(db, {
+      id: "c-b-a",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingB.id,
+      candidateIndex: 2,
+      llm: makeLlm({ reason: "B-2" }),
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      mergeKey: "key-b",
+    });
+    insertCandidate(db, {
+      id: "c-c3",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingC.id,
+      candidateIndex: 3,
+      llm: makeLlm({ reason: "C-3" }),
+      locateStatus: "located",
+      range: { start: 6, end: 8 },
+      mergeKey: "key-c",
+    });
+    insertCandidate(db, {
+      id: "c-a-a",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingA.id,
+      candidateIndex: 4,
+      llm: makeLlm({ reason: "A-4" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "key-a",
+    });
+
+    const listed = listFindings(db, run.id);
+    const byId = new Map(listed.map((f) => [f.id, f]));
+
+    // A は candidate_index 0 → 4 の順（c-a-z が先、c-a-a が後。ID の辞書順とは逆）。
+    expect(byId.get("f-a")?.reasons.map((r) => r.candidateId)).toEqual(["c-a-z", "c-a-a"]);
+    // B は 1 → 2 の順（c-b-z が先、c-b-a が後。ID の辞書順とは逆）。
+    expect(byId.get("f-b")?.reasons.map((r) => r.candidateId)).toEqual(["c-b-z", "c-b-a"]);
+    close();
+  });
+
+  it("C2: listFindings は観点の違う複数候補を1指摘のreasonsに正しく並べる（決定 10）", () => {
+    const { db, close } = setupDb();
+    const { run, target, typoUnit, naturalnessUnit } = setupTargets(db);
+
+    const finding = insertFinding(db, {
+      id: "f1",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字",
+      suggestion: "修正案",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key1",
+      suppression: null,
+    });
+
+    insertCandidate(db, {
+      id: "c-typo",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: finding.id,
+      candidateIndex: 0,
+      llm: makeLlm({ reason: "誤字の理由" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "key1",
+    });
+    insertCandidate(db, {
+      id: "c-naturalness",
+      runId: run.id,
+      checkUnitId: naturalnessUnit.id,
+      findingId: finding.id,
+      candidateIndex: 1,
+      llm: makeLlm({ reason: "自然さの理由" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "key1",
+    });
+
+    const listed = listFindings(db, run.id);
+    expect(listed).toHaveLength(1);
+    // check_units との結合が指摘単位に潰れておらず、候補ごとに正しい perspective が付く。
+    expect(listed[0]?.reasons).toEqual([
+      { candidateId: "c-typo", perspective: "typo", reason: "誤字の理由" },
+      { candidateId: "c-naturalness", perspective: "naturalness", reason: "自然さの理由" },
+    ]);
+    close();
+  });
+
+  it("C3: listFindings は指摘A・Bのreasonsがそれぞれ自分の候補だけであることを完全一致で検査し、outside-targetの候補がどちらにも混ざらない（決定 2・10）", () => {
+    const { db, close } = setupDb();
+    const { run, target, typoUnit } = setupTargets(db);
+
+    const findingA = insertFinding(db, {
+      id: "f-a",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "誤字A",
+      suggestion: "修正案A",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key-a",
+      suppression: null,
+    });
+    const findingB = insertFinding(db, {
+      id: "f-b",
+      runId: run.id,
+      manuscriptVersionId: "mv1",
+      targetId: target.id,
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      paragraphId: 0,
+      quote: "誤字B",
+      suggestion: "修正案B",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: "key-b",
+      suppression: null,
+    });
+
+    insertCandidate(db, {
+      id: "c-a0",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingA.id,
+      candidateIndex: 0,
+      llm: makeLlm({ reason: "Aの理由" }),
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: "key-a",
+    });
+    insertCandidate(db, {
+      id: "c-b1",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingB.id,
+      candidateIndex: 1,
+      llm: makeLlm({ reason: "Bの理由" }),
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      mergeKey: "key-b",
+    });
+    // outside-target（finding_id が null）の候補を同じ実行に混ぜる。
+    insertCandidate(db, {
+      id: "c-outside",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: null,
+      candidateIndex: 2,
+      llm: makeLlm({ reason: "統合先の無い理由" }),
+      locateStatus: "outside-target",
+      range: null,
+      mergeKey: null,
+    });
+
+    const listed = listFindings(db, run.id);
+    const byId = new Map(listed.map((f) => [f.id, f]));
+
+    // A の reasons は A のものだけ、B の reasons は B のものだけ（完全一致）。
+    expect(byId.get("f-a")?.reasons).toEqual([
+      { candidateId: "c-a0", perspective: "typo", reason: "Aの理由" },
+    ]);
+    expect(byId.get("f-b")?.reasons).toEqual([
+      { candidateId: "c-b1", perspective: "typo", reason: "Bの理由" },
+    ]);
+    close();
+  });
+
   it("listCandidateSourcesForFinding: 候補のない指摘には空配列を返す", () => {
     const { db, close } = setupDb();
     const { run, target } = setupTargets(db);
