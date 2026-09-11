@@ -93,10 +93,10 @@
 取り直しの成否を知らないので規則 4 を実行できず、逆に `ResultsPage` は SSE のイベントを直接
 受け取れない。そこで所有と通知を次のように分ける。
 
-- `ResultsPage` が `streamEnded` と `streamDisconnected` を持ち、
+- `ResultsPage` が `streamEnded` と `streamConnection` を持ち、
   `enabled = run.status === "running" && !streamEnded` を計算して hook に渡す。
 - `useRunStream` は `enabled` が真のときだけ購読し、`onSettled()` と
-  `onConnectionStateChange("open" | "disconnected")` で `ResultsPage` に知らせる。
+  `onConnectionStateChange("open" | "reconnecting" | "closed")` で `ResultsPage` に知らせる。
 - `useEffect` の依存は `[runId, enabled]`。
 
 規則 4 の判定は**軽い取得（`getRun` + `getRunUnits`）の成功だけ**で行う。実行の状態は
@@ -907,6 +907,9 @@ export interface RunControlProps {
 ```ts
 export type RefreshKind = "light" | "heavy";
 
+/** 決定 4：SSE の接続状態（最終レビュー Important 1 で `closed` を分けた）。 */
+export type StreamConnectionState = "open" | "reconnecting" | "closed";
+
 export interface RunStreamOptions {
   readonly runId: string;
   /**
@@ -918,8 +921,9 @@ export interface RunStreamOptions {
   readonly onRefresh: (kind: RefreshKind) => void;
   /** 決定 1 の規則 3：`run-settled` を受けた（購読は既に閉じてある）。 */
   readonly onSettled: () => void;
-  /** 決定 4：SSE の接続状態。`open` は再接続の成功も含む。 */
-  readonly onConnectionStateChange: (state: "open" | "disconnected") => void;
+  /** 決定 4：SSE の接続状態。`open` は再接続の成功も含む。`closed` は恒久的に閉じた
+   *  （`readyState === CLOSED`。以後再接続しない）。 */
+  readonly onConnectionStateChange: (state: StreamConnectionState) => void;
   /** 決定 10：遅延通知の unitId。 */
   readonly onGenerationSlow: (unitId: string) => void;
 }
@@ -930,7 +934,7 @@ export function useRunStream(options: RunStreamOptions): void;
 `EventSource` の注入は `ApiClient.subscribeRunEvents` が持つ（決定 16）ので、この hook は
 構築子を受け取らない。hook は `useApiClient()` から `subscribeRunEvents` を引く。
 
-**`streamEnded` / `streamDisconnected` の所有者は `ResultsPage`**（決定 1）。hook は状態を持たず、
+**`streamEnded` / `streamConnection` の所有者は `ResultsPage`**（決定 1）。hook は状態を持たず、
 上の 3 つのコールバックで知らせるだけにする。開通時は `onConnectionStateChange("open")` の後に
 `onRefresh("heavy")`、`run-settled` では `onSettled()` の後に `onRefresh("heavy")` を呼ぶ。
 
@@ -944,8 +948,8 @@ export function useRunStream(options: RunStreamOptions): void;
 - 反映は 2 段（決定 3）：`getRun` + `getRunUnits` の成功をまず反映し、`getFindings` と詳細は
   別に反映する。後者の失敗で前者を巻き戻さない（B15）。
 - `refreshing` は手動のときだけ立てる。自動の失敗は `autoRefreshError`（真偽値）に畳む（決定 4）。
-- `streamEnded` / `streamDisconnected` は `ResultsPage` が持つ（決定 1）。規則 4 の解除は
-  **軽い取得の成功だけ**で判定し、重い取得の成否を待たない（B14）。決定 4 の 3 行の出し分けも
+- `streamEnded` / `streamConnection` は `ResultsPage` が持つ（決定 1）。規則 4 の解除は
+  **軽い取得の成功だけ**で判定し、重い取得の成否を待たない（B14）。決定 4 の 4 行の出し分けも
   ここで行う（B16）。
 - 操作（stop/resume/retry/confirm）の後は、成功・失敗を問わず `heavy` で取り直す（決定 8）。
   2 段反映があるので、`getFindings` がこけても操作の結果はボタンと進捗に出る。

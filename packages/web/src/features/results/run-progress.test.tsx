@@ -102,7 +102,7 @@ describe("RunProgress: 再確認の有無", () => {
   });
 });
 
-describe("RunProgress: B8 観点別の内訳（決定 5・11）", () => {
+describe("B8: RunProgress の観点別の内訳（決定 5・11）", () => {
   it("units から観点別の件数が出る（決定 5）", () => {
     const progress = makeProgress();
     const units: RunUnitsDto = {
@@ -265,7 +265,7 @@ describe("RunProgress: 遅延通知（決定 10）", () => {
   });
 });
 
-describe("RunProgress: B8 仕様 9 節の担保（割合・残り時間・<progress> を出さない）", () => {
+describe("B8: RunProgress の仕様 9 節の担保（割合・残り時間・<progress> を出さない）", () => {
   it("%（割合）を示す文字がどこにも出ない", () => {
     const progress = makeProgress({
       checkUnits: makeCounts({ done: 3, pending: 7 }),

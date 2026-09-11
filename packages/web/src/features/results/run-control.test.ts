@@ -340,7 +340,7 @@ describe("statusNotice", () => {
   });
 });
 
-describe("controlFailureOf（B10：決定 8 の案内文）", () => {
+describe("B10: controlFailureOf（決定 8 の案内文）", () => {
   it("run-not-active", () => {
     const error = new ApiRequestError(409, "run-not-active", "実行中ではありません: run-1");
     expect(controlFailureOf(error)).toEqual({
