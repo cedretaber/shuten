@@ -433,6 +433,25 @@ shuten aggregate --manuscript <原稿> --truth <正解.json> --result a.json --r
   **中央値は、本数が偶数なら中央 2 値の算術平均**とする（実装差が出ないよう明記する。
   既存の `median`（`packages/server/src/api/findings.perf.test.ts`。5 回測る前提で奇数個しか
   想定していない）は流用しない）。
+
+**`rate` が `null` の実行が混ざる場合を定義する。** 分母は実行ごとに変わるので、
+決定 19 の `rate: null` は**普通に起こる**（実行 A は指摘 0 件で誤検出率が `null`、
+実行 B は指摘 3 件で数値、など）。`null` を `0` として並べれば数字が下振れし、黙って除いて
+中央値を出せば「何本から出した値か」が読めない。率の集計は必ず次の形にする。
+
+```ts
+{
+  availableRuns: number;    // rate が数値だった実行の本数
+  unavailableRuns: number;  // rate が null だった実行の本数（分母 0）
+  min: number | null;
+  median: number | null;
+  max: number | null;
+}
+```
+
+- **`min` / `median` / `max` は `rate` が数値の実行だけで計算する。**
+- **全実行が `null` なら 3 値とも `null`。** `availableRuns` が 0 であることが理由になる。
+- `availableRuns + unavailableRuns` は必ず結果ファイルの本数に等しい（読み手が確かめられる）。
   k/N は「たまたま拾えた誤り」と「安定して拾える誤り」を分ける唯一の材料で、
   1 回の実行では絶対に見えない。
 - `--result` は 2 本以上必要（1 本ならぶれを測れないのでエラー）。
@@ -692,6 +711,10 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
   （4 本で 2 番目と 3 番目が違う値になる固定データを置く。変異：下側を採る → 落ちる）。
   **`quantization` が両方取れていて食い違えばエラー**（変異：警告にする → 落ちる）。
   片方が `null` ならエラーにせず注意として出る。`state` の違いはエラーにならない。
+  **`rate` の `null` が混ざる場合**（決定 12）：3 本のうち 1 本だけ `rate` が `null` のとき、
+  `availableRuns: 2` / `unavailableRuns: 1` になり、`min` / `median` / `max` は残り 2 本だけから
+  出る（変異：`null` を `0` として並べる → 落ちる。変異：黙って除いて `availableRuns` を出さない
+  → 落ちる）。**全実行が `null`** なら 3 値とも `null` で `availableRuns: 0`。
 - **T11 出力**：`--out` 未指定で標準出力に JSON。指標 JSON に `formatVersion` がある。
   レポート Markdown に人手の欄が空で出る。
 - **T16 結果 JSON の検証**（決定 18）：項目の欠落・未知の enum・`versions.result` の不一致で、
@@ -705,9 +728,11 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
   （変異：`quote` の一致検査を外す → 範囲だけ壊れた指摘が別の正解項目を検出したことになり、落ちる）。
   エラーに `quote` と本文の断片が出ないこと。
 - **T17 分母 0**（決定 19）：`error` 項目 0 件／指摘 0 件／候補 0 件／その観点の `error` 0 件の
-  4 ケースで、`rate` が `null` になり `numerator` と `denominator` が付く
-  （変異：`0` に丸める → 落ちる。変異：`NaN` を入れる → JSON 化で `null` になるが
-  `denominator` が 0 でないことで落ちる）。レポートに `—（分母 0）` と出る。
+  4 ケースで、`rate` が `null` になり `numerator` と `denominator` が付く（変異：`0` に丸める → 落ちる）。
+  **`NaN` の検査は `score` の戻り値を JSON 化する前に直接見る**——`rate === null` かつ
+  `Number.isNaN(rate) === false` を確かめる。`JSON.stringify` を通した後では `NaN` も正しい `null` も
+  同じ `null` になり、区別できない（変異：`0 / 0` をそのまま入れる → JSON 化前の検査で落ちる）。
+  レポートに `—（分母 0）` と出る。
 - **T18 対応付け**（決定 20）：段落まるごとを引用した 1 件の指摘が 3 つの error 項目に
   重なるとき、検出は 1 件だけ（変異：1 対 1 を外す → 落ちる）。`detectedLoose` は 3 件。
   `findingsOverlappingMultipleErrors` にその指摘が出る。重なりの長さが同じ組でも
@@ -756,6 +781,7 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 2. `pnpm eval evaluate` が仕様 10 節の自動集計分をすべて出し、人手の指標は空欄として示す。
    率はすべて `{ numerator, denominator, rate }` で、分母 0 では `rate` が `null`。
 3. `pnpm eval aggregate` が N 本のぶれと k/N を出し、条件の不一致（量子化を含む）を拒否する。
+   率は `rate` が `null` の実行を除いて計算し、除いた本数を `unavailableRuns` で示す。
 4. 既存の `node packages/cli/bin/shuten-eval.ts --manuscript ... --model ...` が今までどおり動く。
    **既存テストの期待値を変えない**——ただし型の追随は許す（`RunConditions.manuscript` に
    `bodyHash` が増えるので `main.test.ts` と `run/pipeline.test.ts` の `PipelineResult` の組み立てに
@@ -840,7 +866,8 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 ### Task 7：`aggregate`（決定 12・21）
 
 - `packages/cli/src/eval/aggregate.ts`：条件一致の検査（量子化を含む）、最小・中央値・最大、k/N。
-  中央値は偶数本なら中央 2 値の算術平均（決定 12）。
+  中央値は偶数本なら中央 2 値の算術平均、率は `{ availableRuns, unavailableRuns, min, median, max }`
+  で `null` の実行を除いて計算する（決定 12）。
 - `args/aggregate.ts`（`--result` は複数指定可、2 本以上必須、重複はエラー）と `main.ts` の接続。
 - T10 と T19 の `aggregate` 側を書く。
 
