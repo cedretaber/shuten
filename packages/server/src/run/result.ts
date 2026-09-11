@@ -205,6 +205,12 @@ export interface RunConditions {
     readonly graphemeCount: number;
     readonly paragraphCount: number;
     readonly targetCount: number;
+    /**
+     * `hashBody(text)` の値（決定 3）。正解ファイル・原稿・結果 JSON が同じ原稿を指しているかを
+     * 評価ツールが 3 方向に確かめるための鍵。項目の追加であり構造の破壊的変更ではないので、
+     * この追加だけを理由に `RESULT_VERSION` は上げない。
+     */
+    readonly bodyHash: string;
   };
 }
 

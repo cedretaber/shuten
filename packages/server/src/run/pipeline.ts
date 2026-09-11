@@ -24,6 +24,7 @@ import {
   validateChunkSettings,
 } from "@shuten/shared";
 
+import { hashBody } from "../hash.ts";
 import type { LmStudioClient } from "../lmstudio/types.ts";
 import type { GenerationSettings } from "../prompts/types.ts";
 import { splitAllowedWords } from "./allowed-words.ts";
@@ -171,6 +172,7 @@ export async function runPipeline(args: PipelineArgs): Promise<PipelineResult> {
           graphemeCount: countGraphemes(args.text),
           paragraphCount: paragraphs.length,
           targetCount,
+          bodyHash: hashBody(args.text),
         },
       },
       targets: targetPlans,

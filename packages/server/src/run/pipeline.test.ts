@@ -8,6 +8,7 @@ import {
   splitParagraphs,
 } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
+import { hashBody } from "../hash.ts";
 import { createLmStudioClient } from "../lmstudio/client.ts";
 import { LmStudioError } from "../lmstudio/errors.ts";
 import type {
@@ -1066,5 +1067,17 @@ describe("runPipeline", () => {
     );
     expect(result.totals.findings).toBe(result.findings.length);
     expect(result.totals.unlocated.notFound).toBe(result.unlocated.length);
+  });
+
+  it("P30: conditions.manuscript.bodyHash が hashBody(text) と一致し、本文が 1 文字でも違えば値が変わる", async () => {
+    const mock = createMockClient();
+
+    const result = await runPipeline(baseArgs(mock.client));
+    const same = await runPipeline(baseArgs(mock.client));
+    const changed = await runPipeline(baseArgs(mock.client, { text: `${TEXT}\n` }));
+
+    expect(result.conditions.manuscript.bodyHash).toBe(hashBody(TEXT));
+    expect(result.conditions.manuscript.bodyHash).toBe(same.conditions.manuscript.bodyHash);
+    expect(result.conditions.manuscript.bodyHash).not.toBe(changed.conditions.manuscript.bodyHash);
   });
 });

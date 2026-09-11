@@ -29,6 +29,9 @@ importers:
       '@shuten/shared':
         specifier: workspace:*
         version: link:../shared
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
 
   packages/server:
     dependencies:
