@@ -1,5 +1,5 @@
 /**
- * `results-page.tsx` と `run-header.tsx` が使うレイアウト用スタイル。
+ * `results-page.tsx`・`run-header.tsx`・`run-progress.tsx` が使うレイアウト用スタイル。
  * 本文自体の見た目（段落・強調）は `results.module.css`（`body-view.tsx` 専用）の役割で、
  * ここでは上部（ヘッダー）と左右 2 カラムの骨組みだけを持つ。
  */
@@ -36,6 +36,56 @@
 }
 
 .stopMessage {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+/*
+ * 進捗の表示（Task 3、決定 5・10・11。`run-progress.tsx`）。仕様 9 節「根拠のない残り時間を
+ * 示さない」のとおり、割合バーや残り時間の見た目は持たない（件数の文字列だけ）。
+ */
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.progressSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.progressLine {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+.progressDetailList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.progressPerspectiveList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.progressSlowNotice {
+  margin: 0;
   font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
 }
