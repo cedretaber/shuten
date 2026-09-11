@@ -5,13 +5,24 @@
  * 世代番号による古い応答の破棄、404・取得失敗・`settings` 停止の扱い、指摘 0 件の文言分岐
  * （決定 2）、「最新の状態を取得」での再取得を確認する。
  *
- * 詳細・採否は Task 7 以降が作る。ここでは `BodyView` が正しい段落数で描けること、右側の
+ * 採否の操作は Task 8 が作る。ここでは `BodyView` が正しい段落数で描けること、右側の
  * 指摘一覧と絞り込み（決定 7・8・10。`finding-filter.ts`・`finding-filter.tsx`・
  * `finding-list.tsx` の連携。単体の検査は `finding-filter.test.ts`・`finding-list.test.tsx`）が
  * `ResultsPage` に正しく組み込まれていることまでを見る。
+ *
+ * 指摘詳細（Task 7、決定 3・9・12）の表示規則そのもの（`describeRecheck`・`relatedFindings`・
+ * 決定 9 の `paragraphId` 非表示など）は `finding-detail.test.ts`・`finding-detail.test.tsx` の役割。
+ * ここでは選択と `getFinding` の配線（1 回だけ呼ばれること、取得前でも一覧が持つ情報から
+ * 引用・理由が出ること、関連する他の指摘のリンクで選択が移ること）だけを見る。
  */
 
-import type { FindingDto, ManuscriptVersionDto, RunDetailDto, RunDto } from "@shuten/shared";
+import type {
+  FindingDetailDto,
+  FindingDto,
+  ManuscriptVersionDto,
+  RunDetailDto,
+  RunDto,
+} from "@shuten/shared";
 import { splitParagraphs } from "@shuten/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -104,6 +115,16 @@ function makeFinding(overrides: Partial<FindingDto> = {}): FindingDto {
       updatedAt: "2026-09-10T00:00:00.000Z",
     },
     createdAt: "2026-09-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** `getFinding` の応答（Task 7）。`makeFinding` に候補・診断を足しただけの最小構成。 */
+function makeFindingDetail(overrides: Partial<FindingDetailDto> = {}): FindingDetailDto {
+  return {
+    ...makeFinding(),
+    candidates: [],
+    diagnostics: [],
     ...overrides,
   };
 }
@@ -423,7 +444,12 @@ describe("ResultsPage: Task 6 選択中の指摘が消えたら選択が外れ�
     const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
     const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
     const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
-    const client = makeClient({ getRun, getManuscript, getFindings });
+    // Task 7：選択すると getFinding が呼ばれるようになったので、この Task 6 のテストでも
+    // 応答を用意する（このテスト自体は選択の解除だけを見ており、詳細取得は検査対象ではない）。
+    const getFinding = vi.fn((findingId: string) =>
+      Promise.resolve(makeFindingDetail({ id: findingId })),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
 
     renderPage(client);
 
@@ -554,5 +580,89 @@ describe("ResultsPage: Task 6 抑制候補・撤回候補の表示切替え", ()
       expect(document.querySelector('[data-findings~="finding-withdrawn"]')).toBeNull(),
     );
     expect(screen.getByText("0 / 2 件")).toBeInTheDocument();
+  });
+});
+
+// Task 7（指摘詳細、決定 3・9・12）：選択と `getFinding` の配線。表示規則そのものは
+// `finding-detail.test.ts`・`finding-detail.test.tsx` で検査済みなので、ここでは配線だけを見る。
+describe("ResultsPage: Task 7 指摘詳細の取得配線", () => {
+  it("指摘を選択すると getFinding が 1 回呼ばれる", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+    expect(getFinding).toHaveBeenCalledWith("finding-1");
+  });
+
+  it("取得前（getFinding が未解決）でも、一覧が持つ情報から引用と理由が出る", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({
+      id: "finding-1",
+      quote: "あ",
+      reasons: [{ candidateId: "candidate-1", perspective: "typo", reason: "誤字の可能性がある" }],
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const detailDeferred = deferred<FindingDetailDto>();
+    const getFinding = vi.fn(() => detailDeferred.promise);
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+    // getFinding はまだ解決していないが、引用・理由は finding（一覧が持つ情報）から既に出ている
+    // （詳細パネルの「原文」見出しの直後の段落で見る。本文の段落表示にも同じ文字「一」が出るため
+    // BODY.slice の文字列一致だけでは一意に絞れない）。
+    expect(screen.getByText("原文")).toBeInTheDocument();
+    expect(screen.getByText(/誤字の可能性がある/)).toBeInTheDocument();
+    // 元候補・位置診断の欄だけが「読み込み中」。
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+  });
+
+  it("他の指摘（同じ範囲）のリンクをクリックすると選択が移り、getFinding がその指摘で呼ばれる", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "あ" });
+    const finding2 = makeFinding({ id: "finding-2", range: { start: 0, end: 1 }, quote: "い" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
+    const getFinding = vi.fn((findingId: string) =>
+      Promise.resolve(makeFindingDetail({ id: findingId })),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    const rows = document.querySelectorAll(`.${findingListStyles.findingRow}`);
+    await user.click(rows[0] as HTMLElement);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    // finding-1 と finding-2 は range が完全一致するので「同じ範囲の他の指摘」に finding-2 が出る。
+    // 一覧側の行（finding-2）の見出しにも「い」を含むボタンがあるため、完全一致の名前で
+    // 詳細パネル側のリンクだけを狙う（`誤字・表記：い`）。
+    const relatedButton = await screen.findByRole("button", { name: "誤字・表記：い" });
+    await user.click(relatedButton);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+    // 一覧側の選択表示も finding-2 に移っている。
+    const rowsAfter = document.querySelectorAll(`.${findingListStyles.findingRow}`);
+    expect((rowsAfter[1] as HTMLElement).getAttribute("aria-current")).toBe("true");
   });
 });

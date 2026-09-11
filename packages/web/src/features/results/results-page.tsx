@@ -27,9 +27,24 @@
  * データの再取得（更新ボタン・`id` の変更）で選択中の指摘そのものが無くなった場合も同様に戻す。
  *
  * `progress`（PR12b の担当）と `targets`（Task 9 が使う）は本タスクでも読み捨てるだけで描画しない。
+ *
+ * 指摘詳細（Task 7、決定 3・9・12）：選択中の指摘 ID が変わるたびに `getFinding` を 1 回呼ぶ
+ * （キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。専用の世代番号
+ * （`detailGenerationRef`）で古い応答を捨てる——`requestGenerationRef`（3 つの取得）とは別の
+ * カウンタにする。選択を解除しても・別の指摘を選び直しても本編の再取得は要らないため。
+ * 取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲（引用・理由・判定など）は
+ * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
+ * `onNavigate` はまだ渡さない（Task 9 が本文へのスクロールを実装してから渡すようになる。
+ * 渡らない間は `FindingDetail` 側が移動の操作子を出さない）。
  */
 
-import type { FindingDto, ManuscriptVersionDto, RunDto, RunTargetDto } from "@shuten/shared";
+import type {
+  FindingDetailDto,
+  FindingDto,
+  ManuscriptVersionDto,
+  RunDto,
+  RunTargetDto,
+} from "@shuten/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
@@ -37,6 +52,8 @@ import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES } from "../../app/routes.ts";
 import { buildBodyView } from "./body-view.ts";
 import { BodyView } from "./body-view.tsx";
+import { relatedFindings } from "./finding-detail.ts";
+import { FindingDetail } from "./finding-detail.tsx";
 import type { FindingFilter } from "./finding-filter.ts";
 import { DEFAULT_FINDING_FILTER, toHighlights, visibleFindings } from "./finding-filter.ts";
 import { FindingFilterControls } from "./finding-filter.tsx";
@@ -188,11 +205,57 @@ export function ResultsPage() {
     [state],
   );
 
+  // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに 1 回だけ `getFinding` を
+  // 呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。`requestGenerationRef`
+  // （本編の取得）とは別の世代カウンタで、選び直すたびに世代を進めて古い応答を捨てる。
+  const [findingDetail, setFindingDetail] = useState<FindingDetailDto | null>(null);
+  const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
+  const detailGenerationRef = useRef(0);
+
+  useEffect(() => {
+    if (selectedFindingId === null) {
+      setFindingDetail(null);
+      setFindingDetailError(null);
+      return;
+    }
+    const generation = ++detailGenerationRef.current;
+    // 選び直した直後は前の詳細を出さない（取得中は「一覧が持つ情報だけで描く」状態にする。
+    // `FindingDetail` 側が `detail === null` を「読み込み中」として扱う）。
+    setFindingDetail(null);
+    setFindingDetailError(null);
+    apiClient.getFinding(selectedFindingId).then(
+      (detail) => {
+        if (detailGenerationRef.current !== generation) return; // 古い応答（選び直した後）
+        setFindingDetail(detail);
+      },
+      (cause: unknown) => {
+        if (detailGenerationRef.current !== generation) return;
+        // 詳細の取得失敗は詳細パネルの当該欄にだけエラーを出す（詳細全体を消さない）。
+        setFindingDetailError(errorMessageFrom(cause));
+      },
+    );
+  }, [apiClient, selectedFindingId]);
+
   const findings = state.kind === "loaded" ? state.findings : EMPTY_FINDINGS;
   // 決定 7：強調に渡すのは「絞り込み後に一覧へ出ている、位置が確定した指摘」だけ。隠れている
   // 指摘は強調しない（強調を押しても一覧に行が無い、という状態を作らないため）。
   const visible = useMemo(() => visibleFindings(findings, filter), [findings, filter]);
   const highlights = useMemo(() => toHighlights(visible), [visible]);
+
+  // 選択中の指摘そのもの（一覧から探す。絞り込みで隠れていても選択は残りうるが、その場合は
+  // `handleFilterChange` が既に選択を null に戻しているので、通常は `visible` にも含まれる）。
+  const selectedFinding = useMemo(
+    () =>
+      selectedFindingId === null
+        ? null
+        : (findings.find((f) => f.id === selectedFindingId) ?? null),
+    [findings, selectedFindingId],
+  );
+  // 決定 8 の 2 群。「可視の指摘」（絞り込み後に一覧へ出ているもの）から作り、自分自身を除く。
+  const related = useMemo(
+    () => (selectedFinding === null ? null : relatedFindings(selectedFinding, visible)),
+    [selectedFinding, visible],
+  );
 
   const manuscriptBody = state.kind === "loaded" ? state.manuscript.body : null;
   // `body` と `highlights`（＝絞り込み結果由来）の両方に依存させる。`BodyView` 側の
@@ -242,6 +305,17 @@ export function ResultsPage() {
                   selectedFindingId={selectedFindingId}
                   onSelectFinding={handleSelectFinding}
                 />
+                {selectedFinding !== null && related !== null && (
+                  <FindingDetail
+                    finding={selectedFinding}
+                    detail={findingDetail}
+                    detailError={findingDetailError}
+                    body={state.manuscript.body}
+                    sameRange={related.sameRange}
+                    overlapping={related.overlapping}
+                    onSelectFinding={handleSelectFinding}
+                  />
+                )}
               </div>
             </div>
           )}

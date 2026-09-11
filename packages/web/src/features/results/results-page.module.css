@@ -171,3 +171,98 @@
   font-size: var(--font-size-md);
   color: var(--color-fg);
 }
+
+/*
+ * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.sideColumn` の中、`.findingsPanel` の下に置く。
+ * 引用・修正案・理由・判断メモは `.findingQuote` と違い**折り返して全文を表示する**
+ * （一覧の見出しと違い、詳細では省略しない。ブリーフの指示）。
+ */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-md);
+}
+
+.detailHeading {
+  margin: 0;
+  font-size: var(--font-size-md);
+}
+
+.suppressionNote {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.detailQuote {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.suggestionInvalidNote {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.detailReasonList {
+  margin: 0;
+  padding-left: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detailRelatedList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detailRelatedButton {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.detailNavigateButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+/* 元候補・位置診断（決定 12。詳細の末尾に畳んで置く）。 */
+.detailRaw {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-sm);
+}
+
+.detailRawList {
+  margin: 0;
+  padding-left: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
