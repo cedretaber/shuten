@@ -516,7 +516,7 @@ jsdom の制約（PR12a で確認済み）：`getBoundingClientRect()` は常に
 | B8 | 決定 5・11：観点別の件数が `/units` から作られ、割合・残り時間がどこにも出ない |
 | B9 | 決定 6：状態ごとにボタンの出し分けが表のとおりになる（`running` / `recovery-waiting` / `stopped`(settings) / `stopped`(その他) / `partially-failed` / `completed` の 6 通り） |
 | B10 | 決定 8：409 の `code` ごとに案内が変わり、必ず `getRun` が取り直される。`error.message` が画面に出ない |
-| B11 | 決定 12：`/units` の `failure.message` / `pendingNote` / `finishReason` に番兵を入れても画面に出ない（`leak.test.tsx`） |
+| B11 | 決定 12：`/units` の `failure.message` / `pendingNote` / `finishReason` / `RecheckUnitDto.reason` に番兵を入れても画面に出ない（`leak.test.tsx`） |
 | B12 | 決定 9・10：中間状態の文と遅延の通知が出る／消える |
 | B13 | 決定 1・2：`status === "running"` でないときは購読しない。`running` になったら購読する |
 | B14 | 決定 1 の規則 3・4：`run-settled` の後の取り直しが**失敗**したら購読は張り直されず、「自動更新は停止しています」が出る。その後の取り直しで**軽い取得が成功して `status` が `running`** なら、**続く `getFindings` が失敗しても**購読が張り直される |
@@ -581,6 +581,11 @@ S1 の手順（Playwright、`pnpm dev`）：
   解消ではない。
 - 失敗単位の一覧から、その単位が出した指摘へ移動する経路は持ち越し。
 - 実行一覧（`/runs`）は自動更新しない。
+- `EventSource` が**恒久的に閉じた**（再接続の試行が 2xx 以外や MIME 不一致で返り `readyState` が
+  `CLOSED` になった）あと、自動更新はこの PR の範囲では復活しない。案内は「自動更新は停止しています。
+  『最新の状態を取得』を押してください。」に倒れて嘘をつかなくなり、手動の取り直しでデータは追いつく
+  が、購読そのものは張り直されない（張り直しの合図を `streamEnded` の規則 4 に相乗りさせると、
+  終端イベントの受信と接続の死という別の事象を混ぜることになるため見送った。最終レビュー I-1）。
 - 初回読み込みで `GET /api/runs/:id/units` の取得に失敗すると、結果画面全体が表示されない。
   決定 3 の「そろうまで描かない」（初回読み込みは `getRun` / `getManuscript` / `getRunUnits` /
   `getFindings` が全部そろってから描く）どおりの挙動だが、PR12a までは `/units` を取得していな
