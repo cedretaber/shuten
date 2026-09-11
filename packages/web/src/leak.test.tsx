@@ -398,10 +398,11 @@ describe("漏えい検査：接続設定画面以外（決定 18）", () => {
 
     // 実行一覧（Task 10・決定 16）。RunSummaryDto は endpointUrl を持たないが、ヘッダー
     // （全画面共通）を経由した漏えいはここでも起こり得るため、他の画面と同じ検査を行う。
+    // `<h1>検査結果</h1>` は取得の成否に関わらず描かれるため、それだけを待つと読み込み中の
+    // うちに検査してしまい空振りになる。取得したデータに依存する行の中身（原稿名）が
+    // 実際に出るまで待ってから検査する。
     await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：一覧へ" }));
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "検査結果" })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("原稿（漏えい検査用）")).toBeInTheDocument());
     expect(document.body.textContent ?? "").not.toContain(ENDPOINT_URL_HOST_SENTINEL);
     expect(document.body.textContent ?? "").not.toContain(API_KEY_SENTINEL);
 
