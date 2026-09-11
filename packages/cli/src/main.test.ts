@@ -774,6 +774,49 @@ function evalResultJson(
   };
 }
 
+/**
+ * 「別の原稿に対する結果 JSON」を模す：`bodyHash` が違い、かつ `finding.range`/`quote` も
+ * 実際の原稿（`EVAL_TEXT`）の該当範囲と一致しない。`aggregate` の T10 順序検査
+ * （ハッシュ照合を `validateFindingRanges` より先に行う）専用の fixture。
+ */
+function evalResultJsonForDifferentManuscript(): unknown {
+  const base = evalResultJson({ bodyHash: "f".repeat(64) }) as Record<string, unknown>;
+  return {
+    ...base,
+    findings: [
+      {
+        targetIndex: 0,
+        finding: {
+          id: "f-other",
+          range: { start: 0, end: 5 },
+          quote: "ぜんぜんちがう",
+          category: "notation",
+          suggestion: null,
+          verdict: "likely-error",
+          sources: [
+            {
+              id: "f-other-c0",
+              perspective: "typo",
+              llm: {
+                paragraphId: 0,
+                quote: "ぜんぜんちがう",
+                before: "",
+                after: "",
+                category: "notation",
+                reason: "テスト理由",
+                suggestion: null,
+                verdict: "likely-error",
+              },
+            },
+          ],
+        },
+        suppression: null,
+        recheck: { status: "disabled" },
+      },
+    ],
+  };
+}
+
 function buildEvalIO(overrides: Partial<MainIO> = {}): CapturedIO {
   return buildIO({
     readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode(EVAL_TEXT)),
@@ -1188,6 +1231,31 @@ describe("main aggregate T10: 複数回実行の集計（決定12）", () => {
     expect(captured.stdout).toHaveLength(0);
     expect(captured.writtenFiles).toHaveLength(0);
     expect(captured.stderr.join("\n")).toContain("mode");
+  });
+
+  it("処理の順序：ハッシュ照合を validateFindingRanges より先に行う（evaluate と同じ順序）", async () => {
+    // 2本目が「別の原稿に対する結果 JSON」（bodyHash も違い、quote/range も本文と一致しない）。
+    // ハッシュ照合が先なら「bodyHash が一致しません」という分かりやすいエラーになる。
+    // 順序を入れ替える変異（validateFindingRanges を先に行う）だと、分かりにくい
+    // 「quote が本文の該当範囲と一致しません」が先に出て、このテストは落ちる。
+    const captured = buildAggregateIO({
+      readResultBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              path === "result2.json" ? evalResultJsonForDifferentManuscript() : evalResultJson(),
+            ),
+          ),
+        ),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
   });
 });
 

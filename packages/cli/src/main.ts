@@ -488,20 +488,24 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
  * `aggregate` サブコマンドの本体（決定 3・4・9・10・12・13・18・21。Task 7 ブリーフ）。
  * `evaluate`（Task 6）と同じ部品を、`--result` の本数ぶん回して使う。
  *
- * 処理の順序（Task 7 ブリーフの指定どおり）：
+ * 処理の順序（`evaluate` と同じ並び：ハッシュ照合を `validateFindingRanges` より先に行う。
+ * コーディネーターの指摘により、最初の実装にあった逆順を修正した）：
  * 1. 引数の解釈
  * 2. 出力先の衝突検査（決定 21。`--result` どうしの重複も含む）
  * 3. 原稿を読む
  * 4. 正解ファイルを読む
- * 5. 各結果 JSON を 1 本ずつ（`parseResultJson` → `validateFindingRanges`）
- * 6. 3 方向のハッシュ照合（結果は本数ぶん）
- * 7. 条件の一致検査（決定 12。`resolveTruthEntries`・`scoreRun` という重い処理の前に fail-fast する）
- * 8. `resolveTruthEntries`
- * 9. 各実行に `scoreRun`
- * 10. 集計（`aggregateRuns`。内部でも条件の一致検査を行うが、7 で既に確認済みなのでここでは
+ * 5. 各結果 JSON を 1 本ずつ `parseResultJson`（形の検証だけ）
+ * 6. 3 方向のハッシュ照合（結果は本数ぶん）。原稿の取り違えはここで「bodyHash が一致しません」
+ *    という一言で分かる形にする（`validateFindingRanges` より後ろだと「quote が本文と一致しません」
+ *    という分かりにくいエラーが先に出てしまう）
+ * 7. 各結果に `validateFindingRanges`（決定 18 の意味の検証）
+ * 8. 条件の一致検査（決定 12。`resolveTruthEntries`・`scoreRun` という重い処理の前に fail-fast する）
+ * 9. `resolveTruthEntries`
+ * 10. 各実行に `scoreRun`
+ * 11. 集計（`aggregateRuns`。内部でも条件の一致検査を行うが、8 で既に確認済みなのでここでは
  *     必ず成功する。二重に検査するのは、`aggregateRuns` 単体でも条件不一致を拒否できることを
  *     保証する契約（Task 7 ブリーフが固定した型）を保ちながら、CLI 経路では無駄な計算を避けるため）
- * 11. 出力（集計 JSON と、`--report` があれば Markdown レポート）
+ * 12. 出力（集計 JSON と、`--report` があれば Markdown レポート）
  *
  * どの段でも、失敗したら集計せずに終了コード 1 で終わる。部分的な数字は見せない。
  */
@@ -568,7 +572,7 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   }
   const truth = parsedTruth.value;
 
-  // 5. 各結果 JSON を1本ずつ（parseResultJson → validateFindingRanges）。
+  // 5. 各結果 JSON を1本ずつ parseResultJson（形の検証だけ。意味の検証は7で行う）。
   const results: EvaluationResultInput[] = [];
   for (const [index, resultPath] of args.resultPaths.entries()) {
     const resultText = await readEvalResultText(io, resultPath);
@@ -590,18 +594,12 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
       );
       return 1;
     }
-    const result = parsedResult.value;
-    const rangeCheck = validateFindingRanges(result, text);
-    if (!rangeCheck.ok) {
-      for (const message of rangeCheck.errors) {
-        io.writeErrorLine(`結果 JSON ${String(index + 1)} 本目: ${message}`);
-      }
-      return 1;
-    }
-    results.push(result);
+    results.push(parsedResult.value);
   }
 
-  // 6. 3方向のハッシュ照合（決定 3。結果は本数ぶん）。
+  // 6. 3方向のハッシュ照合（決定 3。結果は本数ぶん）。evaluate と同じく、意味の検証
+  //    （validateFindingRanges）より先に行う。原稿の取り違えを「bodyHash が一致しません」という
+  //    一言で分かる形にするため（後ろだと「quote が本文と一致しません」が先に出て分かりにくい）。
   const manuscriptHash = hashBody(text);
   const hashMismatches: string[] = [];
   if (manuscriptHash !== truth.manuscript.bodyHash) {
@@ -623,7 +621,19 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     return 1;
   }
 
-  // 7. 条件の一致検査（決定 12）。resolveTruthEntries・scoreRun という重い処理をする前に、
+  // 7. 各結果に validateFindingRanges（決定 18 の意味の検証）。ハッシュが一致した後なので、
+  //    ここに来る不一致は「同じ原稿だが範囲が壊れている」ことを意味する。
+  for (const [index, result] of results.entries()) {
+    const rangeCheck = validateFindingRanges(result, text);
+    if (!rangeCheck.ok) {
+      for (const message of rangeCheck.errors) {
+        io.writeErrorLine(`結果 JSON ${String(index + 1)} 本目: ${message}`);
+      }
+      return 1;
+    }
+  }
+
+  // 8. 条件の一致検査（決定 12）。resolveTruthEntries・scoreRun という重い処理をする前に、
   //    集計不能なら先に失敗させる。
   const conditionCheck = checkRunConditions(results);
   if (conditionCheck.errors.length > 0) {
@@ -633,7 +643,7 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     return 1;
   }
 
-  // 8. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く。
+  // 9. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く。
   const resolved = resolveTruthEntries(truth, text);
   if (!resolved.ok) {
     for (const failure of resolved.failures) {
@@ -654,21 +664,21 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     return 1;
   }
 
-  // 9. 各実行に scoreRun（同じ resolveTruthEntries の結果を使う。全実行が同じ正解項目集合に対して
-  //    採点されることを、正解項目ごとの k/N の分母が意味を持つための前提として保証する）。
+  // 10. 各実行に scoreRun（同じ resolveTruthEntries の結果を使う。全実行が同じ正解項目集合に対して
+  //     採点されることを、正解項目ごとの k/N の分母が意味を持つための前提として保証する）。
   const metricsList = results.map((result) => scoreRun(resolved.value, result));
 
-  // 10. 集計。
+  // 11. 集計。
   const outcome = aggregateRuns(metricsList, results);
   if (!outcome.ok) {
-    // 7 で条件は確認済みなので通常は起こらないが、防御的に扱う。
+    // 8 で条件は確認済みなので通常は起こらないが、防御的に扱う。
     for (const message of outcome.errors) {
       io.writeErrorLine(message);
     }
     return 1;
   }
 
-  // 11. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。
+  // 12. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。
   const json = JSON.stringify(outcome.value, null, 2);
   const written = await writeResultOrFixedError(io, args.outPath, json, "集計");
   if (!written.ok) {
