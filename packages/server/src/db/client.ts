@@ -28,6 +28,15 @@ export type AppDatabase = AppDatabaseHandle["db"];
  */
 export type AppDatabaseLike = BaseSQLiteDatabase<"sync", Database.RunResult, typeof schema>;
 
+export interface CreateDatabaseOptions {
+  /**
+   * 実行された SQL 文を 1 本ずつ受け取る（PR12c 決定 7）。better-sqlite3 の `verbose` に
+   * そのまま渡す継ぎ目で、**テストのための継ぎ目**である。本番の呼び出し（`src/index.ts`）は
+   * この第 2 引数を渡さない。
+   */
+  readonly onStatement?: (sql: string) => void;
+}
+
 /**
  * SQLite を開いて Drizzle のインスタンスを返す。
  *
@@ -37,9 +46,16 @@ export type AppDatabaseLike = BaseSQLiteDatabase<"sync", Database.RunResult, typ
  *
  * WAL のまま開いたファイルを Windows で開き直せないことがあるので、
  * 再起動を模したテストは必ず `close()` してから開き直すこと。
+ *
+ * `options.onStatement` は SQL 文の本数を数える回帰テスト（PR12c 決定 7）のための継ぎ目。
+ * `exactOptionalPropertyTypes` があるため `{ verbose: undefined }` を渡さず、条件付きで
+ * `Database.Options` を組み立てる。
  */
-export function createDatabase(file: string): AppDatabaseHandle {
-  const sqlite = new Database(file);
+export function createDatabase(file: string, options?: CreateDatabaseOptions): AppDatabaseHandle {
+  const onStatement = options?.onStatement;
+  const sqliteOptions: Database.Options =
+    onStatement === undefined ? {} : { verbose: (message) => onStatement(String(message)) };
+  const sqlite = new Database(file, sqliteOptions);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   const db = drizzle(sqlite, { schema });

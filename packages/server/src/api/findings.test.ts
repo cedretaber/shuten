@@ -415,6 +415,140 @@ describe("GET /api/runs/:id/findings", () => {
     expect(f3.judgment).toMatchObject({ findingId: "f3", status: "undecided", note: null });
   });
 
+  it("理由 2 件・再確認あり／なし・採否ありが混ざった一覧を返す（Map 経由でも従来どおり）", async () => {
+    const harness = open();
+    const { targetId, checkUnitId, manuscriptVersionId } = seedRun(harness, "r1");
+
+    // f1：理由 2 件（候補 2 件が統合）、再確認あり、採否は明示的に設定。
+    const finding1 = insertFinding(harness.db, {
+      id: "f1",
+      runId: "r1",
+      manuscriptVersionId,
+      targetId,
+      locateStatus: "located",
+      range: { start: 0, end: 3 },
+      paragraphId: 0,
+      quote: "あいう",
+      suggestion: "あいう(訂正)",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: null,
+      suppression: null,
+    });
+    insertCandidate(harness.db, {
+      id: "f1-c1",
+      runId: "r1",
+      checkUnitId,
+      findingId: finding1.id,
+      candidateIndex: 0,
+      llm: {
+        paragraphId: 0,
+        quote: "あいう",
+        before: "",
+        after: "",
+        category: "notation",
+        reason: "誤字の可能性（1 件目）",
+        suggestion: "あいう(訂正)",
+        verdict: "likely-error",
+      },
+      locateStatus: "located",
+      range: { start: 0, end: 3 },
+      mergeKey: null,
+    });
+    insertCandidate(harness.db, {
+      id: "f1-c2",
+      runId: "r1",
+      checkUnitId,
+      findingId: finding1.id,
+      candidateIndex: 1,
+      llm: {
+        paragraphId: 0,
+        quote: "あいう",
+        before: "",
+        after: "",
+        category: "notation",
+        reason: "誤字の可能性（2 件目）",
+        suggestion: "あいう(訂正)",
+        verdict: "likely-error",
+      },
+      locateStatus: "located",
+      range: { start: 0, end: 3 },
+      mergeKey: null,
+    });
+    insertRecheckUnit(harness.db, {
+      id: "rc1",
+      runId: "r1",
+      findingId: "f1",
+      inputRange: null,
+      status: "pending",
+      notApplicableReason: null,
+      attempts: 0,
+      failure: null,
+      pendingNote: null,
+      verdict: null,
+      reasonKind: null,
+      reason: null,
+      suggestionValid: null,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: null,
+      startedAt: null,
+      finishedAt: null,
+    });
+    finishRecheckUnit(harness.db, "rc1", {
+      expectedStatus: "pending",
+      status: "done",
+      attempts: 1,
+      failure: null,
+      pendingNote: null,
+      notApplicableReason: null,
+      verdict: "keep",
+      reasonKind: "error-confirmed",
+      reason: "問題を確認した",
+      suggestionValid: true,
+      usage: null,
+      inputGraphemes: null,
+      elapsedMs: 50,
+      finishedAt: new Date(),
+    });
+    setJudgment(harness.db, "f1", { status: "adopt-planned", note: "対応する" });
+
+    // f2：再確認なし、採否は既定（undecided）のまま。
+    seedLocatedFinding(harness, {
+      runId: "r1",
+      manuscriptVersionId,
+      targetId,
+      checkUnitId,
+      findingId: "f2",
+      quote: "かきく",
+      range: { start: 5, end: 8 },
+      candidateIndex: 2,
+    });
+
+    const { status, body } = await getJson(harness, "/api/runs/r1/findings");
+
+    expect(status).toBe(200);
+    const findings = findingsOf(body);
+    expect(findings.map((f) => f.id)).toEqual(["f1", "f2"]);
+
+    const f1 = at(findings, 0);
+    expect(f1.reasons).toEqual([
+      { candidateId: "f1-c1", perspective: "typo", reason: "誤字の可能性（1 件目）" },
+      { candidateId: "f1-c2", perspective: "typo", reason: "誤字の可能性（2 件目）" },
+    ]);
+    expect(f1.recheck).toMatchObject({ id: "rc1", status: "done", verdict: "keep" });
+    expect(f1.judgment).toMatchObject({
+      findingId: "f1",
+      status: "adopt-planned",
+      note: "対応する",
+    });
+
+    const f2 = at(findings, 1);
+    expect(f2.reasons).toHaveLength(1);
+    expect(f2.recheck).toBeNull();
+    expect(f2.judgment).toMatchObject({ findingId: "f2", status: "undecided", note: null });
+  });
+
   it("実行が無ければ 404", async () => {
     const harness = open();
 

@@ -6,7 +6,7 @@ import type {
   Perspective,
   Range,
 } from "@shuten/shared";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 
 import type { AppDatabaseLike } from "../client.ts";
 import { createId } from "../ids.ts";
@@ -162,6 +162,26 @@ export type FindingWithReasons = FindingRecord & {
 };
 
 /**
+ * `FindingReason` の組み立てに要る最小限の列。`listReasons` と `listReasonsByRun` は
+ * select する列（後者は `Map` のキー用に `findingId` も含む）が違うため、両方の行型を
+ * 構造的に満たすこの型で受ける。
+ */
+interface FindingReasonSourceRow {
+  readonly candidateId: string;
+  readonly perspective: Perspective;
+  readonly llm: unknown;
+}
+
+/** 1 行から `FindingReason` を組み立てる（`listReasons` と `listReasonsByRun` の共通部分）。 */
+function toFindingReason(row: FindingReasonSourceRow): FindingReason {
+  return {
+    candidateId: row.candidateId,
+    perspective: row.perspective,
+    reason: parseJsonColumn(candidateLlmSchema, row.llm, "llm").reason,
+  };
+}
+
+/**
  * 指摘に統合された元候補から `reasons` を組み立てる（決定 18）。
  * `candidates` を `check_units` と結合して観点を導き（候補側に観点の列はない。決定 19）、
  * `candidate_index` の昇順に並べる。
@@ -178,11 +198,7 @@ function listReasons(db: AppDatabaseLike, findingId: string): readonly FindingRe
     .where(eq(candidates.findingId, findingId))
     .orderBy(asc(candidates.candidateIndex))
     .all();
-  return rows.map((row) => ({
-    candidateId: row.candidateId,
-    perspective: row.perspective,
-    reason: parseJsonColumn(candidateLlmSchema, row.llm, "llm").reason,
-  }));
+  return rows.map(toFindingReason);
 }
 
 function toFindingWithReasons(
@@ -193,11 +209,58 @@ function toFindingWithReasons(
 }
 
 /**
+ * 検査実行に属する全指摘の `reasons` を 1 本の問い合わせで読み、指摘 ID ごとに畳み込んで返す
+ * （決定 2）。`listFindings` 専用（`findFinding` は 1 件取得なので `listReasons` を使い続ける）。
+ *
+ * `candidates.run_id` で絞り、`finding_id` は必ず SELECT して `Map` のキーにする。
+ * `finding_id is not null` は効率と意図の明示のための条件で、応答は変えない（`outside-target`
+ * の候補は統合先を持たないので、この条件を外してもキーが null の組に入るだけで
+ * どの指摘の `reasons` にも混ざらない。決定 2）。
+ *
+ * 読み取りが `candidate_index` 昇順なので、各指摘の配列も `candidate_index` 昇順になる
+ * （現状の `listReasons` と同じ並び）。
+ */
+function listReasonsByRun(db: AppDatabaseLike, runId: string): Map<string, FindingReason[]> {
+  const rows = db
+    .select({
+      candidateId: candidates.id,
+      findingId: candidates.findingId,
+      perspective: checkUnits.perspective,
+      llm: candidates.llm,
+    })
+    .from(candidates)
+    .innerJoin(checkUnits, eq(candidates.checkUnitId, checkUnits.id))
+    .where(and(eq(candidates.runId, runId), isNotNull(candidates.findingId)))
+    .orderBy(asc(candidates.candidateIndex))
+    .all();
+
+  const reasonsByFindingId = new Map<string, FindingReason[]>();
+  for (const row of rows) {
+    // where で finding_id is not null を課しているが、drizzle の select 型はそれを反映しない
+    // （`findingId` の型は nullable のまま）ため、Map のキーにする前に実行時にも確認する。
+    if (row.findingId === null) {
+      continue;
+    }
+    const reason = toFindingReason(row);
+    const existing = reasonsByFindingId.get(row.findingId);
+    if (existing) {
+      existing.push(reason);
+    } else {
+      reasonsByFindingId.set(row.findingId, [reason]);
+    }
+  }
+  return reasonsByFindingId;
+}
+
+/**
  * 検査実行に属する指摘を列挙する。
  *
  * 並びは `start` の昇順、位置特定失敗（`start` が null）のものは最後にする。
  * 同順位（`start` が等しい、または両方 null）は `created_at` → `id` の順で安定させる
  * （安定していればよく、表示上の意味は持たせない）。
+ *
+ * `reasons` は指摘 1 件ごとに問い合わせず、実行全体の候補を 1 本で読んで `Map` から引く
+ * （決定 2・3。旧実装は指摘 N 件で N 回 `listReasons` を呼んでいた）。
  */
 export function listFindings(db: AppDatabaseLike, runId: string): FindingWithReasons[] {
   const rows = db
@@ -211,7 +274,11 @@ export function listFindings(db: AppDatabaseLike, runId: string): FindingWithRea
       asc(findings.id),
     )
     .all();
-  return rows.map((row) => toFindingWithReasons(db, row));
+  const reasonsByFindingId = listReasonsByRun(db, runId);
+  return rows.map((row) => ({
+    ...rowToFindingRecord(row),
+    reasons: reasonsByFindingId.get(row.id) ?? [],
+  }));
 }
 
 /**
