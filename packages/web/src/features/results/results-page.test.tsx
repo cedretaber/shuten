@@ -1372,6 +1372,44 @@ describe("ResultsPage: 実行制御（決定 6・7・8）", () => {
     await waitFor(() => expect(retryFailedUnits).toHaveBeenCalledTimes(1));
     expect(retryFailedUnits).toHaveBeenCalledWith(RUN_ID);
   });
+
+  // Task 6：失敗単位の一覧（`failed-units.tsx`）からの個別再試行。出し分けそのものは
+  // `failed-units.test.tsx` が検査済み。ここでは `results-page.tsx` の配線
+  // （`{ unitIds: [id] }` を付けて呼ぶこと、全件用の口を本文なしで呼ばないこと）だけを見る。
+  it("失敗単位の一覧の『この単位を再試行』を押すと retryFailedUnits を unitIds 1 件で呼ぶ", async () => {
+    const user = userEvent.setup();
+    const failedUnits = makeUnits({
+      checkUnits: [
+        makeCheckUnit({
+          id: "check-1",
+          status: "failed",
+          failure: { reason: "timeout", message: "", finishReason: null, origin: "chat" },
+        }),
+      ],
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "partially-failed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(failedUnits));
+    const retryFailedUnits = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript,
+      getFindings,
+      getRunUnits,
+      retryFailedUnits,
+    });
+
+    renderPage(client);
+
+    const retryButton = await screen.findByRole("button", { name: "この単位を再試行" });
+    await user.click(retryButton);
+
+    await waitFor(() => expect(retryFailedUnits).toHaveBeenCalledTimes(1));
+    expect(retryFailedUnits).toHaveBeenCalledWith(RUN_ID, { unitIds: ["check-1"] });
+    // 空振り防止：全件用（本文なし）の呼び出しと混同していないこと。
+    expect(retryFailedUnits).not.toHaveBeenCalledWith(RUN_ID);
+  });
 });
 
 describe("ResultsPage: 実行制御（決定 6・7・8）別の実行への遷移", () => {

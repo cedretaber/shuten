@@ -112,6 +112,7 @@ import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES } from "../../app/routes.ts";
 import { buildBodyView } from "./body-view.ts";
 import { BodyView } from "./body-view.tsx";
+import { FailedUnits } from "./failed-units.tsx";
 import { relatedFindings } from "./finding-detail.ts";
 import { FindingDetail } from "./finding-detail.tsx";
 import type { FindingFilter } from "./finding-filter.ts";
@@ -386,6 +387,17 @@ export function ResultsPage() {
     runControlAction("retry", (runId) => apiClient.retryFailedUnits(runId));
   }, [runControlAction, apiClient]);
 
+  // Task 6：失敗単位の個別再試行（`failed-units.tsx`）。`runControlAction` の仕組みにそのまま乗せる
+  // （送信中は `pending`、成否によらず取り直し、失敗は `controlFailureOf` で案内。決定 6・36）。
+  const handleRetryUnit = useCallback(
+    (unitId: string) => {
+      runControlAction("retry", (runId) =>
+        apiClient.retryFailedUnits(runId, { unitIds: [unitId] }),
+      );
+    },
+    [runControlAction, apiClient],
+  );
+
   const handleConfirmRecovery = useCallback(() => {
     runControlAction("confirm", (runId) => apiClient.confirmRecovery(runId));
   }, [runControlAction, apiClient]);
@@ -627,6 +639,18 @@ export function ResultsPage() {
               ))}
             </ul>
           )}
+
+          {/* 失敗単位の一覧と個別再試行（Task 6、決定 6・12。裁定 R3）。`isSettingsStop` の外に
+              置く——`settings` 停止でも、それとは無関係な `failed` が残っている形が実在するため
+              （決定 14。`orchestrator.ts` の `retryFailedUnits` のコメント）。出すかどうかの
+              判定自体は `FailedUnits` 内部が `run.status`／失敗単位の有無で行う。 */}
+          <FailedUnits
+            run={state.run}
+            units={state.units}
+            onRetryAll={handleRetryFailed}
+            onRetryUnit={handleRetryUnit}
+            pending={pending}
+          />
 
           {!isSettingsStop(state.run) && (
             <div className={styles.layout}>
