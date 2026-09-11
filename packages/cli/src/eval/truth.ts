@@ -106,14 +106,19 @@ const occurrenceSchema = z
   .int("occurrence は整数でなければなりません")
   .min(1, "occurrence は 1 以上の安全な整数でなければなりません（1 起点。省略時は 1）");
 
-const manuscriptSchema = z.object({
+// 正解ファイルは利用者が手で書く、この PR が定める正本の形式であり、「正当な余分のキー」は
+// 存在しない。未知キー（例：occurrence の誤記 occurence）を黙って取り除くと、既定値で埋めた
+// 別の項目として静かに誤って採点される（PR #24 レビュー指摘 1）。すべて strict にする。
+// 結果 JSON（result-schema.ts）とは事情が違う。あちらは PipelineResult の部分射影で、
+// 実データには読まないキーが必ずあるため strict にしてはならない（同ファイルのコメント参照）。
+const manuscriptSchema = z.strictObject({
   name: z.string(),
   bodyHash: z
     .string()
     .regex(/^[0-9a-f]{64}$/, "manuscript.bodyHash は小文字 16 進 64 文字でなければなりません"),
 });
 
-const errorEntryWire = z.object({
+const errorEntryWire = z.strictObject({
   kind: z.literal("error"),
   id: idSchema,
   perspective: z.enum(
@@ -127,7 +132,7 @@ const errorEntryWire = z.object({
   note: z.string().optional(),
 });
 
-const normalEntryWire = z.object({
+const normalEntryWire = z.strictObject({
   kind: z.literal("normal"),
   id: idSchema,
   paragraphId: paragraphIdSchema,
@@ -164,7 +169,7 @@ const entrySchema: z.ZodType<TruthEntry> = entryWireSchema.transform((entry): Tr
 });
 
 const truthFileSchema: z.ZodType<TruthFile> = z
-  .object({
+  .strictObject({
     formatVersion: z.literal(
       "1",
       '別形式のファイルを黙って読まないため formatVersion は "1" でなければなりません',

@@ -225,6 +225,62 @@ describe("parseTruthFile", () => {
       expect(result.errors.some((e) => e.includes("perspective"))).toBe(true);
     });
   });
+
+  // PR #24 レビュー指摘 1：未知キーは拒否する（誤記を黙って既定値で埋めないため）。
+  describe("未知キーの拒否（strict）", () => {
+    it("occurrence の誤記（occurence）を含む項目を拒否する（変異：strict を外すと既定値 1 で通ってしまい落ちる）", () => {
+      const json = validTruthJson() as { entries: Array<Record<string, unknown>> };
+      const first = json.entries[0];
+      if (first === undefined) throw new Error("fixture broken");
+      delete first.occurrence;
+      first.occurence = 2; // 誤記
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.includes("occurence"))).toBe(true);
+    });
+
+    it('kind: "normal" に perspective を書いたものを拒否する', () => {
+      const json = validTruthJson() as { entries: Array<Record<string, unknown>> };
+      const normal = json.entries[1];
+      if (normal === undefined) throw new Error("fixture broken");
+      normal.perspective = "typo";
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.includes("perspective"))).toBe(true);
+    });
+
+    it("manuscript に未知キーがあれば拒否する", () => {
+      const json = validTruthJson() as { manuscript: Record<string, unknown> };
+      json.manuscript.path = "/home/someone/manuscript.txt";
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.includes("path"))).toBe(true);
+    });
+
+    it("最上位に未知キーがあれば拒否する", () => {
+      const json = validTruthJson() as Record<string, unknown>;
+      json.extra = "余分な項目";
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.includes("extra"))).toBe(true);
+    });
+
+    it("未知キーのエラー文言に値そのものは出さない", () => {
+      const json = validTruthJson() as { entries: Array<Record<string, unknown>> };
+      const first = json.entries[0];
+      if (first === undefined) throw new Error("fixture broken");
+      first.occurence = 2; // 誤記。値 2 は文言に出てはいけない。
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // キー名（occurence）は出てよいが、値（2 相当のリテラル）は出ない。
+      expect(result.errors.join(" ")).not.toMatch(/:\s*2\b/);
+    });
+  });
 });
 
 describe("resolveTruthEntries", () => {
