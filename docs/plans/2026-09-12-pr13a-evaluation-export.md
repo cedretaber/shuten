@@ -534,16 +534,18 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
   targets: RunTargetDto[],
   checkUnits: CheckUnitDto[],
   findings: FindingDetailDto[],      // 理由・再確認要約・採否・元候補・位置診断
-  unlocatedCandidates: CandidateDto[],   // finding_id が null の候補（位置特定失敗）
+  unlocatedCandidates: CandidateDto[],   // finding_id が null の候補（outside-target。決定 23）
   unlocatedDiagnostics: DiagnosticDto[]  // 上記の候補に紐づく診断
 }
 ```
 
 - 仕様 8.1 の保存単位（原稿版・検査実行・検査単位・再確認単位・位置診断・指摘・作者の判断）を
   すべて覆う。再確認単位と採否は `FindingDetailDto` に入っている。
-- **位置特定失敗の候補を別に持つ**。`FindingDetailDto.candidates` は指摘に紐づく候補だけで、
-  `finding_id` が null の候補（`not-found` / `ambiguous` / `outside-target`）は入らない。
-  これが無いと仕様 10 節の「位置特定失敗率」をエクスポートから測れない。
+- **位置特定失敗の候補を別に持つ**。`FindingDetailDto.candidates` は指摘に紐づく候補だけなので、
+  指摘を持たない候補（`finding_id` が null）は入らない。これが無いと仕様 10 節の
+  「位置特定失敗率」をエクスポートから測れない。
+  **ただし「指摘を持たない候補」は `outside-target` だけである**（`not-found` / `ambiguous` は
+  位置 null の指摘を作る）。この行の当初の記述は誤りだったので、決定 23 で訂正する。
 - 接続先 URL と API キーは `toRunDto` が持たないので原理的に入らない。
   `api/leak.test.ts` の `ENDPOINTS` にこの口を**必ず足す**（同テストは `createApiRouter` が
   登録した route と表を突き合わせるので、足し忘れればテストが落ちる）。
@@ -708,6 +710,222 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 - **エクスポートを画面から落とす導線**。仕様 5 節の画面仕様に無い。口だけ作る。
 
 
+## PR13a-2 の設計（着手時の追記）
+
+PR13a-1 の実装で分かったことを踏まえ、着手時に決めた（決定 1 の「着手時に本書へ追記する」）。
+決定 23 は決定 16 の誤りの訂正で、残りは追加である。
+
+### 決定 23：位置特定失敗の内訳は `findings[]` と `unlocatedCandidates` に分かれる（決定 16 の訂正）
+
+決定 16 は「`finding_id` が null の候補（`not-found` / `ambiguous` / `outside-target`）」と書いたが、
+**誤りである。** 実際の保存規則は `db/repositories/findings.ts` の `saveUnlocatedCandidate` の表
+（PR8 決定 4）にあり、次のとおり：
+
+| `locate.reason` | `candidates` | `findings` | `diagnostics` |
+| --- | --- | --- | --- |
+| `not-found` | 1 行（`findingId` あり） | 1 行（位置は null） | 1 行（変換候補あり） |
+| `ambiguous` | 1 行（`findingId` あり） | 1 行（位置は null） | 1 行（変換候補は null） |
+| `outside-target` | 1 行（`findingId` は null） | 作らない | 1 行（変換候補は null） |
+
+つまり `not-found` と `ambiguous` は**位置が null の指摘として `listFindings` に出る**
+（`FindingDto.locateStatus` が `not-found` / `ambiguous`）。`finding_id` が null なのは
+`outside-target` だけである。
+
+**エクスポートの形は決定 16 のまま変えない**（`findings[]` ＋ `unlocatedCandidates` ＋
+`unlocatedDiagnostics`）。変えるのは中身の説明である。
+
+- `findings[]`：`listFindings` の全件（`located` ＋ `not-found` ＋ `ambiguous`）。
+  それぞれの元候補と位置診断を `candidates` / `diagnostics` に添える。
+- `unlocatedCandidates[]`：`finding_id` が null の候補 ＝ **`outside-target` だけ**。
+- `unlocatedDiagnostics[]`：上記の候補に紐づく診断。
+
+仕様 10 節の「位置特定失敗率」は、この 3 つを合わせれば 3 通りとも数えられる（決定 27 の写像）。
+
+### 決定 24：組み立ては HTTP に依存しない関数に置く
+
+`api/run-view.ts` と同じ形にする。`buildRunExport(db, run): RunExportDto` を
+`packages/server/src/api/run-export.ts` に置き、ハンドラー（`api/runs.ts` か新ファイル）は
+404 の判定と `respond` だけを行う。`app.request` を通さずに組み立てだけを検査できるようにする
+（`run-view.test.ts` と同じ）。
+
+- 応答スキーマ `runExportDtoSchema` は `packages/shared/src/api/dto.ts` に置く。他の DTO と同じく
+  `.strict()`（`respond` が通す唯一の形。余分なキーを黙って落とさない）。
+- `formatVersion` は `z.literal("1")`。エクスポート形式の版であり、`RESULT_VERSION` とは別物。
+- `exportedAt` は `z.iso.datetime()`。時計は既存の口と同じ取り方に合わせる。
+
+### 決定 25：エクスポートが使う問い合わせを固定する
+
+決定 17 のとおり、**指摘の件数に比例する問い合わせを作らない**。使うのは次の 9 本だけで、
+1 実行につき各 1 回（`listFindings` は内部で `listReasonsByRun` をもう 1 本使うが、これも実行
+スコープの定数本）。
+
+`findRun` / `findManuscriptVersion` / `listRunTargets` / `listCheckUnits` / `listFindings` /
+`listRecheckUnits` / `listJudgments` / `listCandidates` / `listDiagnostics`
+
+- **`api/findings.ts` の `requirePerspective` と `findDiagnostic` を流用しない。** どちらも候補 1 件
+  ごとの問い合わせで、そのまま持ってくると N+1 になる。観点は `listCheckUnits` から作る
+  `checkUnitId → perspective` の `Map`、診断は `listDiagnostics` から作る `candidateId → DiagnosticDto`
+  の `Map` で引く。
+- 候補は `listCandidates` を `findingId` で畳んで指摘に配り、`findingId` が null のものを
+  `unlocatedCandidates` にする（決定 23）。
+- 参照先が見つからない場合（候補の指す検査単位が無い、など）は既定値に丸めず例外にする
+  （`api/findings.ts` の `requirePerspective` と同じ姿勢。不変条件「失敗・形式不正を正常な値に
+  置き換えない」）。
+
+### 決定 26：エクスポートは実行の状態を問わない。拒否するのは評価側
+
+`GET /api/runs/:id/export` は決定 16 のとおり「常に 1 実行ぶんの全量」で、`running` や
+`recovery-waiting` の実行でもその時点の行をそのまま返す。可搬用の控えとしてはそれが正しく、
+クエリパラメーターも読まない以上、状態で出し分ける根拠がない。
+
+一方、**評価の入力にできるのは終わった実行だけ**である。途中の実行は検査単位が `running` のまま
+で、件数も所要時間も確定していない。拒否は決定 27 のアダプター（`packages/cli`）で行う。
+
+### 決定 27：エクスポート JSON から評価入力への写像
+
+`packages/cli/src/eval/export-adapter.ts` に `adaptExportToResult(export): Result<EvaluationResultInput>`
+を置く。`EvaluationResultInput`（決定 18）は `PipelineResult` の部分集合なので、エクスポートに
+無い項目は**その場で数え直す**。数え直しの定義は `run/pipeline.ts` の `totals` の作り方に合わせる。
+
+**実行条件（`conditions`）**
+
+| 写す先 | 元 |
+| --- | --- |
+| `startedAt` | `run.startedAt` |
+| `finishedAt` | `run.finishedAt`（null なら拒否。決定 30） |
+| `mode` | `run.recheckEnabled ? "split-recheck" : "split"`（サーバー経路に `full-text` は無い） |
+| `perspectives` | `run.perspectives` |
+| `generation` | `{ model: run.modelId, ...run.generationSettings }`（`seed` / `reasoningEffort` は値があるときだけキーを作る。`exactOptionalPropertyTypes`） |
+| `model` | `run.modelInfo` |
+| `chunkSettings` | `run.chunkSettings` |
+| `timeouts` | `run.timeouts` |
+| `allowedWords` | `run.allowedWords` |
+| `versions.result` | `"export/1"`（決定 28） |
+| `versions.prompt` / `.allowedWordRule` / `.diagnosticTransform` | `run.promptVersion` / `.allowedWordRuleVersion` / `.diagnosticTransformVersion` |
+| `manuscript.utf16Length` | `manuscript.body.length` |
+| `manuscript.graphemeCount` | `countGraphemes(manuscript.body)` |
+| `manuscript.paragraphCount` | `splitParagraphs(manuscript.body).length`（パイプラインと同じ関数） |
+| `manuscript.targetCount` | `targets.length` |
+| `manuscript.bodyHash` | `manuscript.bodyHash`。ただし `hashBody(manuscript.body)` と一致しなければ拒否する |
+
+**指摘・位置特定失敗**
+
+- `findings[]`（評価入力）には **`locateStatus === "located"` の指摘だけ**を入れる。
+  `PipelineResult.findings` も統合後の位置確定済みの指摘だけなので、これで一致する。
+  - `targetIndex`：`finding.targetId` → `targets` の `targetIndex`
+  - `finding`：`{ id, range（null なら拒否）, quote, category, suggestion, verdict: initialVerdict,
+    sources: candidates.map(c => ({ id: c.id, perspective: c.perspective, llm: c.llm })) }`
+  - `suppression`：`finding.suppression`
+  - `recheck`：下の表
+- `unlocated[]` には 2 つの出どころを**この順で**並べる（決定 20 の対応付けは順序に依存しないが、
+  出力の再現性のために固定する）。
+  1. `locateStatus` が `not-found` / `ambiguous` の指摘（その指摘の候補はちょうど 1 件）。
+     `targetIndex` は指摘の `targetId` から引く。
+  2. `unlocatedCandidates[]`（`outside-target`）。`targetIndex` は候補の `checkUnitId` →
+     `checkUnits` の `targetIndex` から引く。
+- `locate.reason` は候補の `locateStatus`（`located` なら拒否）。
+- `locate.diagnostic` は診断の `transformCandidates` が null なら `null`、非 null なら
+  `{ candidates: transformCandidates.map(c => ({ transform: c.transform })) }`。
+  診断そのものが無い候補は `diagnostic: null`。
+
+**再確認（`RecheckSummaryDto` → `EvaluationRecheckInput`）**
+
+| エクスポート | 評価入力 |
+| --- | --- |
+| `recheck` が null（再確認を無効にした実行では起票されない） | `{ status: "disabled" }` |
+| `status: "done"` | `{ status: "done", output: { verdict, reasonKind, reason, suggestionValid } }`（4 つのいずれかが null なら拒否） |
+| `status: "failed"` | `{ status: "failed" }` |
+| `status: "pending"` | `{ status: "pending" }` |
+| `status: "not-applicable"`、`notApplicableReason: "disabled"` | `{ status: "disabled" }` |
+| 同上、`"suppressed"` | `{ status: "suppressed" }` |
+| 同上、`"unlocated"` | 位置未確定の指摘に付くもの。その指摘は `unlocated[]` に回るので写さない |
+| `status: "running"` | 拒否（決定 30） |
+
+`LlmRecheckOutput` は `{ reason, reasonKind, verdict, suggestionValid }` の 4 項目だけで、
+`RecheckSummaryDto` はその 4 つをすべて持つ。よって `done` の復元に欠落は無い。
+
+**集計（`totals`）**
+
+`run/pipeline.ts` の作り方をそのまま写す。
+
+| 項目 | 数え方 |
+| --- | --- |
+| `targets` | `targets.length` |
+| `checkUnits.done` / `.failed` / `.pending` | `checkUnits` を状態で数える（`running` / `not-applicable` があれば拒否） |
+| `requests` | `Σ checkUnits.attempts + Σ recheckUnits.attempts`（`executor` は `attempts` と `requestCount` を同じ 1 か所で増やすので一致する） |
+| `candidates` | `Σ findings[].candidates.length + unlocatedCandidates.length` |
+| `located` | 位置確定済みの指摘の `candidates.length` の合計 |
+| `unlocated.notFound` / `.ambiguous` | `locateStatus` がその値の指摘の件数 |
+| `unlocated.outsideTarget` | `unlocatedCandidates.length` |
+| `findings` | 位置確定済みの指摘の件数 |
+| `suppressed` | そのうち `suppression` が非 null の件数 |
+| `rechecks.*` | 位置確定済みの指摘に付く再確認を、上の表で写した後の状態で数える |
+| `elapsedMs` | `finishedAt − startedAt`（ミリ秒） |
+
+**アダプターは純粋関数にする。** `node:fs` にも HTTP にも依存しない。読み込みと CLI 配線は
+`io.ts` / `main.ts` の責務（決定 18 の `result-schema.ts` と同じ姿勢）。エクスポート JSON 自体の
+検証は `shared` の `runExportDtoSchema` で行う（形の正本を 2 つ持たない）。
+
+### 決定 28：`conditions.versions.result` は `"export/1"` にする
+
+アダプターが作る評価入力の `versions.result` に `RESULT_VERSION`（`"1"`）を入れてはならない。
+**サーバー経由の実行と CLI の実行は、同じ設定でも条件が同じではない**からである。
+
+- `RunDto.recoveryConfirmMs > 0` のとき、`timeouts.checkMs` / `.recheckMs` は打ち切りの上限ではなく
+  遅延通知の閾値で、実際のハード上限は `+ recoveryConfirmMs` になる（PR9 決定 7）。CLI は
+  `recoveryConfirmMs: 0` なので同じ数値でも意味が違う。
+- 経路も違う（オーケストレーターの逐次保存 対 `runPipeline`）。
+
+`aggregate` は `versions.result` の一致を要求する（決定 12）ので、`"export/1"` にしておけば
+**CLI の結果とエクスポート由来の結果を混ぜた集計は、意味の分かるエラーで止まる**。
+エクスポート由来どうしの集計は通る。
+
+**却下した案。** (a) `RESULT_VERSION` を入れる → 上記 2 つの違いを黙って混ぜる。
+(b) `EvaluationResultInput` に出どころの項目を足す → `PipelineResult` に無い項目を足すことになり、
+`_assignable` の対応（決定 18）が崩れる。レポートに出どころを書くのは (c) で足りる。
+(c) レポートに 1 行足す：`EvaluationReportInput` に `source: "result" | "export"` を足し、
+実行条件の節に「入力：エクスポート JSON（サーバー経由の実行）」と書く。これは採用する。
+
+### 決定 29：`--export` は `evaluate` と `aggregate` の両方で受ける。`--result` とは排他
+
+```
+shuten evaluate --export <エクスポート.json> --truth <正解.json> [--out ...] [--report ...]
+shuten aggregate (--result <結果.json> | --export <エクスポート.json>)... [--out ...] [--report ...]
+```
+
+- `evaluate` は `--result` と `--export` の**ちょうど一方**を要求する。両方あれば引数エラー。
+- `--export` を渡したときは **`--manuscript` を受け付けない**（引数エラー）。本文はエクスポートが
+  埋め込んで運ぶので、外から渡すと同じ原稿の出どころが 2 つになる。決定 3 の 3 方向の照合は
+  「正解ファイルの `bodyHash`」「エクスポートの `manuscript.bodyHash`」「`hashBody(埋め込み本文)`」
+  で行い、方向は 3 つのままである。
+- 位置の意味検証（`validateFindingRanges`。決定 18）は、埋め込み本文に対してそのまま行う。
+- `aggregate` は `--result` と `--export` を混ぜて渡せる（形が違っても評価入力に揃うため）。
+  ただし決定 28 により `versions.result` が食い違うので、実際に混ぜた集計は条件不一致で止まる。
+  同じ種類どうしなら通る。`--export` の重複も `--result` と同じく拒否する（決定 21）。
+- 出力先の衝突検査（決定 21）の入力一覧に `--export` を加える。
+
+### 決定 30：写せない値は既定値に丸めず、固定文のエラーにする
+
+アダプターは `Result` を返し、失敗は**すべて**列挙して返す（決定 4 の正解解決と同じ姿勢）。
+**パスも本文も接続先も出さない**。拒否するのは次の場合。
+
+| 拒否する条件 | 理由 |
+| --- | --- |
+| `run.status` が `completed` / `partially-failed` / `stopped` のいずれでもない | 終わっていない実行は件数も所要時間も確定していない（決定 26） |
+| `run.finishedAt` が null | `elapsedMs` を作れない |
+| `run.stopReason` が `backend-restarted` | `StopReason`（`PipelineResult`）にこの値が無い。`RUN_STOP_REASONS` は 8 値、`StopReason` は 7 値で、この 1 つだけサーバー側にしかない |
+| 検査単位に `running` / `not-applicable` がある | 終わった実行には現れない状態（現れたら数え方が決まらない） |
+| 再確認単位に `running` がある | 同上 |
+| `status: "done"` の再確認で 4 項目のいずれかが null | `LlmRecheckOutput` を作れない |
+| `locateStatus === "located"` の指摘の `range` が null | 位置確定済みの指摘は範囲を持つ |
+| `hashBody(manuscript.body) !== manuscript.bodyHash` | 本文とハッシュが食い違う（決定 3 の鍵が壊れている） |
+| 候補・指摘・検査単位の参照先が見つからない | 外部キーが守るはずの不変条件が壊れている |
+
+`RUN_STOP_REASONS` と `StopReason` の対応は、**コンパイル時にも縛る**。
+`satisfies readonly StopReason[]` を通る 7 値の定数配列を置き、`backend-restarted` だけを
+明示的に拒否する形にする（`RUN_STOP_REASONS` に値が増えたら型で気づける）。
+
+
 ## テスト
 
 `packages/cli` は Vitest。実 LLM・実原稿・実ファイルには触れない（既存 `main.test.ts` と同じく
@@ -794,15 +1012,29 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 
 ### PR13a-2（エクスポート）
 
-- **T13 エクスポート**：仕様 8.1 の全単位が入っている。位置特定失敗の候補と診断が
-  `unlocatedCandidates` / `unlocatedDiagnostics` に入る（変異：`findings` 側にだけ入れる → 落ちる）。
-  存在しない実行 ID は 404。
+- **T13 エクスポート**：仕様 8.1 の全単位が入っている。`not-found` / `ambiguous` の候補は
+  位置 null の指摘として `findings[]` に、`outside-target` の候補は `unlocatedCandidates` /
+  `unlocatedDiagnostics` に入る（決定 23。変異：`unlocatedCandidates` を `finding_id` で絞らず
+  全候補にする → 落ちる）。存在しない実行 ID は 404。
 - **T14 エクスポートの漏えい**：`api/leak.test.ts` の `ENDPOINTS` に追加され、番兵の接続先 URL と
   API キーが応答に出ない。
 - **T15 エクスポートのクエリ本数**：指摘 3 件と 30 件で問い合わせ本数が変わらない
   （PR12c の `onStatement` 継ぎ目を使う。変異：候補を指摘ごとに引く → 落ちる）。
-- **T20 評価入力アダプター**：エクスポート JSON から作った評価入力が、同じ実行の
-  `PipelineResult` から作ったものと同じ指標を出す。
+- **T20 評価入力アダプターの指標一致**：オーケストレーターと `runPipeline` は別経路なので、
+  1 回の実行から両方の成果物は取れない。**同じ内容を 2 通りで作って突き合わせる**。
+  合成した `PipelineResult` を、サーバーの保存関数（`run/save.ts` の `saveCheckUnitOutcome` /
+  `saveRecheckOutcome`。`save.test.ts` の組み立て補助を使う）で DB に書き、`buildRunExport` →
+  `adaptExportToResult` → `scoreRun` の結果が、元の `PipelineResult` を `scoreRun` に通した結果と
+  `toEqual` で一致すること。素材には次をすべて含める：元候補 2 件の統合指摘、抑制された指摘、
+  `not-found` / `ambiguous` / `outside-target` の各 1 件、`failed` の再確認、`pending` の再確認、
+  再送のある検査単位（`attempts: 2`）。
+  変異：`requests` の数え方から再確認の `attempts` を落とす → 落ちる。
+- **T23 アダプターの拒否**：決定 30 の表の各行で、既定値に丸めずエラーになる。少なくとも
+  `status: "running"`、`finishedAt: null`、`stopReason: "backend-restarted"`、
+  `locateStatus: "located"` かつ `range: null` の 4 つ。エラー文にパス・本文・接続先が出ない。
+- **T24 `--export` の引数**：`--result` と `--export` の両方を渡すと引数エラー、どちらも無ければ
+  引数エラー。`--export` と `--manuscript` の併用は引数エラー。`aggregate` の `--export` の重複は
+  拒否。出力先の衝突検査に `--export` が入っている（決定 29）。
 
 ### PR13a-3（全文チャット方式）
 
@@ -837,7 +1069,7 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 
 1. `GET /api/runs/:id/export` が仕様 8.1 の全単位を返し、`api/leak.test.ts` の表に載っている。
 2. エクスポートの問い合わせ本数が指摘の件数に依存しない。
-3. エクスポート JSON を `evaluate` の入力にできる。
+3. エクスポート JSON を `evaluate` と `aggregate` の入力にできる（決定 29）。
 4. 仕様書 8.2 末尾の「可搬用の一括エクスポート形式は実装設計時に決める」を、決めた旨に改訂し、
    15 節の改訂記録に追記する（同じコミットに含める）。
 5. `pnpm check` が通る。
@@ -919,17 +1151,40 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 - ロードマップの PR13a 節を 13a-1 / 13a-2 / 13a-3 に分け、PR 一覧・依存関係・見直し節を更新する。
 - `README.md` の現在の状態に PR13a-1 を追記し、`pnpm eval` の書き方を載せる。
 
-## タスク分解（PR13a-2・13a-3。着手時に本書へ詳細を追記する）
+## タスク分解（PR13a-2・13a-3。13a-3 は着手時に本書へ詳細を追記する）
 
 ### PR13a-2（エクスポート）
 
-- **Task 9**：`GET /api/runs/:id/export`（決定 16・17）。一括取得と `Map` で組み立て、
-  `api/leak.test.ts` の `ENDPOINTS` に追加。T13・T14・T15。
-- **Task 10**：エクスポート JSON を `evaluate` の入力に加えるアダプター（決定 1 の「接ぎ先」）。T20。
-- **Task 11**：仕様書 8.2 の改訂と 15 節の改訂記録、ロードマップと README の更新。
+- **Task 9**：`GET /api/runs/:id/export`（決定 16・23・24・25・26）。
+  - `packages/shared/src/api/dto.ts` に `runExportDtoSchema`（`.strict()`、`formatVersion` は
+    `z.literal("1")`）と `RunExportDto` を足し、`index.ts` から再エクスポートする。
+  - `packages/server/src/api/run-export.ts` に `buildRunExport(db, run): RunExportDto` を置く
+    （Hono を import しない。`run-view.ts` と同じ姿勢）。候補・診断・再確認・採否は
+    実行スコープの一括取得を `Map` に畳んで配る。決定 25 の 9 本以外を呼ばない。
+  - ハンドラーは `api/runs.ts` に `GET /runs/:id/export` として登録し、404 の判定と `respond`
+    だけを行う。
+  - `api/leak.test.ts` の `ENDPOINTS` にこの口を足す。
+  - テスト：T13（`run-export.test.ts`。組み立てを直接呼ぶ）、T14、T15
+    （`api/export.query-count.test.ts`。`findings.query-count.test.ts` の `onStatement` 継ぎ目を写す）。
+- **Task 10**：エクスポート JSON を評価の入力にするアダプター（決定 27・28・30）。
+  - `packages/cli/src/eval/export-adapter.ts` に `adaptExportToResult` を置く。純粋関数
+    （`node:fs`・HTTP に依存しない）。エクスポート JSON の形の検証は `runExportDtoSchema` を使う。
+  - `EvaluationReportInput` に `source: "result" | "export"` を足し、実行条件の節に 1 行出す
+    （決定 28(c)）。
+  - テスト：T20、T23。
+- **Task 11**：`--export` の配線（決定 29）と引数。
+  - `evaluate` / `aggregate` の引数解釈、出力先の衝突検査への追加、`io.ts` の読み込み
+    （`readExportFile`。既存の `readTruthFile` と同じ形）。
+  - テスト：T24。既存の `main.test.ts` の番兵（パスを出さない）と同じ検査をエクスポートの
+    読み込み失敗にも入れる。
+- **Task 12**：ドキュメント。
+  - 仕様書 8.2 末尾の「可搬用の一括エクスポート形式は実装設計時に決める」を、決めた旨に改訂し、
+    15 節の改訂記録に追記する（同じコミット）。
+  - `docs/reference/truth-format.md` に `--export` の使い方を足す（原稿ファイルが要らないこと）。
+  - `README.md` の現在の状態と `pnpm eval` の書き方、ロードマップの更新。
 
 ### PR13a-3（全文チャット方式）
 
-- **Task 12**：`full-chat` サブコマンドと `FullChatResult`（決定 15）。`isGenerationCapable` の検査を
+- **Task 13**：`full-chat` サブコマンドと `FullChatResult`（決定 15）。`isGenerationCapable` の検査を
   含む。T12・T21。
-- **Task 13**：ロードマップと README の更新。
+- **Task 14**：ロードマップと README の更新。
