@@ -36,6 +36,8 @@
 import type {
   ConnectionCheckDto,
   ConnectionSettingsDto,
+  FindingDto,
+  ManuscriptVersionDto,
   ModelInfoDto,
   RunDetailDto,
 } from "@shuten/shared";
@@ -51,7 +53,7 @@ import { HomePage } from "./app/home-page.tsx";
 import { Layout } from "./app/layout.tsx";
 import { ROUTES, runPath } from "./app/routes.ts";
 import { SettingsPage } from "./app/settings-page.tsx";
-import { RunReceiptPage } from "./features/run-receipt/run-receipt-page.tsx";
+import { ResultsPage } from "./features/results/results-page.tsx";
 
 /** ---------------------------------------------------------------------- */
 /** 番兵 */
@@ -62,6 +64,7 @@ const API_KEY_SENTINEL = "sk-leak-sentinel-9f2c8b41";
 const ENDPOINT_URL_HOST_SENTINEL = "leak-sentinel.invalid";
 const ENDPOINT_URL_SENTINEL = `http://${ENDPOINT_URL_HOST_SENTINEL}:9999`;
 const SETTLED_RUN_ID = "run-leak-sentinel-1";
+const MANUSCRIPT_ID = "mv-leak-sentinel-1";
 
 /** ---------------------------------------------------------------------- */
 /** fake fetch（実際の HTTP は呼ばない） */
@@ -109,12 +112,27 @@ function makeCheck(overrides: Partial<ConnectionCheckDto> = {}): ConnectionCheck
   return { reachable: true, error: null, models: [makeModel()], model: null, ...overrides };
 }
 
+function makeManuscript(): ManuscriptVersionDto {
+  return {
+    id: MANUSCRIPT_ID,
+    name: "原稿（漏えい検査用）",
+    body: "本文の段落。",
+    bodyHash: "hash-leak-sentinel",
+    createdAt: "2026-09-10T00:00:00.000Z",
+  };
+}
+
+/** `/runs/:id` の描画に要る指摘一覧。件数だけ確認できれば十分なので空でよい。 */
+function makeFindings(): FindingDto[] {
+  return [];
+}
+
 function makeRunDetail(): RunDetailDto {
   const counts = { pending: 0, running: 0, done: 0, failed: 0, "not-applicable": 0 } as const;
   return {
     run: {
       id: SETTLED_RUN_ID,
-      manuscriptVersionId: "mv-leak-sentinel-1",
+      manuscriptVersionId: MANUSCRIPT_ID,
       modelId: "model-a",
       modelInfo: null,
       generationSettings: { maxTokens: 512, temperature: 0 },
@@ -170,6 +188,12 @@ function createFakeFetch(requests: RecordedRequest[]): typeof globalThis.fetch {
     }
     if (url === `/api/runs/${SETTLED_RUN_ID}` && method === "GET") {
       return jsonResponse(200, makeRunDetail());
+    }
+    if (url === `/api/manuscripts/${MANUSCRIPT_ID}` && method === "GET") {
+      return jsonResponse(200, makeManuscript());
+    }
+    if (url === `/api/runs/${SETTLED_RUN_ID}/findings` && method === "GET") {
+      return jsonResponse(200, makeFindings());
     }
 
     throw new Error(`fake fetch: 想定していない要求 ${method} ${url}`);
@@ -227,7 +251,7 @@ function renderAppTree(client: ApiClient) {
             <Route element={<Layout />}>
               <Route path={ROUTES.home} element={<HomePage />} />
               <Route path={ROUTES.settings} element={<SettingsPage />} />
-              <Route path={ROUTES.run} element={<RunReceiptPage />} />
+              <Route path={ROUTES.run} element={<ResultsPage />} />
             </Route>
           </Routes>
         </ConnectionProvider>
@@ -336,7 +360,9 @@ describe("漏えい検査：接続設定画面以外（決定 18）", () => {
     expect(document.body.textContent ?? "").not.toContain(ENDPOINT_URL_HOST_SENTINEL);
 
     await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：実行画面へ" }));
-    await waitFor(() => expect(screen.getByText(/状態:/)).toBeInTheDocument());
+    // ヘッダー（決定 1）と右側の指摘 0 件表示（決定 2）の両方に「状態:」が出るため、
+    // 完全一致でヘッダー側だけを選ぶ。
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
     expect(document.body.textContent ?? "").not.toContain(ENDPOINT_URL_HOST_SENTINEL);
   });
 });

@@ -1,0 +1,73 @@
+/**
+ * `results-page.tsx` と `run-header.tsx` が使うレイアウト用スタイル。
+ * 本文自体の見た目（段落・強調）は `results.module.css`（`body-view.tsx` 専用）の役割で、
+ * ここでは上部（ヘッダー）と左右 2 カラムの骨組みだけを持つ。
+ */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.error {
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.statusLine {
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+.stopMessage {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.refreshButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.refreshButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.layout {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.bodyColumn {
+  flex: 1 1 60%;
+  min-width: 0;
+}
+
+.sideColumn {
+  flex: 1 1 40%;
+  min-width: 0;
+}
