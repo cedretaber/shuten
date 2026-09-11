@@ -96,6 +96,14 @@ select candidates.id, candidates.finding_id, check_units.perspective, candidates
 - **索引**：`candidates_run_id_candidate_index_key`（`run_id`, `candidate_index`）が
   そのまま where と order by を満たす。走査ではなく索引順の読み取りになるので、本数が減るだけでなく
   1 本あたりも速くなる。
+- **`order by candidate_index` も、`finding_id is not null` と同じくテストでは見分けられない**
+  （Task 1 の実測。`EXPLAIN QUERY PLAN` は
+  `SEARCH candidates USING INDEX candidates_run_id_candidate_index_key (run_id=?)` となり、
+  この索引を等値検索に使う限り SQLite は `ORDER BY` の有無にかかわらず索引キー順＝
+  `candidate_index` 昇順で行を返す。投入順をどうずらしても変わらない）。
+  **それでも `order by` は必ず書く。** 並びの正しさを実行計画に依存させないためである。
+  テストで守れるのは「`candidates.id` のような別のキーで並べ替えてしまう」取り違えの方で、
+  そちらは C1 が実測で見分けている。
 - **`finding_id` を必ず SELECT する。** これが `Map` のキーである。
 - **`finding_id is not null` は効率と意図の明示のための条件であって、応答を変える条件ではない。**
   `outside-target` の候補（統合先を持たない。PR8 決定 4）はキーが null の組に入るだけで、指摘は
@@ -218,6 +226,11 @@ test）なので、現状の実装でも通る。通ることに意味がある�
 落ちる**ことに意味がある。したがって C1〜C4 は、**実装後に意図的な変異（決定 10 の取り違え方を
 実際にコードへ入れる）で落ちることを 1 件ずつ実測して**初めて「守れている」と言える。
 実測しない限り合格としない。
+
+**ただし、どう変異させても落ちない箇所が 2 つある**——`finding_id is not null`（決定 2）と
+`order by candidate_index`（決定 2。索引探索の順がそのまま昇順になるため）である。
+この 2 つは「テストで守られている」と報告してはならない。守っているのは**取得の畳み込み**
+（どの指摘にどの理由が入るか）と**明示的な並べ替えキーの取り違え**である。
 
 ## 完了条件
 
