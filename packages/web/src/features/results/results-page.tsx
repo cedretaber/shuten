@@ -36,12 +36,23 @@
  * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
  * `onNavigate` はまだ渡さない（Task 9 が本文へのスクロールを実装してから渡すようになる。
  * 渡らない間は `FindingDetail` 側が移動の操作子を出さない）。
+ *
+ * 採否と判断メモ（Task 8、決定 13）：`putJudgment` の呼び出しはこのコンポーネント（`handleSaveJudgment`）
+ * に閉じる（状態の持ち主を 1 か所にするため。操作子そのものは `judgment-control.tsx`）。
+ * メモが空欄（`note === null`）のときはリクエスト本文から `note` キー自体を省く
+ * （`PutJudgmentRequest` は `note` 省略＝サーバー側で null、`exactOptionalPropertyTypes` の下では
+ * `{ status }` と `{ status, note }` を分けて組み立てる必要がある）。成功したら応答の
+ * `JudgmentDto` で該当指摘の `judgment` だけを差し替える（一覧を取り直さない）。失敗は
+ * そのまま呼び出し元（`JudgmentControl`）へ伝播させ、その場でのエラー表示・入力の巻き戻しを
+ * 任せる（ここで catch して握りつぶさない）。
  */
 
 import type {
   FindingDetailDto,
   FindingDto,
+  JudgmentStatus,
   ManuscriptVersionDto,
+  PutJudgmentRequest,
   RunDto,
   RunTargetDto,
 } from "@shuten/shared";
@@ -236,6 +247,28 @@ export function ResultsPage() {
     );
   }, [apiClient, selectedFindingId]);
 
+  // 採否と判断メモ（Task 8、決定 13）。`putJudgment` の呼び出しはここに閉じる（状態の持ち主を
+  // 1 か所にする。`JudgmentControl` は onSave を呼ぶだけで API を直接呼ばない）。
+  const handleSaveJudgment = useCallback(
+    (findingId: string, status: JudgmentStatus, note: string | null): Promise<void> => {
+      const body: PutJudgmentRequest = note === null ? { status } : { status, note };
+      return apiClient.putJudgment(findingId, body).then((judgment) => {
+        // 成功したら応答の JudgmentDto で該当指摘の judgment だけを差し替える
+        // （一覧を取り直さない。一覧の行の採否表示もこの差し替えで更新される）。
+        setState((current) => {
+          if (current.kind !== "loaded") return current;
+          return {
+            ...current,
+            findings: current.findings.map((f) => (f.id === findingId ? { ...f, judgment } : f)),
+          };
+        });
+      });
+      // 失敗時はここで catch しない。呼び出し元（JudgmentControl）に reject を伝え、
+      // その場でのエラー表示・入力の巻き戻しを行わせる。
+    },
+    [apiClient],
+  );
+
   const findings = state.kind === "loaded" ? state.findings : EMPTY_FINDINGS;
   // 決定 7：強調に渡すのは「絞り込み後に一覧へ出ている、位置が確定した指摘」だけ。隠れている
   // 指摘は強調しない（強調を押しても一覧に行が無い、という状態を作らないため）。
@@ -314,6 +347,7 @@ export function ResultsPage() {
                     sameRange={related.sameRange}
                     overlapping={related.overlapping}
                     onSelectFinding={handleSelectFinding}
+                    onSaveJudgment={handleSaveJudgment}
                   />
                 )}
               </div>

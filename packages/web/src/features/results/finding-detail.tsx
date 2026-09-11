@@ -15,6 +15,13 @@
  * 呼び出し側（`results-page.tsx`）はまだ `onNavigate` を渡さない（Task 9 が本文へのスクロールを
  * 実装してから渡すようになる）。渡されない間は「押しても何も起きないボタン」を作らないよう、
  * 操作子そのものを描かない。
+ *
+ * 採否と判断メモ（Task 8、決定 13）：操作子そのもの（ラジオ・メモ・保存ボタン）は
+ * `judgment-control.tsx` の `JudgmentControl` に持たせ、ここでは指摘ごとに差し替えて渡すだけ。
+ * `key={finding.id}` を付けて指摘ごとに作り直すことで、別の指摘を選び直したときに前の指摘の
+ * 入力（未保存のラジオ・メモ）が残らないようにする。保存の実行（`putJudgment` の呼び出しと
+ * `findings` への反映）は `onSaveJudgment` を通じて呼び出し側（`results-page.tsx`）が行う
+ * （状態の持ち主を 1 か所にするため、ここでは API を直接呼ばない）。
  */
 
 import type {
@@ -23,13 +30,14 @@ import type {
   DiagnosticDto,
   FindingDetailDto,
   FindingDto,
+  JudgmentStatus,
   Perspective,
 } from "@shuten/shared";
 import { describeRecheck } from "./finding-detail.ts";
+import { JudgmentControl } from "./judgment-control.tsx";
 import {
   FINDING_CATEGORY_LABELS,
   INITIAL_VERDICT_LABELS,
-  JUDGMENT_STATUS_LABELS,
   RECHECK_VERDICT_LABELS,
 } from "./labels.ts";
 import styles from "./results-page.module.css";
@@ -78,6 +86,15 @@ export interface FindingDetailProps {
   readonly onSelectFinding: (findingId: string) => void;
   /** 本文の該当箇所への移動。Task 9 が実装するまでは渡されない（渡されない間は操作子を出さない）。 */
   readonly onNavigate?: () => void;
+  /**
+   * 採否の保存を試みる（Task 8、決定 13）。`putJudgment` の呼び出しと成功時の `findings` への
+   * 反映は呼び出し側（`results-page.tsx`）の責務。失敗したら reject する。
+   */
+  readonly onSaveJudgment: (
+    findingId: string,
+    status: JudgmentStatus,
+    note: string | null,
+  ) => Promise<void>;
 }
 
 export function FindingDetail(props: FindingDetailProps) {
@@ -90,6 +107,7 @@ export function FindingDetail(props: FindingDetailProps) {
     overlapping,
     onSelectFinding,
     onNavigate,
+    onSaveJudgment,
   } = props;
 
   const display = describeRecheck(finding);
@@ -184,11 +202,13 @@ export function FindingDetail(props: FindingDetailProps) {
 
       <section>
         <h3>採否</h3>
-        {/* 採否の操作（ラジオ・判断メモ）は Task 8 が作る。ここでは現在の値を表示するだけ。 */}
-        <p>{JUDGMENT_STATUS_LABELS[finding.judgment.status]}</p>
-        {finding.judgment.note !== null && (
-          <p className={styles.detailQuote}>{finding.judgment.note}</p>
-        )}
+        {/* key に finding.id を付け、指摘を選び直すたびに作り直す（前の指摘の未保存入力を
+            残さないため。judgment-control.tsx 冒頭のコメントを参照）。 */}
+        <JudgmentControl
+          key={finding.id}
+          judgment={finding.judgment}
+          onSave={(status, note) => onSaveJudgment(finding.id, status, note)}
+        />
       </section>
 
       {(sameRange.length > 0 || overlapping.length > 0) && (

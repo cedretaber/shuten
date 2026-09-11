@@ -281,6 +281,70 @@
   cursor: pointer;
 }
 
+/* 採否と判断メモの操作子（Task 8、決定 13）。 */
+.judgmentControl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.judgmentStatusGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.judgmentStatusOption {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+/* 決定 13：「採用予定」を選んでも本文は書き換わらない旨。選んだ状態に関わらず常時表示する。 */
+.judgmentAdoptPlannedNote {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.judgmentNoteLabel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+.judgmentNoteTextarea {
+  resize: vertical;
+  min-height: 4em;
+  font: inherit;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+}
+
+.judgmentSaveButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.judgmentSaveButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* 元候補・位置診断（決定 12。詳細の末尾に畳んで置く）。 */
 .detailRaw {
   border-top: 1px solid var(--color-border);

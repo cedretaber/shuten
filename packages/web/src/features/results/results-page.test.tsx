@@ -19,6 +19,7 @@
 import type {
   FindingDetailDto,
   FindingDto,
+  JudgmentDto,
   ManuscriptVersionDto,
   RunDetailDto,
   RunDto,
@@ -669,5 +670,50 @@ describe("ResultsPage: Task 7 指摘詳細の取得配線", () => {
     // 一覧側の選択表示も finding-2 に移っている。
     const rowsAfter = document.querySelectorAll(`.${findingListStyles.findingRow}`);
     expect((rowsAfter[1] as HTMLElement).getAttribute("aria-current")).toBe("true");
+  });
+});
+
+// Task 8（採否と判断メモ、決定 13）：`putJudgment` の呼び出しは `results-page.tsx` に閉じ、
+// 成功したら該当指摘の `judgment` を差し替える（一覧を取り直さない）。操作子そのものの規則
+// （4 状態・null 送信・保存中の無効化・失敗時の巻き戻し・常時表示の注記）は
+// judgment-control.test.tsx（R5）の役割。ここでは「状態の持ち主が 1 か所であること」の
+// 実質的な確認として、保存に成功すると一覧の行の採否表示も変わることを見る。
+describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新される", () => {
+  it("保存に成功すると、一覧を取り直さずに一覧の行の採否表示が応答の JudgmentDto に差し替わる", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const updatedJudgment: JudgmentDto = {
+      findingId: "finding-1",
+      status: "rejected",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(updatedJudgment));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding, putJudgment });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+
+    // 保存前は一覧の行に「未判断」が出ている。
+    expect(within(row).getByText("未判断")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(putJudgment).toHaveBeenCalledTimes(1));
+    expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" });
+
+    // 成功応答の JudgmentDto で一覧の行の採否表示が差し替わる（一覧を取り直さない＝
+    // getFindings は初回の 1 回のまま）。
+    await waitFor(() => expect(within(row).getByText("却下")).toBeInTheDocument());
+    expect(getFindings).toHaveBeenCalledTimes(1);
   });
 });

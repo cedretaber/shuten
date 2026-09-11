@@ -112,6 +112,7 @@ function baseProps(overrides: Partial<FindingDetailProps> = {}): FindingDetailPr
     sameRange: [],
     overlapping: [],
     onSelectFinding: vi.fn(),
+    onSaveJudgment: vi.fn(() => Promise.resolve()),
     ...overrides,
   };
 }
@@ -394,8 +395,13 @@ describe("FindingDetail: onNavigate（Task 9 が渡すまで操作子を出さ�
   });
 });
 
-describe("FindingDetail: 採否は表示のみ", () => {
-  it("現在の採否ラベルを出す（操作子は Task 8）", () => {
+describe("FindingDetail: 採否の操作子（Task 8、決定 13）", () => {
+  // 操作子そのもの（4 状態のラジオ・メモの null 送信・保存中の無効化・失敗時の巻き戻し・
+  // 常時表示の注記）は judgment-control.test.tsx（R5）の役割。ここでは配線だけを見る：
+  // 選択中の指摘の judgment が操作子の初期値になること、保存が finding.id 付きで
+  // onSaveJudgment を呼ぶこと。
+
+  it("選択中の指摘の採否・メモが操作子の初期値になる", () => {
     const finding = makeFinding({
       judgment: {
         findingId: "finding-1",
@@ -406,8 +412,47 @@ describe("FindingDetail: 採否は表示のみ", () => {
     });
     render(<FindingDetail {...baseProps({ finding })} />);
 
-    expect(screen.getByText("採用予定")).toBeInTheDocument();
-    expect(screen.getByText("著者へ確認済み")).toBeInTheDocument();
-    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "採用予定" })).toBeChecked();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("著者へ確認済み");
+  });
+
+  it("保存ボタンを押すと、選択中の指摘の ID 付きで onSaveJudgment が呼ばれる", async () => {
+    const user = userEvent.setup();
+    const onSaveJudgment = vi.fn(() => Promise.resolve());
+    const finding = makeFinding({ id: "finding-42" });
+    render(<FindingDetail {...baseProps({ finding, onSaveJudgment })} />);
+
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(onSaveJudgment).toHaveBeenCalledWith("finding-42", "rejected", null);
+  });
+
+  it("指摘を選び直すと、操作子の入力が新しい指摘の値に切り替わる（前の指摘の入力が残らない）", () => {
+    const findingA = makeFinding({
+      id: "finding-a",
+      judgment: {
+        findingId: "finding-a",
+        status: "rejected",
+        note: "A のメモ",
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    });
+    const findingB = makeFinding({
+      id: "finding-b",
+      judgment: {
+        findingId: "finding-b",
+        status: "undecided",
+        note: null,
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    });
+    const { rerender } = render(<FindingDetail {...baseProps({ finding: findingA })} />);
+    expect(screen.getByRole("radio", { name: "却下" })).toBeChecked();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("A のメモ");
+
+    rerender(<FindingDetail {...baseProps({ finding: findingB })} />);
+    expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
   });
 });
