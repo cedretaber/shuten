@@ -1,28 +1,34 @@
 /**
- * `GET /api/runs/:id/findings` の性能計測（PR12a Task 11・決定 14）。
+ * `GET /api/runs/:id/findings` の性能テスト（PR12a Task 11・決定 14／PR12c 決定 8）。
  *
- * `listFindings` は指摘 1 件ごとに理由（`listReasons`）を問い合わせ、ハンドラー側も指摘 1 件
- * ごとに再確認（`findRecheckUnitByFinding`）・採否（`findJudgment`）を問い合わせる。実質
- * 3N+1 になっている（`docs/plans/2026-09-07-mvp-roadmap.md`）。この持ち越しを「件数を見て判断
- * する」ではなく実測値で決着させるための計測専用テストで、**サーバーの実装は変えない**。
+ * 元は、`listFindings` が指摘 1 件ごとに理由（`listReasons`）を問い合わせ、ハンドラー側も
+ * 指摘 1 件ごとに再確認（`findRecheckUnitByFinding`）・採否（`findJudgment`）を問い合わせる
+ * 実質 3N+1 を、「件数を見て判断する」ではなく実測値で決着させるための計測専用テストだった
+ * （このときはサーバーの実装を変えなかった）。PR12c でバッチ化し（`docs/plans/2026-09-11-pr12c-findings-batch.md`
+ * 決定 1〜4）、実行 1 件あたりの問い合わせ本数を `findRun` 1 ＋一覧側 4 本（`findings` 1・理由 1・
+ * 再確認 1・採否 1）の計 5 本に固定した。以降このテストの役割は**改善後の回帰の歯止め**であり、
+ * 「計測専用」ではない。
  *
+ * - 本来の守りは本数（決定 7）である。問い合わせ本数が指摘の件数に比例しないことは
+ *   `api/findings.query-count.test.ts` が検査しており、N+1 が再発すればそちらが先に落ちる。
+ *   このテストは時間で判断しないため、決定 14 の 100 ms は判断基準として使わない。
+ * - 上限 5,000 ms は据え置く。CI のばらつき・遅い実行環境でも耐えるための緩い歯止めで、
+ *   桁違いの回帰（本数の検査をすり抜けるような別種の劣化）だけを捕まえる。据え置き／後続 PR 送りの
+ *   判断基準ではない（最終レビュー Minor 6：Windows 実機未確認の遅い CI ランナーでも 1,000 ms は
+ *   落ちうる時間依存のしきい値だったため引き上げた経緯による）。
  * - 指摘 800 件（1 万字程度の原稿で想定される規模）を、理由・再確認・採否の行をすべて添えて
- *   投入する（3N+1 の 3 本すべてが走る状態でないと計測の意味がない）。
+ *   投入する（バッチ化後も一覧側の 4 本すべてが走る状態でないと計測の意味がない）。
  * - 投入は `insertFinding` / `insertCandidate` / `insertRecheckUnit`（既存のリポジトリ関数）を
  *   1 つの外側トランザクションにまとめて呼ぶ（各関数が内部で持つトランザクションは
  *   better-sqlite3 上ではセーブポイントとしてネストする。800 件を個別コミットするより速く、
  *   プロダクションコードには一切触れない）。
- * - 判断に使う値はウォームアップ 1 回の後に測った 5 回の中央値。CI のばらつきに耐えるため、
- *   テストに残す上限は緩めの 5,000 ms とし、判断そのものは作業報告・計画書に残す実測値で行う
- *   （最終レビュー Minor 6：Windows 実機未確認の遅い CI ランナーでも 1,000 ms は落ちうる時間依存の
- *   しきい値だったため引き上げた。この上限は桁違いの回帰を捕まえるための歯止めであって、
- *   据え置き／後続 PR 送りの判断基準ではない——判断は決定 14 に残した実測値（WSL2/Linux で
- *   中央値 110〜130 ms 台）で行う。決定 14 の実測値の記述そのものは変えていない）。
  * - 実測の中央値は `console.log` に出す（実行環境での値をテスト出力から追えるようにするため）。
  *   Vitest v5 の既定レポーターは**成功したテストの標準出力を畳んで表示しない**ため、値を見るには
  *   `npx vitest run findings.perf.test.ts --reporter=verbose`（または `pnpm --filter @shuten/server exec
  *   vitest run src/api/findings.perf.test.ts --reporter=verbose`）のように明示的に verbose を指定する
  *   か、テストを失敗させて出力を見る。CI の既定実行では値そのものは出力に現れないことがある。
+ *   PR12c での改善後の実測値は `docs/plans/2026-09-11-pr12c-findings-batch.md` 決定 5 と
+ *   `docs/plans/2026-09-11-pr12a-result-view.md` 決定 14 に記録している。
  */
 
 import {
@@ -224,7 +230,7 @@ function median(values: readonly number[]): number {
   return value;
 }
 
-describe("GET /api/runs/:id/findings の性能（計測専用。決定 14）", () => {
+describe("GET /api/runs/:id/findings の性能（改善後の回帰の歯止め。決定 8）", () => {
   it(`指摘 ${FINDING_COUNT} 件（理由・再確認・採否つき）を通しても、5 回測った中央値が 5,000 ms を下回る`, async () => {
     const harness = open();
     const runId = "perf-run";
@@ -263,8 +269,8 @@ describe("GET /api/runs/:id/findings の性能（計測専用。決定 14）", (
     );
 
     // CI のばらつきに耐える緩い歯止め（最終レビュー Minor 6：遅い Windows の CI ランナーでも
-    // 落ちないよう 1,000 ms から引き上げた）。据え置き／後続 PR 送りの判断基準は 100 ms（決定 14）で、
-    // これはあくまで桁違いの回帰を検出するための上限であり、据え置きの判断基準ではない。
+    // 落ちないよう 1,000 ms から引き上げた）。本来の守りは本数（決定 7・findings.query-count.test.ts）
+    // であり、これはあくまで桁違いの回帰を検出するための上限であって判断基準ではない（決定 8）。
     expect(medianMs).toBeLessThan(5_000);
   }, 20_000);
 });
