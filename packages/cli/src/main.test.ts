@@ -1031,12 +1031,54 @@ describe("main evaluate T19: 出力先の衝突（決定21）", () => {
     expect(code).toBe(0);
     expect(captured.writtenFiles.map((file) => file.path)).toEqual(["metrics.json", "report.md"]);
   });
+
+  it("入力どうし（--manuscript と --truth）が同じ実体でも衝突エラーにはならず、後段の JSON 解析エラーになる（決定21の絞り込み）", async () => {
+    // --manuscript と同じパスを --truth にも渡す。正解ファイルとして読むと原稿の生テキストは
+    // 不正な JSON なので、後続の JSON.parse が失敗する。この失敗こそが正しい診断であり、
+    // 「引数が衝突しています」という曖昧なエラーで上書きしてはならない（決定21は out/report 対
+    // 入力・out 対 report だけを衝突として扱う）。
+    const captured = buildEvalIO({
+      readTruthBytes: (path) =>
+        path === "manuscript.txt"
+          ? Promise.resolve(new TextEncoder().encode(EVAL_TEXT))
+          : Promise.resolve(new TextEncoder().encode(JSON.stringify(evalTruthJson()))),
+    });
+    const code = await main(
+      [
+        "evaluate",
+        "--manuscript",
+        "manuscript.txt",
+        "--truth",
+        "manuscript.txt",
+        "--result",
+        "result.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).not.toContain("が同じファイルを指しています");
+    expect(stderr).toContain("正解ファイルの JSON 構文が不正です");
+  });
 });
 
 describe("main evaluate T22: パスの漏えいを防ぐ（決定9）", () => {
   const SENTINEL_PATH = "/private/leak-should-not-appear/eval.json";
   const sentinelError = (prefix: string) =>
     new Error(`${prefix}: no such file or directory, open '${SENTINEL_PATH}'`);
+
+  it("原稿読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildEvalIO({
+      readManuscriptBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(EVAL_ARGS, {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
 
   it("正解ファイル読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
     const captured = buildEvalIO({

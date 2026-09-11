@@ -328,7 +328,13 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   }
   const args = parsed.value;
 
-  // 2. 出力先の衝突検査（決定 21）。--out/--report 対 全入力、--out と --report どうしを見る。
+  // 2. 出力先の衝突検査（決定 21）。--out/--report 対 全入力、--out と --report どうしだけを見る。
+  //    入力どうし（--manuscript と --truth が同じ実体、など）は決定 21 が挙げている組ではない。
+  //    `findPathConflict` は渡した配列の全組み合わせを見るため、入力を混ぜて渡したうえで
+  //    「衝突の片方が --out か --report でなければ無視する」形に絞る（`run` の
+  //    `findOutPathConflict` が --out だけに絞っているのと同じ形）。入力どうしが同じファイルを
+  //    指す場合は、ここでは何も言わず、後続の読み込み・検証がより的確な原因（JSON として読めない、
+  //    ハッシュが食い違う等）を報告する。
   const namedPaths: NamedPath[] = [
     ...(args.outPath === null ? [] : [{ name: "--out", path: args.outPath }]),
     ...(args.reportPath === null ? [] : [{ name: "--report", path: args.reportPath }]),
@@ -336,9 +342,17 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
     { name: "--truth", path: args.truthPath },
     { name: "--result", path: args.resultPath },
   ];
-  const conflict = await findPathConflict(io, namedPaths);
-  if (conflict !== null) {
-    io.writeErrorLine(`引数エラー: ${conflict[0]} と ${conflict[1]} が同じファイルを指しています`);
+  const rawConflict = await findPathConflict(io, namedPaths);
+  // pair の並び順（`findPathConflict` は配列内で先に現れた方を [0] に置く）には依存しない。
+  const isOutputName = (name: string): boolean => name === "--out" || name === "--report";
+  const outputConflict =
+    rawConflict !== null && (isOutputName(rawConflict[0]) || isOutputName(rawConflict[1]))
+      ? rawConflict
+      : null;
+  if (outputConflict !== null) {
+    io.writeErrorLine(
+      `引数エラー: ${outputConflict[0]} と ${outputConflict[1]} が同じファイルを指しています`,
+    );
     return 1;
   }
 
