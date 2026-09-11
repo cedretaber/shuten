@@ -1,7 +1,7 @@
 # PR12a 詳細計画：結果閲覧（web）
 
 作成日：2026-09-11
-状態：設計（決定まで。タスク分解は決定の確認後に追記する）
+状態：計画済み（タスク分解まで）
 仕様：`docs/spec/mvp-spec.md`（v0.9）4（手順 5〜7）、5.3（上部の状態表示を除く）、5.4、
 9（本文をテキストとして表示、原文表示と位置情報の対応を保つ）、11 節（6・7・9・10・11・12・13 項の UI 側）
 前提：`docs/plans/2026-09-07-mvp-roadmap.md` の PR12a 節、`docs/reference/invariants.md`、
@@ -166,20 +166,19 @@ function buildBodyView(body: string, highlights: readonly Highlight[]): BodyPara
 - 実装は素朴な O(段落数 × 強調数) でよい（申し送り 6。10 万字で 23〜30 ms）。
 - 段落ブロックに改行文字を入れない。空段落は CSS の `min-height` でつぶさない。
 
-### 決定 5：本文末尾の改行の扱い（**ユーザーの確認待ち**）
+### 決定 5：本文末尾の改行ぶんの空ブロックは足さない（2026-09-11 にユーザーが確定）
 
 申し送り 8 のとおり、`splitParagraphs` は末尾の区切りの後に段落を作らないので、素直に作ると
 **本文末尾の改行 1 つぶんが表示に現れない**（改行 n 個なら空行 n−1 個になる）。途中の空行は正しく残る。
-位置の対応はどちらでも変わらない。
+位置の対応はどちらでも変わらない（強調範囲が末尾の改行に掛かっても、塗る範囲が縮むだけである）。
 
-- **案 A（足す）**：本文が改行で終わるとき、末尾に空のブロックを 1 つ足す。原稿の行数と表示の行数が
-  一致する。ただし段落 ID を持たないブロックが 1 つできるので、`BodyParagraph.id` を `number | null` に
-  するか、末尾ブロックを別のフィールドで返す必要がある（型と描画がその分だけ複雑になる）。
-- **案 B（足さない。推奨）**：現状のまま。失われるのは末尾の空行 1 つだけで、校正に必要な情報を
-  含まない。型は素直なまま。計画書に明記し、末尾が LF・CRLF・CR の 3 通りと連続する末尾改行の
-  検査を置く。
+**足さない**を採る。失われるのは末尾の空行 1 つだけで、校正に必要な情報を含まない。足す案では
+段落 ID を持たないブロックが 1 つできるため、`BodyParagraph.id` を `number | null` にするか末尾
+ブロックを別のフィールドで返す必要があり、型・描画・テストがその分だけ複雑になる。
 
-**推奨は案 B。** 確認後に確定し、この節を書き換える。
+したがって `buildBodyView` の出力は `splitParagraphs` の段落と 1 対 1 に対応する。この振る舞いを
+テストで固定する（R1）：末尾が LF・CRLF・CR の 3 通り、連続する末尾改行（`"あ\n\n"` は 2 ブロックで
+2 つ目は空）、末尾に改行が無い場合の 4 通り。
 
 ### 決定 6：選択の塗り分けは props と `React.memo`（申し送り 5 からの意図的な逸脱）
 
@@ -357,7 +356,7 @@ PR11 決定 16 と同じ形で、列挙から日本語ラベルへの写像を `
 
 - **R1：`buildBodyView`（`features/results/body-view.test.ts`）** — 決定 15 の方針で。
   同一範囲・重なり・入れ子・段落跨ぎ、強調なし、本文全体が 1 指摘、空段落、CRLF・LF・CR、
-  本文末尾の改行（決定 5 の確定に従う）、絵文字・異体字セレクタ・結合文字・サロゲートペア、
+  本文末尾の改行（決定 5。空ブロックを足さない）、絵文字・異体字セレクタ・結合文字・サロゲートペア、
   「どのセグメントにも単独サロゲートが無い」、セグメントの連結が元の本文（改行を除く）に一致すること。
 - **R2：本文の描画（`features/results/body-view.test.tsx`）** — 段落数、改行文字が DOM に無いこと、
   `data-findings` の値、強調のクリックで選択が変わること、選択の切り替えで本文全体が
@@ -397,4 +396,756 @@ PR11 決定 16 と同じ形で、列挙から日本語ラベルへの写像を `
 - 詳細（`GET /api/findings/:id`）をキャッシュしないので、同じ指摘を選び直すと再取得になる。
   件数が増えて問題になったら PR12b 以降で見直す。
 - 絞り込みの状態は再読み込みで失われる（決定 10）。
-- 本文末尾の改行の扱いは決定 5 のとおり（確定後に追記する）。
+- 本文末尾の改行 1 つぶんは表示に現れない（決定 5。ユーザーが確定）。
+
+## タスク分解
+
+> **エージェント向け**：superpowers:subagent-driven-development で 1 タスクずつ実装する。各タスクは
+> 「失敗するテストを書く → 落ちるのを見る → 最小の実装 → 通す → コミット」を単位とし、完了時に
+> `pnpm check` を通す。本書の決定 1〜16 と「画面ごとの仕様」「テスト」節が要件の正本で、タスクはその
+> 割り付けである。相対 import は `.ts` / `.tsx` 拡張子付き。識別子は英語、コメント・コミットメッセージ
+> は日本語。`git add -A` を使わず、変更したファイルを明示して stage する。
+
+順序と依存：
+
+```
+Task 1（buildBodyView）→ Task 4（本文の描画）─┐
+Task 2（API クライアント）─────────────────┤
+Task 3（ラベル）───────────────────────────┴→ Task 5（結果画面の骨組みとルート差し替え）
+  → Task 6（一覧と絞り込み）→ Task 7（詳細）→ Task 8（採否）→ Task 9（移動）
+  → Task 10（実行一覧）→ Task 11（N+1 の計測）→ Task 12（漏えい検査とドキュメント）
+```
+
+Task 1・2・3 は互いに独立だが、**並列に実装しない**（同じ `packages/web` を触るため）。
+
+### Task 1：`buildBodyView`（決定 4・5、申し送り 1・2・4・6）
+
+**Files**
+- Create: `packages/web/src/features/results/body-view.ts`
+- Create: `packages/web/src/features/results/body-view.test.ts`
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+/** 強調の対象。`range` は保存済みの UTF-16 範囲 `[start, end)`。 */
+export interface Highlight {
+  readonly id: string;
+  readonly range: { readonly start: number; readonly end: number };
+}
+
+/** 段落内の 1 区切り。`findingIds` が空なら素のテキスト。 */
+export interface BodySegment {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+  readonly findingIds: readonly string[];
+}
+
+/** 段落 1 つ分。`id` は `splitParagraphs` の段落 ID（0 始まり）。 */
+export interface BodyParagraph {
+  readonly id: number;
+  readonly segments: readonly BodySegment[];
+}
+
+export function buildBodyView(body: string, highlights: readonly Highlight[]): BodyParagraph[];
+```
+
+**規則（実装の契約）**
+
+- 段落分割は `@shuten/shared` の `splitParagraphs` をそのまま使う。段落 ID・順序はその出力のまま。
+- 各段落の**内容範囲**は、段落範囲の末尾から改行列（`\r\n` / `\n` / `\r`）を 1 つ分だけ落としたもの。
+- 内容範囲が空の段落（空行）は `segments: []` を返す。
+- 強調は内容範囲との共通部分に切り詰める。共通部分が空になる強調はその段落では無視する。
+- `end <= start` の強調は全体として無視する。
+- 切れ目は「内容範囲の両端 ∪ 切り詰めた強調の開始・終了」の昇順・重複なし。隣接する 2 点で
+  セグメントを作り、`findingIds` は**そのセグメントを完全に覆う**強調の ID を `highlights` の
+  順序のまま並べたもの。
+- セグメントは内容範囲を隙間なく覆い、`text` は `body.slice(start, end)` と等しい。
+- **書記素境界の計算をしない。** `Intl.Segmenter` も `grapheme-index.ts` も import しない。
+
+**手順**
+
+1. `body-view.test.ts` に次のテストを書く（R1）。
+
+```ts
+import { describe, expect, it } from "vitest";
+import { buildBodyView } from "./body-view.ts";
+
+describe("buildBodyView", () => {
+  it("R1-1: 強調が無ければ段落ごとに 1 セグメント。改行文字は含まない", () => {
+    // "あい\r\nうえ\n" → 段落 0 は [0,4)、段落 1 は [4,7)。内容範囲は [0,2) と [4,6)。
+    expect(buildBodyView("あい\r\nうえ\n", [])).toEqual([
+      { id: 0, segments: [{ start: 0, end: 2, text: "あい", findingIds: [] }] },
+      { id: 1, segments: [{ start: 4, end: 6, text: "うえ", findingIds: [] }] },
+    ]);
+  });
+
+  it("R1-2: 空行は segments が空", () => {
+    expect(buildBodyView("あ\n\nい", [])).toEqual([
+      { id: 0, segments: [{ start: 0, end: 1, text: "あ", findingIds: [] }] },
+      { id: 1, segments: [] },
+      { id: 2, segments: [{ start: 3, end: 4, text: "い", findingIds: [] }] },
+    ]);
+  });
+
+  it("R1-3: 末尾の改行ぶんの空ブロックは足さない（決定 5）", () => {
+    // LF・CRLF・CR・連続、いずれも「段落数 = splitParagraphs の段落数」。
+    expect(buildBodyView("あ\nい\n", []).length).toBe(2);
+    expect(buildBodyView("あ\r\nい\r\n", []).length).toBe(2);
+    expect(buildBodyView("あ\rい\r", []).length).toBe(2);
+    expect(buildBodyView("あ\nい", []).length).toBe(2);
+    // 連続する末尾改行：2 つ目は空段落として残る。
+    expect(buildBodyView("あ\n\n", [])).toEqual([
+      { id: 0, segments: [{ start: 0, end: 1, text: "あ", findingIds: [] }] },
+      { id: 1, segments: [] },
+    ]);
+  });
+
+  it("R1-4: 段落内の強調を 3 つのセグメントに切る", () => {
+    const view = buildBodyView("あいうえお", [{ id: "f1", range: { start: 1, end: 3 } }]);
+    expect(view[0]?.segments).toEqual([
+      { start: 0, end: 1, text: "あ", findingIds: [] },
+      { start: 1, end: 3, text: "いう", findingIds: ["f1"] },
+      { start: 3, end: 5, text: "えお", findingIds: [] },
+    ]);
+  });
+
+  it("R1-5: 同一範囲・重なり・入れ子の findingIds", () => {
+    const body = "あいうえお";
+    const same = buildBodyView(body, [
+      { id: "f1", range: { start: 1, end: 3 } },
+      { id: "f2", range: { start: 1, end: 3 } },
+    ]);
+    expect(same[0]?.segments[1]).toEqual({ start: 1, end: 3, text: "いう", findingIds: ["f1", "f2"] });
+
+    const overlap = buildBodyView(body, [
+      { id: "f1", range: { start: 0, end: 3 } },
+      { id: "f2", range: { start: 2, end: 5 } },
+    ]);
+    expect(overlap[0]?.segments).toEqual([
+      { start: 0, end: 2, text: "あい", findingIds: ["f1"] },
+      { start: 2, end: 3, text: "う", findingIds: ["f1", "f2"] },
+      { start: 3, end: 5, text: "えお", findingIds: ["f2"] },
+    ]);
+
+    const nested = buildBodyView(body, [
+      { id: "outer", range: { start: 0, end: 5 } },
+      { id: "inner", range: { start: 2, end: 3 } },
+    ]);
+    expect(nested[0]?.segments.map((s) => s.findingIds)).toEqual([
+      ["outer"],
+      ["outer", "inner"],
+      ["outer"],
+    ]);
+  });
+
+  it("R1-6: 段落を跨ぐ強調は段落ごとに切り詰められ、改行には掛からない", () => {
+    // "あい\nうえ" → 段落 0 の内容 [0,2)、段落 1 の内容 [3,5)。強調 [1,4) は両段落に掛かる。
+    const view = buildBodyView("あい\nうえ", [{ id: "f1", range: { start: 1, end: 4 } }]);
+    expect(view[0]?.segments).toEqual([
+      { start: 0, end: 1, text: "あ", findingIds: [] },
+      { start: 1, end: 2, text: "い", findingIds: ["f1"] },
+    ]);
+    expect(view[1]?.segments).toEqual([
+      { start: 3, end: 4, text: "う", findingIds: ["f1"] },
+      { start: 4, end: 5, text: "え", findingIds: [] },
+    ]);
+  });
+
+  it("R1-7: 空の範囲と段落外の範囲は無視する", () => {
+    expect(buildBodyView("あい", [{ id: "f1", range: { start: 1, end: 1 } }])[0]?.segments).toEqual([
+      { start: 0, end: 2, text: "あい", findingIds: [] },
+    ]);
+    // 改行だけに掛かる強調（"あ\nい" の [1,2)）は、どの段落の内容範囲とも重ならない。
+    const view = buildBodyView("あ\nい", [{ id: "f1", range: { start: 1, end: 2 } }]);
+    expect(view.flatMap((p) => p.segments).every((s) => s.findingIds.length === 0)).toBe(true);
+  });
+
+  it("R1-8: 書記素境界に揃った範囲を切っても壊れない（単独サロゲートが無い）", () => {
+    // 濁点付き（結合文字）、サロゲートペア、異体字セレクタ、ZWJ の家族、異体字付き絵文字。
+    // エディタの正規化で崩れないよう、すべて明示のエスケープで書く（決定 15）。
+    // 長さは 2 + 2 + 3 + 8 + 2 = 17 コード単位。
+    const body =
+      "\u304B\u3099" + // が（か + 結合濁点）
+      "\u{29E3D}" + // サロゲートペア 1 つ
+      "\u845B\u{E0100}" + // 葛 + 異体字セレクタ
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}" + // ZWJ の家族
+      "\u2764\uFE0F"; // 異体字付きの絵文字
+    const highlights = [
+      { id: "f1", range: { start: 0, end: 2 } }, // か + 濁点
+      { id: "f2", range: { start: 2, end: 4 } }, // サロゲートペア 1 つ
+      { id: "f3", range: { start: 4, end: 7 } }, // 葛 + 異体字セレクタ
+    ];
+    const segments = buildBodyView(body, highlights).flatMap((p) => p.segments);
+    // 連結すると元の本文に戻る。
+    expect(segments.map((s) => s.text).join("")).toBe(body);
+    // どのセグメントにも単独サロゲートが無い（申し送り 2）。
+    for (const segment of segments) {
+      for (let i = 0; i < segment.text.length; i += 1) {
+        const code = segment.text.charCodeAt(i);
+        const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+        const isLowSurrogate = code >= 0xdc00 && code <= 0xdfff;
+        if (isHighSurrogate) {
+          const next = segment.text.charCodeAt(i + 1);
+          expect(next >= 0xdc00 && next <= 0xdfff).toBe(true);
+          i += 1;
+        } else {
+          expect(isLowSurrogate).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("R1-9: セグメントの連結は本文から改行を除いたものに一致する", () => {
+    const body = "あい\r\n\nうえお\r";
+    const segments = buildBodyView(body, [{ id: "f1", range: { start: 5, end: 7 } }]).flatMap(
+      (p) => p.segments,
+    );
+    expect(segments.map((s) => s.text).join("")).toBe("あいうえお");
+    for (const segment of segments) {
+      expect(segment.text).toBe(body.slice(segment.start, segment.end));
+    }
+  });
+});
+```
+
+2. `pnpm --filter @shuten/web test` で落ちるのを見る（モジュールが無い）。
+3. `body-view.ts` を実装する。段落ごとに `highlights` を走査する素朴な実装でよい（申し送り 6）。
+4. テストを通す。
+5. コミット。
+
+**完了条件**：R1-1〜R1-9 が緑。`body-view.ts` が `Intl.Segmenter` も `grapheme-index.ts` も
+import していない（`grep` で確認する）。
+
+### Task 2：API クライアントに結果閲覧の 4 メソッドを足す（決定 3）
+
+**Files**
+- Modify: `packages/web/src/api/client.ts`
+- Modify: `packages/web/src/api/client.test.ts`
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+// ApiClient に足す（既存のメソッドは変えない）
+getRuns(options?: { signal?: AbortSignal }): Promise<RunSummaryDto[]>;
+getFindings(runId: string, options?: { signal?: AbortSignal }): Promise<FindingDto[]>;
+getFinding(findingId: string, options?: { signal?: AbortSignal }): Promise<FindingDetailDto>;
+putJudgment(findingId: string, body: PutJudgmentRequest): Promise<JudgmentDto>;
+```
+
+**規則**
+
+- URL は `/api/runs`、`/api/runs/${encodeURIComponent(runId)}/findings`、
+  `/api/findings/${encodeURIComponent(findingId)}`、
+  `/api/findings/${encodeURIComponent(findingId)}/judgment`。
+- 配列の応答は `z.array(findingDtoSchema)` / `z.array(runSummaryDtoSchema)` で検証する
+  （スキーマは `@shuten/shared` から取り、web で定義し直さない。配列の包みだけこの場で作る）。
+- `putJudgment` は `PUT`、`JSON_HEADERS`、本文は `JSON.stringify(body)`。
+- 既存の `request` / `withSignal` をそのまま使う。例外の写像は変えない。
+
+**手順**
+
+1. `client.test.ts` に R9 を足す。fake `fetch` で、4 メソッドそれぞれについて
+   (a) 送った URL・メソッド・本文、(b) 正しい応答を返したときの戻り値、
+   (c) 形のおかしい応答（`findings` の要素から `id` を落とす）で `ApiResponseError` になること、
+   (d) `putJudgment` の `note` を省略したときに本文が `{"status":"held"}` になること、を検査する。
+2. 落ちるのを見る。
+3. `client.ts` に 4 メソッドを実装する。
+4. 通す。ヘッダーの JSDoc の「一覧・停止・再開・再試行・指摘・採否・復旧確認・SSE は PR12 が担当」を
+   実態に合わせて書き換える（本 PR で足したもの／PR12b に残るものを分けて書く）。
+5. コミット。
+
+**完了条件**：R9 が緑。`pnpm check`。
+
+### Task 3：ラベルを `features/results/labels.ts` へ移して拡張する（決定 11）
+
+**Files**
+- Create: `packages/web/src/features/results/labels.ts`
+- Create: `packages/web/src/features/results/labels.test.ts`
+- Delete: `packages/web/src/features/run-receipt/labels.ts`、`labels.test.ts`
+- Modify: `packages/web/src/features/run-receipt/run-receipt-page.tsx`（import 元だけ変える）
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+export const RUN_STATUS_LABELS: Record<RunStatus, string>;
+export const RUN_STOP_REASON_LABELS: Record<RunStopReason, string>;
+export const FINDING_CATEGORY_LABELS: Record<FindingCategory, string>;
+export const INITIAL_VERDICT_LABELS: Record<InitialVerdict, string>;
+export const RECHECK_VERDICT_LABELS: Record<RecheckVerdict, string>;
+export const RECHECK_REASON_KIND_LABELS: Record<RecheckReasonKind, string>;
+export const JUDGMENT_STATUS_LABELS: Record<JudgmentStatus, string>;
+export const FINDING_LOCATE_STATUS_LABELS: Record<FindingLocateStatus, string>;
+export const RECHECK_NOT_APPLICABLE_REASON_LABELS: Record<RecheckNotApplicableReason, string>;
+export const UNIT_STATUS_LABELS: Record<UnitStatus, string>;
+export const FAILURE_REASON_LABELS: Record<FailureReason, string>;
+```
+
+**規則**
+
+- `Record<列挙, string>` の網羅性を型で担保する（キーを足し忘れたら型検査で落ちる）。
+- `JUDGMENT_STATUS_LABELS` は仕様 5.3 の語をそのまま使う：
+  `undecided` →「未判断」、`adopt-planned` →「採用予定」、`rejected` →「却下」、`held` →「保留」。
+- `INITIAL_VERDICT_LABELS`：`likely-error` →「誤りの可能性が高い」、
+  `confirm-with-author` →「作者への確認事項」。
+- `RECHECK_VERDICT_LABELS`：`keep` →「維持」、`withdraw` →「撤回」、
+  `confirm-with-author` →「作者への確認事項」。
+- `RECHECK_NOT_APPLICABLE_REASON_LABELS`：`disabled` →「再確認なし（無効）」、
+  `suppressed` →「再確認なし（許容語で抑制）」、`unlocated` →「再確認なし（位置未確定）」。
+- `FINDING_LOCATE_STATUS_LABELS`：`located` →「位置確定」、`not-found` →「本文に見つからない」、
+  `ambiguous` →「候補が複数あり特定できない」。
+- 接続先 URL・API キーに関わる語はここに置かない。
+
+**手順**
+
+1. `labels.test.ts` を書く。各 `Record` のキー数が対応する定数配列の長さと一致すること
+   （例：`expect(Object.keys(JUDGMENT_STATUS_LABELS)).toEqual([...JUDGMENT_STATUSES])`）、
+   値が空文字でないこと。`run-receipt/labels.test.ts` の既存の検査もここへ移す。
+2. 落ちるのを見る。
+3. `labels.ts` を実装し、`run-receipt/labels.ts` と `labels.test.ts` を削除、
+   `run-receipt-page.tsx` の import 元を `../results/labels.ts` に変える。
+4. `pnpm check`。
+5. コミット。
+
+**完了条件**：`pnpm check` が緑。`packages/web` に `labels.ts` が 1 つだけある。
+
+### Task 4：本文の描画（決定 6、申し送り 3・4）
+
+**Files**
+- Create: `packages/web/src/features/results/body-view.tsx`
+- Create: `packages/web/src/features/results/body-view.test.tsx`
+- Create: `packages/web/src/features/results/results.module.css`
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+export interface BodyViewProps {
+  readonly paragraphs: readonly BodyParagraph[];
+  /** 選択中の指摘 ID。無ければ null。 */
+  readonly selectedFindingId: string | null;
+  /** 強調をクリックしたとき。複数の指摘が重なる場合は先頭の ID が渡る（決定 8）。 */
+  readonly onSelectFinding: (findingId: string) => void;
+}
+export function BodyView(props: BodyViewProps);
+```
+
+**規則**
+
+- 容器は `white-space: pre-wrap`。段落は `<p data-paragraph-id={id}>`。
+  **改行文字を DOM に入れない。** 空段落は CSS の `min-height` でつぶさない。
+- 強調は `<span data-findings="id1 id2" class={…}>`。素のセグメントはテキストノード
+  （`<span>` で包まない）。
+- 選択の塗り分けは props 経由（決定 6）。段落コンポーネントは `React.memo` で包み、
+  props は `{ paragraph, selectedIdHere, onSelectFinding }`。`selectedIdHere` は
+  「その段落に `selectedFindingId` を含むセグメントがあれば `selectedFindingId`、無ければ `null`」。
+- `dangerouslySetInnerHTML` を使わない。
+- クリックのハンドラーは `<span>` に付ける（容器の委譲にしない。テストで要素を特定しやすい）。
+
+**手順**
+
+1. `body-view.test.tsx` に R2 を書く。
+   - 段落数が `paragraphs` の長さと一致し、`<p>` の `textContent` に `\n` も `\r` も含まれないこと。
+   - `data-findings` の値が空白区切りの ID 列になっていること。
+   - `[data-findings~="f1"]` で引けること（jsdom で `~=` が動くのは確認済み。申し送り 3）。
+   - 強調をクリックすると `onSelectFinding` が先頭の ID で呼ばれること。
+   - `selectedFindingId` を変えても本文全体が作り直されないこと。確かめ方は「選択に関係のない
+     段落の DOM ノードを `rerender` の前後で取り、同じインスタンスであること
+     （`expect(before).toBe(after)`）」とする。描画回数を数えるモックは使わない。
+   - 選択中の指摘を含む `<span>` にだけ選択用の class が付くこと（`className` の比較）。
+   - 空段落が `<p>` として残ること。
+2. 落ちるのを見る。
+3. `body-view.tsx` と `results.module.css` を実装する。
+4. 通す。
+5. コミット。
+
+**完了条件**：R2 が緑。`pnpm check`。
+
+### Task 5：結果画面の骨組みとルートの差し替え（決定 1・2・3）
+
+**Files**
+- Create: `packages/web/src/features/results/results-page.tsx`
+- Create: `packages/web/src/features/results/run-header.tsx`
+- Create: `packages/web/src/features/results/results-page.test.tsx`
+- Modify: `packages/web/src/App.tsx`（`ROUTES.run` の要素を `ResultsPage` に）
+- Modify: `packages/web/src/App.test.tsx`（受付表示 → 結果画面）
+- Delete: `packages/web/src/features/run-receipt/`（`run-receipt-page.tsx`、
+  `run-receipt-page.test.tsx`、`run-receipt.module.css`）
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+// results-page.tsx が内部に持つ読み込み状態。
+type ResultsState =
+  | { kind: "loading" }
+  | {
+      kind: "loaded";
+      run: RunDto;
+      targets: readonly RunTargetDto[];
+      manuscript: ManuscriptVersionDto;
+      findings: readonly FindingDto[];
+    }
+  | { kind: "not-found" }
+  | { kind: "error"; message: string };
+
+export interface RunHeaderProps {
+  readonly run: RunDto;
+  readonly manuscriptName: string;
+  readonly onRefresh: () => void;
+  readonly refreshing: boolean;
+}
+export function RunHeader(props: RunHeaderProps);
+```
+
+**規則**
+
+- 取得は決定 3 のとおり：`getRun` と `getFindings` を並行、`getManuscript` は `getRun` の後。
+  3 つそろうまで本文も一覧も描かない。世代番号で古い応答を捨てる。
+- 404（`ApiRequestError` の `status === 404`）は「その実行はありません」＋ホームへのリンク。
+- `status === "stopped" && stopReason === "settings"` は「検査は開始できませんでした」と
+  検査設定へ戻るリンクだけを出し、本文・一覧を描かない（PR11 決定 16 の踏襲）。
+- 指摘 0 件の文言は決定 2 の表のとおり。`completed` 以外では「指摘はありません」と書かない。
+- 本タスクでは一覧・詳細・採否・絞り込みは**まだ作らない**。右側は指摘の件数と
+  「一覧は Task 6 で足す」ではなく、`findings.length` 件という事実だけを出す仮の表示にし、
+  Task 6 が置き換える。
+
+**手順**
+
+1. `results-page.test.tsx` に R7 を書く。
+   - 3 つの取得がそろうまで「読み込み中…」で、本文が描かれないこと。
+   - そろったら段落が描かれること（`getManuscript` が返す本文の段落数）。
+   - `getRun` が 404 のとき「その実行はありません」。
+   - `getFindings` が失敗したときエラー表示になること（本文だけ描いて黙らない）。
+   - `settings` 停止のとき本文を描かないこと。
+   - `completed` で 0 件 →「指摘はありません」、`stopped` で 0 件 → その文言が**出ない**こと。
+   - 「最新の状態を取得」で 3 つとも再取得されること。
+2. 落ちるのを見る。
+3. `results-page.tsx`・`run-header.tsx` を実装し、`App.tsx` のルートを差し替え、
+   `features/run-receipt/` を削除する。`App.test.tsx` の「`/runs/:id` で受付表示画面が描画される」を
+   結果画面の見出しに合わせて直す。
+4. `pnpm check`。
+5. コミット。
+
+**完了条件**：R7 と既存の `App.test.tsx` が緑。`features/run-receipt/` が無い。
+
+### Task 6：指摘一覧と絞り込み（決定 7・8・10）
+
+**Files**
+- Create: `packages/web/src/features/results/finding-filter.ts`
+- Create: `packages/web/src/features/results/finding-filter.test.ts`
+- Create: `packages/web/src/features/results/finding-filter.tsx`（操作子）
+- Create: `packages/web/src/features/results/finding-list.tsx`
+- Modify: `packages/web/src/features/results/results-page.tsx`（仮表示を一覧に差し替え）
+- Modify: `packages/web/src/features/results/results-page.test.tsx`
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+export type RecheckState = "none" | "waiting" | "done" | "failed" | "not-applicable";
+
+export interface FindingFilter {
+  /** null は「すべて」。空配列は「どれも選んでいない」＝ 0 件。 */
+  readonly categories: readonly FindingCategory[] | null;
+  readonly judgments: readonly JudgmentStatus[] | null;
+  readonly recheckStates: readonly RecheckState[] | null;
+  readonly locateStates: readonly ("located" | "unlocated")[] | null;
+  readonly showSuppressed: boolean;
+  readonly showWithdrawn: boolean;
+}
+
+export const DEFAULT_FINDING_FILTER: FindingFilter; // すべて null、showSuppressed/showWithdrawn は false
+
+export function recheckStateOf(finding: FindingDto): RecheckState;
+export function matchesFilter(finding: FindingDto, filter: FindingFilter): boolean;
+export function visibleFindings(
+  findings: readonly FindingDto[],
+  filter: FindingFilter,
+): FindingDto[];
+/** 決定 7：位置が確定した指摘だけを強調に渡す。 */
+export function toHighlights(findings: readonly FindingDto[]): Highlight[];
+```
+
+**規則**
+
+- `recheckStateOf`：`recheck === null` → `"none"`、`status` が `pending` / `running` → `"waiting"`、
+  `done` → `"done"`、`failed` → `"failed"`、`not-applicable` → `"not-applicable"`。
+- `matchesFilter` は上の 6 項目の積。`showSuppressed === false` なら `suppression !== null` を除き、
+  `showWithdrawn === false` なら `recheck?.verdict === "withdraw"` を除く。
+- `toHighlights` は `locateStatus === "located" && range !== null` の両方を見る（決定 7）。
+- 一覧の並びはサーバーの順のまま。クライアントで再ソートしない。
+- 絞り込みの状態は `results-page.tsx` のローカル状態。URL にも `localStorage` にも保存しない。
+- 絞り込みの変更で選択中の指摘が一覧から消えたら、選択を `null` に戻す。
+
+**手順**
+
+1. `finding-filter.test.ts` に R3 を書く。`recheckStateOf` の 5 通り、既定で抑制候補・撤回候補が
+   隠れること、各項目の述語、`toHighlights` が `not-found` / `ambiguous` / `range === null` を
+   落とすこと、隠れている指摘が `toHighlights` に渡らないこと（`visibleFindings` → `toHighlights`
+   の合成で確認）。
+2. 落ちるのを見る。
+3. `finding-filter.ts` を実装する。
+4. `finding-list.tsx`（行：分類ラベル・引用の先頭を切り詰めた見出し・採否・再確認状態・
+   位置特定失敗の印）と `finding-filter.tsx`（チェックボックス群と 2 つの切り替え）を実装し、
+   `results-page.tsx` の仮表示を置き換える。選択状態（`selectedFindingId`）を
+   `results-page.tsx` が持ち、`BodyView` と一覧の両方に渡す。
+5. `results-page.test.tsx` に「絞り込みを変えると強調も減ること」「選択中の指摘が消えたら
+   選択が外れること」を足す。
+6. `pnpm check`。
+7. コミット。
+
+**完了条件**：R3 と R7 が緑。引用の切り詰めが書記素境界を壊さないこと
+（`Array.from(quote).slice(0, 30).join("")` のように**コードポイント単位以上**で切る。
+`String.prototype.slice` で切らない）。
+
+### Task 7：指摘詳細（決定 3・9・12）
+
+**Files**
+- Create: `packages/web/src/features/results/finding-detail.ts`（表示規則の純関数）
+- Create: `packages/web/src/features/results/finding-detail.test.ts`
+- Create: `packages/web/src/features/results/finding-detail.tsx`
+- Modify: `packages/web/src/features/results/results-page.tsx`（詳細の取得と差し込み）
+- Modify: `packages/web/src/features/results/results-page.test.tsx`
+
+**Interfaces（後続タスクが使う）**
+
+```ts
+export type VerdictDisplay =
+  | { readonly kind: "recheck"; readonly verdict: RecheckVerdict }
+  | { readonly kind: "initial"; readonly verdict: InitialVerdict }
+  | { readonly kind: "initial-unverified"; readonly verdict: InitialVerdict };
+
+export interface RecheckDisplay {
+  /** 「再確認済み」「再確認待ち」「再確認失敗」「再確認なし」など。 */
+  readonly stateLabel: string;
+  /** 表示上の最終判定（決定 12 の表）。 */
+  readonly finalVerdict: VerdictDisplay;
+  /** 初回判定。`finalVerdict` が recheck のときは履歴として併記する。 */
+  readonly initialVerdict: InitialVerdict;
+  /** 修正案を「有効な修正案」として出してよいか（決定 12）。 */
+  readonly suggestionUsable: boolean;
+}
+export function describeRecheck(finding: FindingDto): RecheckDisplay;
+
+export interface FindingDetailProps {
+  readonly finding: FindingDto;
+  readonly detail: FindingDetailDto | null; // 取得中は null
+  readonly body: string;
+  readonly siblings: readonly FindingDto[]; // 同じ箇所の他の指摘（決定 8）
+  readonly onSelectFinding: (findingId: string) => void;
+  readonly onNavigate: () => void;
+}
+```
+
+**規則**
+
+- `suggestionUsable` は `recheck?.suggestionValid === false` または
+  `recheck?.reasonKind === "suggestion-inappropriate"` のとき `false`。
+- 位置確定時の「原文」は `body.slice(range.start, range.end)`。位置特定失敗時は `finding.quote` を
+  「LLM の引用（原文との一致未確認）」の見出しで出す。
+- **`finding.paragraphId` を表示しない**（決定 9。位置未確定時は LLM の申告値）。
+- 抑制候補は「許容語『〜』により抑制」と明示する。
+- 元候補（`detail.candidates`）と位置診断（`detail.diagnostics`）は詳細の末尾に畳んで置く。
+  `candidates[].locateStatus` の `outside-target` はここにだけ出る。
+- 確信度に類する数値を出さない。
+
+**手順**
+
+1. `finding-detail.test.ts` に R4 の純関数部分を書く。決定 12 の表の 5 行を 1 件ずつ、
+   `suggestionUsable` の 2 通り、初回判定が必ず残ることを検査する。
+2. 落ちるのを見る。
+3. `finding-detail.ts` を実装する。
+4. `finding-detail.tsx` を実装し、`results-page.tsx` から選択時に `getFinding` を呼んで渡す
+   （取得中は `detail: null` で候補・診断の欄だけ「読み込み中」）。世代番号で古い応答を捨てる。
+   同じ箇所の他の指摘（`siblings`）は、選択中の指摘と `range` が重なる可視の指摘から作る。
+5. `results-page.test.tsx` に「選択すると `getFinding` が 1 回呼ばれる」「取得前でも引用と理由が
+   出る」「他の指摘のリンクで選択が移る」を足す。
+6. `pnpm check`。
+7. コミット。
+
+**完了条件**：R4 が緑。詳細パネルに `paragraphId` が出ない（テストで確認する）。
+
+### Task 8：採否と判断メモ（決定 13）
+
+**Files**
+- Create: `packages/web/src/features/results/judgment-control.tsx`
+- Create: `packages/web/src/features/results/judgment-control.test.tsx`
+- Modify: `packages/web/src/features/results/finding-detail.tsx`（採否を差し込む）
+- Modify: `packages/web/src/features/results/results-page.tsx`（保存と一覧の更新）
+
+**Interfaces**
+
+```ts
+export interface JudgmentControlProps {
+  readonly judgment: JudgmentDto;
+  /** 保存を試みる。失敗したら reject する（呼び出し側が握りつぶさない）。 */
+  readonly onSave: (status: JudgmentStatus, note: string | null) => Promise<void>;
+}
+export function JudgmentControl(props: JudgmentControlProps);
+```
+
+**規則**
+
+- 4 状態はラジオ、メモは `<textarea maxLength={2000}>`。空欄は `null` として送る。
+- 保存ボタンを押すまで送らない。保存中はボタンを無効にする。
+- 成功したら `results-page.tsx` が応答の `JudgmentDto` でその指摘の `judgment` を差し替える
+  （一覧を取り直さない）。失敗したらその場にエラーを出し、入力を保存前の値に戻す。
+- 「採用予定を選んでも本文は書き換わりません」を操作子の直下に常時表示する（決定 13）。
+
+**手順**
+
+1. `judgment-control.test.tsx` に R5 を書く。4 状態の選択、メモの入力と `null` 送信、
+   保存中の無効化、失敗時に元へ戻ること、注記が常に見えること。
+2. 落ちるのを見る。
+3. 実装する。`results-page.tsx` は `putJudgment` を呼び、成功時に `findings` の該当要素を差し替える。
+4. `pnpm check`。
+5. コミット。
+
+**完了条件**：R5 が緑。`putJudgment` の呼び出しが `finding-detail.tsx` ではなく
+`results-page.tsx` に閉じている（状態の持ち主が 1 か所）。
+
+### Task 9：指摘から本文への移動（決定 9、申し送り 3）
+
+**Files**
+- Create: `packages/web/src/features/results/navigate.ts`
+- Create: `packages/web/src/features/results/navigate.test.ts`
+- Modify: `packages/web/src/features/results/results-page.tsx`
+- Modify: `packages/web/src/features/results/results-page.test.tsx`
+
+**Interfaces**
+
+```ts
+export type NavigationTarget =
+  | { readonly kind: "finding"; readonly findingId: string }
+  | { readonly kind: "paragraph"; readonly paragraphId: number };
+
+/** 指摘の移動先を決める。位置未確定なら検査対象範囲を含む段落（決定 9）。見つからなければ null。 */
+export function navigationTargetOf(
+  finding: FindingDto,
+  targets: readonly RunTargetDto[],
+  body: string,
+): NavigationTarget | null;
+
+export function findTargetElement(
+  container: HTMLElement,
+  target: NavigationTarget,
+): HTMLElement | null;
+
+/** jsdom には scrollIntoView が無い（申し送り 3）。有るときだけ呼ぶ。 */
+export function scrollIntoViewIfPossible(element: Element): void;
+```
+
+**規則**
+
+- `navigationTargetOf`：`locateStatus === "located" && range !== null` なら
+  `{ kind: "finding", findingId }`。そうでなければ `targets` から `finding.targetId` の要素を探し、
+  `splitParagraphs(body)` で `target.target.start` を含む段落の `id` を返す。
+  該当が無ければ `null`（移動の操作子を出さない）。
+- `findTargetElement`：`finding` は `[data-findings~="<id>"]` の最初の要素、
+  `paragraph` は `[data-paragraph-id="<id>"]`。ID は `CSS.escape` を通す。
+- `scrollIntoViewIfPossible`：`typeof element.scrollIntoView === "function"` のときだけ呼ぶ。
+  `getBoundingClientRect` は使わない。
+
+**手順**
+
+1. `navigate.test.ts` に R6 を書く。位置確定の指摘 → `finding`、`not-found` の指摘 →
+   検査対象範囲を含む段落 ID、`targets` に無い `targetId` → `null`、
+   `findTargetElement` が jsdom の DOM から正しい要素を引くこと、
+   `scrollIntoViewIfPossible` が関数の無い要素で例外を投げないこと。
+2. 落ちるのを見る。
+3. 実装する。`results-page.tsx` に本文容器の `ref` を持たせ、選択のたびに移動する。
+4. `results-page.test.tsx` に「一覧の行をクリックすると、正しい要素に対して `scrollIntoView`
+   （テストで代入したスタブ）が呼ばれる」を足す。幾何は検査しない。
+5. `pnpm check`。
+6. コミット。
+
+**完了条件**：R6 が緑。`getBoundingClientRect` を使っていない。
+
+### Task 10：実行一覧 `/runs`（決定 3、画面ごとの仕様）
+
+**Files**
+- Create: `packages/web/src/features/run-list/run-list-page.tsx`
+- Create: `packages/web/src/features/run-list/run-list-page.test.tsx`
+- Create: `packages/web/src/features/run-list/run-list.module.css`
+- Modify: `packages/web/src/app/routes.ts`（`runs: "/runs"` を足す）
+- Modify: `packages/web/src/App.tsx`（ルートを足す）
+- Modify: `packages/web/src/app/header.tsx`（「検査結果」のリンク）
+- Modify: `packages/web/src/app/header.test.tsx`
+
+**規則**
+
+- `GET /api/runs` の結果を `startedAt` 降順に並べる（サーバーの順に依存しない）。
+- 行は原稿名・モデル ID・状態ラベル・開始時刻・終了時刻。行全体が `/runs/:id` へのリンク
+  （`runPath(id)`）。
+- 0 件は「保存された検査実行はありません」＋ホームへのリンク。
+- 取得失敗はエラー表示（空一覧として見せない）。
+
+**手順**
+
+1. `run-list-page.test.tsx` に R8 を書く。並び、0 件、リンク先、取得失敗。
+   `header.test.tsx` に「検査結果」のリンクが `/runs` を指すことを足す。
+2. 落ちるのを見る。
+3. 実装する。
+4. `pnpm check`。
+5. コミット。
+
+**完了条件**：R8 とヘッダーのテストが緑。
+
+### Task 11：`listFindings` の N+1 を計測して決着させる（決定 14）
+
+**Files**
+- Create: `packages/server/src/api/findings.perf.test.ts`
+- Modify: `docs/plans/2026-09-07-mvp-roadmap.md`（持ち越しの行を計測結果に書き換える）
+- Modify: `docs/plans/2026-09-11-pr12a-result-view.md`（決定 14 に実測値を追記する）
+
+**規則**
+
+- 既存のテスト補助（`packages/server/src/api/*.test.ts` が使っている DB とアプリの組み立て）を
+  そのまま使い、**サーバーの実装を変えない**。
+- 指摘 800 件を投入し、`GET /api/runs/:id/findings` の所要時間を測る。
+  `performance.now()` の差で 1 回測り、**1,000 ms 未満**を検査する（CI のばらつきに耐える上限。
+  判断のための実測値は作業報告とロードマップに数値で残す）。
+- 実測が 100 ms 以下なら据え置き、超えるならサーバー側の後続 PR に回す（決定 14）。
+  どちらの場合もロードマップの持ち越しの行を事実で置き換える。
+
+**手順**
+
+1. `findings.perf.test.ts` を書いて走らせ、実測値を得る。
+2. 決定 14 に実測値と結論（据え置き／後続 PR）を追記する。
+3. ロードマップ 262 行目付近の「`listFindings` の N+1 は PR12a で件数を見て判断する（持ち越しのまま）」を
+   結論に書き換える。
+4. `pnpm check`。
+5. コミット。
+
+**完了条件**：計測値が計画書とロードマップに残り、持ち越しが消える。
+
+### Task 12：漏えい検査とドキュメント（決定 16、完了条件）
+
+**Files**
+- Modify: `packages/web/src/leak.test.tsx`
+- Modify: `packages/web/src/App.test.tsx`（`/runs` の描画）
+- Modify: `docs/plans/2026-09-07-mvp-roadmap.md`（PR12a 節を実施済みにする）
+- Modify: `README.md`（現在の状態）
+- Modify: `docs/plans/2026-09-11-pr12a-result-view.md`（状態行を「実装済み」にする）
+
+**規則**
+
+- W9-7 を `/runs` と結果画面にも広げる。番兵の接続先 URL（`leak-sentinel.invalid`）と API キーを
+  `localStorage` と接続設定に置いた状態で `/runs`・`/runs/:id` を描画し、
+  `document.body.textContent` にも `localStorage` のどの値にも出ないことを見る。
+- 結果画面は `RunDto`・`ManuscriptVersionDto`・`FindingDto` を描くので、
+  原稿名・停止メッセージ・モデル ID を経由した漏えいも同時に見ることになる。
+- README は「現在の状態」の PR11c までの記述に PR12a を足す。**実原稿の断片を書かない。**
+
+**手順**
+
+1. `leak.test.tsx` に R10 を足し、落ちることを一度確認する（番兵を意図的に描画して赤くしてから戻す）。
+2. 実装・文書を直す。
+3. `pnpm check` と `pnpm build` を通す。
+4. コミット。
+
+**完了条件**：`pnpm check` と `pnpm build` が緑。ロードマップ・README・本計画書が実態と一致する。
+
+### 実装後（マージ前）
+
+1. CI を Ubuntu・Windows とも緑にする。
+2. **ローカルの Windows 実機確認は行わない**（完了条件の節のとおり）。その旨を PR 本文に明記する。
+3. マージはユーザーが行う。
