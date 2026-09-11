@@ -41,7 +41,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
-import type { RunEventHandlers } from "../../api/events.ts";
+import type { EventSourceLike, RunEventHandlers } from "../../api/events.ts";
+import { subscribeRunEvents as subscribeRunEventsImpl } from "../../api/events.ts";
 import { ROUTES, runPath } from "../../app/routes.ts";
 import findingListStyles from "./results-page.module.css";
 import { ResultsPage } from "./results-page.tsx";
@@ -1331,7 +1332,7 @@ describe("ResultsPage: 実行制御（決定 6・7・8）", () => {
     expect(getFindings).toHaveBeenCalledTimes(2);
   });
 
-  it("409 で拒否されても、code ごとの案内が出て必ず状態を取り直す。error.message は出ない", async () => {
+  it("B10: 409 で拒否されても、code ごとの案内が出て必ず状態を取り直す。error.message は出ない", async () => {
     const user = userEvent.setup();
     const getRun = vi.fn(() =>
       Promise.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" })),
@@ -2152,7 +2153,7 @@ describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
     const handlers = await streamHandlers(stream);
-    act(() => handlers.onError());
+    act(() => handlers.onError("reconnecting"));
     await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
     // 切れている間に取り直しても意味が無いので、取り直しは走らない。
     expect(getRun).toHaveBeenCalledTimes(1);
@@ -2181,7 +2182,7 @@ describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
     const handlers = await streamHandlers(stream);
-    act(() => handlers.onError());
+    act(() => handlers.onError("reconnecting"));
     await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
 
     act(() => handlers.onEvent(RUN_SETTLED));
@@ -2189,6 +2190,85 @@ describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
     await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
 
     await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+  });
+});
+
+// 最終レビュー Important 1：`EventSource` が恒久的に閉じたときの案内。
+//
+// ここだけは `ApiClient` の口ごと差し替えず、本物の `subscribeRunEvents`（`api/events.ts`）に
+// fake の `EventSource` を注入する——`readyState` から画面の 1 行までを一続きで見るため
+// （jsdom に `EventSource` は無い）。`readyState` を見ない実装（`onerror` を常に「再接続中」と
+// して扱う実装）に戻すと、下 2 件のうち「恒久的に閉じた」側が赤になる。
+describe("ResultsPage: 最終レビュー Important 1 恒久的な切断の案内（決定 4）", () => {
+  /** テストから `readyState` を書き換えられる fake（0: CONNECTING、2: CLOSED）。 */
+  interface FakeSource extends EventSourceLike {
+    readyState: number;
+    closeCallCount: number;
+  }
+
+  function fakeEventSourceStream() {
+    const instances: FakeSource[] = [];
+    class FakeEventSource implements FakeSource {
+      readyState = 0;
+      closeCallCount = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor() {
+        instances.push(this);
+      }
+
+      addEventListener(): void {}
+
+      close(): void {
+        this.closeCallCount += 1;
+        this.readyState = 2;
+      }
+    }
+
+    const subscribeRunEvents = (runId: string, handlers: RunEventHandlers) =>
+      subscribeRunEventsImpl(runId, handlers, { EventSource: FakeEventSource });
+    return { subscribeRunEvents, instances };
+  }
+
+  async function renderRunningPage() {
+    const stream = fakeEventSourceStream();
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    await waitFor(() => expect(stream.instances).toHaveLength(1));
+    const source = stream.instances[0];
+    if (source === undefined) throw new Error("購読がまだ張られていない");
+    return source;
+  }
+
+  it("readyState が CLOSED の onerror では「再接続を試みています」を出さず、自動更新の停止を出す", async () => {
+    const source = await renderRunningPage();
+
+    act(() => {
+      source.readyState = 2;
+      source.onerror?.(new Event("error"));
+    });
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+    expect(screen.queryByText(DISCONNECTED_NOTICE)).not.toBeInTheDocument();
+  });
+
+  it("readyState が CONNECTING の onerror では従来どおり「再接続を試みています」を出す", async () => {
+    const source = await renderRunningPage();
+
+    act(() => {
+      source.readyState = 0;
+      source.onerror?.(new Event("error"));
+    });
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
   });
 });
 

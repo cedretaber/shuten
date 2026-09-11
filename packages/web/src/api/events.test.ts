@@ -25,8 +25,14 @@ interface FakeEventSource extends EventSourceLike {
   readonly url: string;
   readonly listeners: Map<string, Array<(event: MessageEvent<string>) => void>>;
   closeCallCount: number;
+  /** テストから書き換えて `onerror` 時の状態を作る（0: CONNECTING、1: OPEN、2: CLOSED）。 */
+  readyState: number;
   dispatch(type: string, data: string): void;
 }
+
+/** WHATWG の `EventSource.readyState`（jsdom に `EventSource` が無いので定数で持つ）。 */
+const CONNECTING = 0;
+const CLOSED = 2;
 
 /**
  * fake の `EventSource`。`addEventListener` の登録を型ごとに記録し、`dispatch` で任意のイベントを
@@ -45,6 +51,8 @@ function createFakeEventSource(order?: string[]): {
     onopen: ((event: Event) => void) | null = null;
     onerror: ((event: Event) => void) | null = null;
     closeCallCount = 0;
+    /** 既定は再接続中（本物の `EventSource` も切断直後は CONNECTING に戻る）。 */
+    readyState = CONNECTING;
 
     constructor(url: string) {
       this.url = url;
@@ -59,6 +67,7 @@ function createFakeEventSource(order?: string[]): {
 
     close(): void {
       this.closeCallCount += 1;
+      this.readyState = CLOSED;
       order?.push("close");
     }
 
@@ -135,7 +144,7 @@ describe("subscribeRunEvents", () => {
     expect(source.closeCallCount).toBe(1);
   });
 
-  it("B3: JSON として解析できない受信は onUnknownEvent を呼び、onEvent は呼ばない。値はログに出さない", () => {
+  it("B4: JSON として解析できない受信は onUnknownEvent を呼び、onEvent は呼ばない。値はログに出さない", () => {
     const { Ctor, instances } = createFakeEventSource();
     const onEvent = vi.fn();
     const onUnknownEvent = vi.fn();
@@ -172,7 +181,7 @@ describe("subscribeRunEvents", () => {
     errorSpy.mockRestore();
   });
 
-  it("onopen は onOpen に、onerror は onError にそのまま転送する", () => {
+  it("onopen は onOpen に転送し、onerror は再接続中（CONNECTING）なら reconnecting を渡す", () => {
     const { Ctor, instances } = createFakeEventSource();
     const onOpen = vi.fn();
     const onError = vi.fn();
@@ -182,13 +191,46 @@ describe("subscribeRunEvents", () => {
     if (source === undefined) throw new Error("source が生成されていません");
 
     source.onopen?.(new Event("open"));
+    source.readyState = CONNECTING;
     source.onerror?.(new Event("error"));
 
     expect(onOpen).toHaveBeenCalledExactlyOnceWith();
-    expect(onError).toHaveBeenCalledExactlyOnceWith();
+    expect(onError).toHaveBeenCalledExactlyOnceWith("reconnecting");
   });
 
-  it("unsubscribe は接続を閉じ、冪等で、以後はハンドラーを呼ばない", () => {
+  // 最終レビュー Important 1：WHATWG の規定では、再接続の試行が 2xx 以外や MIME 不一致で返ると
+  // `error` を発火して `readyState` は CLOSED になり、**以後は再接続しない**。ここを見ない実装
+  // （常に「再接続中」として扱う実装）に戻すと、この検査が赤になる。
+  it("onerror のとき readyState が CLOSED なら closed を渡す（以後 EventSource は再接続しない）", () => {
+    const { Ctor, instances } = createFakeEventSource();
+    const onError = vi.fn();
+
+    subscribeRunEvents("run-1", noopHandlers({ onError }), { EventSource: Ctor });
+    const source = instances[0];
+    if (source === undefined) throw new Error("source が生成されていません");
+
+    source.readyState = CLOSED;
+    source.onerror?.(new Event("error"));
+
+    expect(onError).toHaveBeenCalledExactlyOnceWith("closed");
+  });
+
+  it("onerror のたびに、その時点の readyState を見て渡す（購読時の値を覚え込まない）", () => {
+    const { Ctor, instances } = createFakeEventSource();
+    const onError = vi.fn();
+
+    subscribeRunEvents("run-1", noopHandlers({ onError }), { EventSource: Ctor });
+    const source = instances[0];
+    if (source === undefined) throw new Error("source が生成されていません");
+
+    source.onerror?.(new Event("error"));
+    source.readyState = CLOSED;
+    source.onerror?.(new Event("error"));
+
+    expect(onError.mock.calls).toEqual([["reconnecting"], ["closed"]]);
+  });
+
+  it("B3: unsubscribe は接続を閉じ、冪等で、以後はハンドラーを呼ばない", () => {
     const { Ctor, instances } = createFakeEventSource();
     const onEvent = vi.fn();
 
@@ -207,7 +249,7 @@ describe("subscribeRunEvents", () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it("run-settled で自動的に閉じた後に unsubscribe を呼んでも close() は 1 回だけ", () => {
+  it("B3: run-settled で自動的に閉じた後に unsubscribe を呼んでも close() は 1 回だけ", () => {
     const { Ctor, instances } = createFakeEventSource();
     const unsubscribe = subscribeRunEvents("run-1", noopHandlers(), { EventSource: Ctor });
     const source = instances[0];

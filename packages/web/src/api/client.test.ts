@@ -721,6 +721,8 @@ describe("createApiClient", () => {
       close(): void {}
       onopen = null;
       onerror = null;
+      // 最終レビュー Important 1：`EventSourceLike` は `readyState` を要求する（0: CONNECTING）。
+      readyState = 0;
     }
 
     const client = createApiClient({

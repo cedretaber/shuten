@@ -36,7 +36,7 @@ import {
   UNIT_STATUS_LABELS,
 } from "./labels.ts";
 import styles from "./results-page.module.css";
-import { retryableUnitIds } from "./run-control.ts";
+import { type PendingControlAction, retryableUnitIds } from "./run-control.ts";
 
 /** `input-too-long` の検査単位に出す案内（決定 6）。押すと 400 になるため、ボタンの代わりに出す。 */
 const INPUT_TOO_LONG_NOTICE =
@@ -51,7 +51,7 @@ export interface FailedUnitsProps {
   readonly onRetryUnit: (unitId: string) => void;
   /** 送信中の操作（`run-control.tsx` の `pending` と同じ union）。null でなければ、この一覧の
    *  再試行ボタンもすべて `disabled` にする（`retry` 以外の操作の送信中も含む）。 */
-  readonly pending: "stop" | "resume" | "retry" | "confirm" | null;
+  readonly pending: PendingControlAction;
 }
 
 export function FailedUnits(props: FailedUnitsProps) {

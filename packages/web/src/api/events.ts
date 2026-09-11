@@ -28,7 +28,22 @@ export interface EventSourceLike {
   close(): void;
   onopen: ((event: Event) => void) | null;
   onerror: ((event: Event) => void) | null;
+  /** WHATWG の `readyState`（0: CONNECTING、1: OPEN、2: CLOSED）。`onerror` の意味がこれで変わる。 */
+  readonly readyState: number;
 }
+
+/** WHATWG の `EventSource.CLOSED`。jsdom に `EventSource` が無いので定数で持つ。 */
+const EVENT_SOURCE_CLOSED = 2;
+
+/**
+ * `onError` が伝える切断の種類（最終レビュー Important 1）。
+ *
+ * - `reconnecting`：`EventSource` が自分で再接続を試みる（`readyState` は CONNECTING）。
+ * - `closed`：恒久的に閉じた（`readyState` は CLOSED）。**以後は再接続しない**——WHATWG の規定では、
+ *   再接続の試行が 2xx 以外や MIME 不一致で返るとこの状態になる。区別しないと画面が
+ *   「再接続を試みています」と嘘をつき続けることになる。
+ */
+export type RunEventErrorState = "reconnecting" | "closed";
 
 export type EventSourceConstructor = new (url: string) => EventSourceLike;
 
@@ -36,7 +51,7 @@ export interface RunEventHandlers {
   onOpen(): void;
   onEvent(event: RunEventDto): void;
   onUnknownEvent(): void;
-  onError(): void;
+  onError(state: RunEventErrorState): void;
 }
 
 /**
@@ -100,7 +115,9 @@ export function subscribeRunEvents(
     if (closed) {
       return;
     }
-    handlers.onError();
+    // その場で `readyState` を読む（購読時の値を覚え込まない）。CLOSED なら以後 `EventSource` は
+    // 再接続しないので、呼び出し元は「再接続を試みています」ではない案内に倒す必要がある。
+    handlers.onError(source.readyState === EVENT_SOURCE_CLOSED ? "closed" : "reconnecting");
   };
 
   for (const type of Object.keys(RUN_EVENT_TYPES)) {

@@ -22,7 +22,7 @@ import { ROUTES } from "../../app/routes.ts";
 import { formatDateTime } from "./format-date-time.ts";
 import { RUN_STATUS_LABELS, RUN_STOP_REASON_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
-import { type ControlFailure, statusNotice } from "./run-control.ts";
+import { type ControlFailure, type PendingControlAction, statusNotice } from "./run-control.ts";
 import { RunControl } from "./run-control.tsx";
 import { RunProgress } from "./run-progress.tsx";
 
@@ -48,7 +48,7 @@ export interface RunHeaderProps {
   readonly onRetryFailed: () => void;
   readonly onConfirmRecovery: () => void;
   /** 送信中の操作（重複送信を防ぐ。null なら送信していない）。 */
-  readonly pending: "stop" | "resume" | "retry" | "confirm" | null;
+  readonly pending: PendingControlAction;
   readonly failure: ControlFailure | null;
 }
 

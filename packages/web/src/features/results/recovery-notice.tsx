@@ -4,7 +4,9 @@
  * `status === "recovery-waiting"`：仕様 8.2 の定型文をそのまま出し、主
  * （「LM Studio 側で生成が止まったことを確認した → 再開する」＝`POST /api/runs/:id/resume`）・副
  * （「確認だけ記録する（この検査は再開しない）」＝`POST /api/recovery/confirm`）の 2 操作と、
- * 「時間経過は終了の証拠にならない」の注記を出す。API 呼び出し自体は `results-page.tsx` の
+ * 「時間経過は終了の証拠にならない」の注記と、仕様 8.2 の「再開と新規開始の区別」の注記
+ * （`RESUME_SCOPE_NOTE`。汎用の「再開」と同じ文言。最終レビュー Minor 5）を出す。
+ * API 呼び出し自体は `results-page.tsx` の
  * `runControlAction` に集約された `onResume`／`onConfirmRecovery` をそのまま呼ぶだけで、ここでは
  * 直接呼ばない（`run-control.tsx` と同じ流儀）。
  *
@@ -30,6 +32,7 @@ import { Link } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { runPath } from "../../app/routes.ts";
 import styles from "./results-page.module.css";
+import { RESUME_SCOPE_NOTE } from "./run-control.ts";
 
 /** 仕様 8.2 の表示文（決定 7。スペースの有無も含めて一次資料どおり——「Studio側」に空白を入れない）。 */
 const RECOVERY_WAITING_NOTICE = "生成の停止を確認できません。LM Studio側を確認して再開してください";
@@ -95,6 +98,10 @@ export function RecoveryNotice(props: RecoveryNoticeProps) {
             </button>
           )}
         </div>
+        {/* 仕様 8.2「『再開』と『新規検査の開始』を区別する」。復旧待ちは「作り直し」と誤解
+            されやすい場面なので、汎用の「再開」（`run-control.tsx`）と同じ注記を添える
+            （最終レビュー Minor 5）。 */}
+        <p className={styles.controlNote}>{RESUME_SCOPE_NOTE}</p>
         <p className={styles.controlNote}>{TIME_ELAPSED_NOTE}</p>
         {!canConfirmRecovery && <p className={styles.controlNote}>{RECOVERY_CONFIRMED_NOTICE}</p>}
       </div>

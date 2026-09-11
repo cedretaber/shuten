@@ -1,7 +1,9 @@
 /**
  * 実行制御の出し分けと案内（Task 4、決定 6・7・8・9。Task 7 で `showStopButton` を追加）。
  *
- * ここに置くのは純関数だけ（DOM は次の Task の役割）。
+ * ここに置くのは純関数と、画面をまたいで共有する型・定型文だけ（DOM は次の Task の役割）。
+ * - `PendingControlAction`：送信中の操作を表す union（最終レビュー Minor 2 で 4 か所の重複を集約）。
+ * - `RESUME_SCOPE_NOTE`：仕様 8.2 の「再開」と「新規開始」を区別する注記（最終レビュー Minor 5）。
  * - `controlAvailability`：決定 6 の表。どのボタンを出すかは「押せる見込みがあるものだけ」の
  *   判断であって、最終判断はサーバー（`orchestrator.ts`）。表とサーバーの判定がずれたら
  *   409 が返る（`controlFailureOf` が受ける）。
@@ -19,6 +21,19 @@
 
 import type { RunDto, RunUnitsDto } from "@shuten/shared";
 import { ApiRequestError } from "../../api/errors.ts";
+
+/**
+ * 実行制御（決定 6・7・8）の送信中の操作。`null` なら送信していない（最終レビュー Minor 2）。
+ *
+ * `ResultsPage`（持ち主）と `RunHeader` / `RunControl` / `FailedUnits`（受け取る側）が同じ union を
+ * 書き写していたので、純関数側のこのファイルに 1 つだけ置く。
+ */
+export type PendingControlAction = "stop" | "resume" | "retry" | "confirm" | null;
+
+/** 仕様 8.2「『再開』と『新規検査の開始』を区別する」ための注記（最終レビュー Minor 5）。
+ *  汎用の「再開」（`run-control.tsx`）と復旧待ちの主ボタン（`recovery-notice.tsx`）の両方に添える
+ *  ——どちらも「作り直し」と誤解されうる操作で、文言がずれると同じ操作に見えなくなる。 */
+export const RESUME_SCOPE_NOTE = "同じ検査の続きから再開します（実行 ID は変わりません）";
 
 export interface ControlAvailability {
   readonly canStop: boolean;

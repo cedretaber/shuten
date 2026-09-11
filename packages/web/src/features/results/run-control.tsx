@@ -24,7 +24,13 @@ import { Link } from "react-router";
 import { ROUTES } from "../../app/routes.ts";
 import { RecoveryNotice } from "./recovery-notice.tsx";
 import styles from "./results-page.module.css";
-import { type ControlFailure, controlAvailability, showStopButton } from "./run-control.ts";
+import {
+  type ControlFailure,
+  controlAvailability,
+  type PendingControlAction,
+  RESUME_SCOPE_NOTE,
+  showStopButton,
+} from "./run-control.ts";
 
 export interface RunControlProps {
   readonly run: RunDto;
@@ -36,7 +42,7 @@ export interface RunControlProps {
   readonly onRetryFailed: () => void;
   readonly onConfirmRecovery: () => void;
   /** 送信中の操作（重複送信を防ぐ。null なら送信していない）。 */
-  readonly pending: "stop" | "resume" | "retry" | "confirm" | null;
+  readonly pending: PendingControlAction;
   readonly failure: ControlFailure | null;
 }
 
@@ -86,10 +92,9 @@ export function RunControl(props: RunControlProps) {
               >
                 再開
               </button>
-              {/* 仕様 8.2「『再開』と『新規検査の開始』を区別する」。 */}
-              <p className={styles.controlNote}>
-                同じ検査の続きから再開します（実行 ID は変わりません）
-              </p>
+              {/* 仕様 8.2「『再開』と『新規検査の開始』を区別する」。文言は `RecoveryNotice` の
+                  主ボタンと共有する（`run-control.ts` の `RESUME_SCOPE_NOTE`。最終レビュー Minor 5）。 */}
+              <p className={styles.controlNote}>{RESUME_SCOPE_NOTE}</p>
             </div>
           )}
 

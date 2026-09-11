@@ -168,12 +168,13 @@ describe("RunControl: B9 決定 6 の出し分け", () => {
         "確認だけ記録する（この検査は再開しない）",
       ].sort(),
     );
-    // 汎用の「再開」ボタン（`同じ検査の続きから…`の注記付き）は recovery-waiting では出ない
-    // （RecoveryNotice に一本化。Task 7）。
+    // 汎用の「再開」ボタンは recovery-waiting では出ない（RecoveryNotice に一本化。Task 7）。
+    // 注記（`同じ検査の続きから…`）は最終レビュー Minor 5 で RecoveryNotice の主ボタンにも付いた
+    // ため、ボタンの有無でしか判別できない。注記そのものは 1 つだけ出る。
     expect(screen.queryByRole("button", { name: "再開" })).not.toBeInTheDocument();
     expect(
-      screen.queryByText("同じ検査の続きから再開します（実行 ID は変わりません）"),
-    ).not.toBeInTheDocument();
+      screen.getAllByText("同じ検査の続きから再開します（実行 ID は変わりません）"),
+    ).toHaveLength(1);
   });
 
   it("recovery-waiting・確認済み：副ボタンは消えるが主ボタンは残る（決定 7、Task 7）", () => {

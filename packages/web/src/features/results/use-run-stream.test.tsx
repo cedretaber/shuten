@@ -2,7 +2,7 @@
  * `useRunStream`（Task 8、決定 1・2・4・10）。
  *
  * この hook が持つのは「購読を張る条件」と「イベント 1 件を何の合図に写すか」だけで、
- * 状態（`streamEnded`・`streamDisconnected`）も取り直しの実行も `ResultsPage` の責務。
+ * 状態（`streamEnded`・`streamConnection`）も取り直しの実行も `ResultsPage` の責務。
  * ここではその境界だけを検査する。B13 の「`status === "running"` のときだけ購読する」と
  * B14（`run-settled` 後の張り直し条件）は `enabled` の値を決める側＝`ResultsPage` でしか
  * 観測できないので、`results-page.test.tsx` に置く。
@@ -28,7 +28,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import type { RunEventHandlers } from "../../api/events.ts";
-import type { RefreshKind, RunStreamOptions } from "./use-run-stream.ts";
+import type { RefreshKind, RunStreamOptions, StreamConnectionState } from "./use-run-stream.ts";
 import { useRunStream } from "./use-run-stream.ts";
 
 const RUN_ID = "run-1";
@@ -95,7 +95,7 @@ function makeRecorder() {
   const options = {
     onRefresh: (kind: RefreshKind) => calls.push(`refresh:${kind}`),
     onSettled: () => calls.push("settled"),
-    onConnectionStateChange: (state: "open" | "disconnected") => calls.push(`connection:${state}`),
+    onConnectionStateChange: (state: StreamConnectionState) => calls.push(`connection:${state}`),
     onGenerationSlow: (unitId: string) => calls.push(`slow:${unitId}`),
   } satisfies Omit<RunStreamOptions, "runId" | "enabled">;
   return { calls, options };
@@ -222,7 +222,7 @@ describe("useRunStream: 購読を張る条件（決定 1）", () => {
     act(() => {
       subscription.handlers.onOpen();
       subscription.handlers.onEvent({ type: "stop-requested" });
-      subscription.handlers.onError();
+      subscription.handlers.onError("reconnecting");
     });
 
     expect(recorded.calls).toEqual([]);
@@ -248,9 +248,20 @@ describe("useRunStream: イベントの写し方（決定 2・4・10）", () => 
   it("接続が切れたら切断を知らせるだけで、取り直しは求めない", () => {
     const { handlers, calls } = subscribed();
 
-    act(() => handlers.onError());
+    act(() => handlers.onError("reconnecting"));
 
-    expect(calls).toEqual(["connection:disconnected"]);
+    expect(calls).toEqual(["connection:reconnecting"]);
+  });
+
+  // 最終レビュー Important 1：恒久的に閉じた（`readyState === CLOSED`）ときは、`EventSource` が
+  // もう再接続しない。再接続中と同じ合図に潰す実装だと、画面が「再接続を試みています」と
+  // 言い続ける（`results-page.tsx` 側の案内が嘘になる）ので、ここで区別を固定する。
+  it("恒久的に閉じたときは closed をそのまま伝える（再接続中と同じにしない）", () => {
+    const { handlers, calls } = subscribed();
+
+    act(() => handlers.onError("closed"));
+
+    expect(calls).toEqual(["connection:closed"]);
   });
 
   it.each<[string, RunEventDto]>([

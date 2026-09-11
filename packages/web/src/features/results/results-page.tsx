@@ -125,7 +125,7 @@
  *    新実行の初回読み込みの応答まで捨てられて「読み込み中…」から戻らなくなる）、`pending` も
  *    旧い鎖の完了まで戻らずに新実行のボタンが disabled のままになる。
  *
- * SSE の購読そのものは `use-run-stream.ts`（決定 1）。`streamEnded` / `streamDisconnected` を
+ * SSE の購読そのものは `use-run-stream.ts`（決定 1）。`streamEnded` / `streamConnection` を
  * 持つのはこちらで、`enabled = run.status === "running" && !streamEnded` を計算して渡す。
  * `streamEnded` を下ろすのは**軽い取得が成功して `status` が `running` だったとき**だけ
  * （決定 1 の規則 4）——取り直しに失敗している間は実行が終端かどうか分からず、そこで張り直すと
@@ -162,10 +162,10 @@ import { RUN_STATUS_LABELS } from "./labels.ts";
 import type { NavigationTarget } from "./navigate.ts";
 import { findTargetElement, navigationTargetOf, scrollIntoViewIfPossible } from "./navigate.ts";
 import styles from "./results-page.module.css";
-import { type ControlFailure, controlFailureOf } from "./run-control.ts";
+import { type ControlFailure, controlFailureOf, type PendingControlAction } from "./run-control.ts";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
 import { pruneSlowUnitIds } from "./run-progress.ts";
-import type { RefreshKind } from "./use-run-stream.ts";
+import type { RefreshKind, StreamConnectionState } from "./use-run-stream.ts";
 import { useRunStream } from "./use-run-stream.ts";
 
 type ResultsState =
@@ -181,9 +181,6 @@ type ResultsState =
     }
   | { kind: "not-found" }
   | { kind: "error"; message: string };
-
-/** 実行制御（決定 6・7・8）の送信中の操作。`null` なら送信していない。 */
-type PendingControlAction = "stop" | "resume" | "retry" | "confirm" | null;
 
 /**
  * 指摘の一覧が、いま画面に出ている実行の状態に追いついているか（レビュー I-1）。
@@ -213,23 +210,36 @@ function strongerKind(current: RefreshKind | null, next: RefreshKind): RefreshKi
   return current === "heavy" || next === "heavy" ? "heavy" : "light";
 }
 
+/** 決定 4：自動更新が止まっていることと、手動の取り直しへの導線を伝える 1 行。 */
+const AUTO_UPDATE_STOPPED_NOTICE =
+  "自動更新は停止しています。「最新の状態を取得」を押してください。";
+
 /**
  * 決定 4：自動更新の状態を表す 1 行。同時に 2 行出さない（上から優先）。
  *
- * 2 行目（切断）に「再接続を試みています」と書けるのは、SSE が実際に切れているときだけである。
- * REST の取得が失敗しても `EventSource` を張り直すとは限らず、終端イベントの後なら接続は
- * こちらが意図して閉じている。だから 1 行目・3 行目には「再接続」を持ち出さない。
+ * 「再接続を試みています」と書けるのは、**SSE が切れていて `EventSource` が実際に再接続を試みて
+ * いるとき**（`streamConnection === "reconnecting"`）だけである。
+ *
+ * - REST の取得が失敗しても `EventSource` を張り直すとは限らず、終端イベントの後なら接続は
+ *   こちらが意図して閉じている。だから 1 行目・4 行目には「再接続」を持ち出さない。
+ * - `streamConnection === "closed"`（`readyState` が CLOSED）は、WHATWG の規定で **以後 `EventSource`
+ *   が再接続しない**状態なので、「再接続を試みています」は嘘になる。自動更新はもう戻らないため、
+ *   1 行目と同じ「自動更新は停止しています。」に倒して手動の取り直しへ導く
+ *   （最終レビュー Important 1）。
  */
 function autoUpdateNotice(input: {
   readonly runStatus: RunDto["status"];
   readonly streamEnded: boolean;
-  readonly streamDisconnected: boolean;
+  readonly streamConnection: StreamConnectionState;
   readonly autoRefreshError: boolean;
 }): string | null {
   if (input.streamEnded && input.runStatus === "running") {
-    return "自動更新は停止しています。「最新の状態を取得」を押してください。";
+    return AUTO_UPDATE_STOPPED_NOTICE;
   }
-  if (input.streamDisconnected) {
+  if (input.streamConnection === "closed") {
+    return AUTO_UPDATE_STOPPED_NOTICE;
+  }
+  if (input.streamConnection === "reconnecting") {
     return "サーバーとの接続が切れました。再接続を試みています。";
   }
   if (input.autoRefreshError) {
@@ -296,10 +306,10 @@ export function ResultsPage() {
   // 古い要求の応答が後から届いて新しい要求の結果を上書きしないよう、要求ごとに世代を数える。
   const requestGenerationRef = useRef(0);
 
-  // 自動更新（Task 8、決定 1・4）。`streamEnded` / `streamDisconnected` の持ち主はこの画面
+  // 自動更新（Task 8、決定 1・4）。`streamEnded` / `streamConnection` の持ち主はこの画面
   // （`useRunStream` ではない。決定 1）。`autoRefreshError` は自動の取り直しの失敗を 1 行に畳んだもの。
   const [streamEnded, setStreamEnded] = useState(false);
-  const [streamDisconnected, setStreamDisconnected] = useState(false);
+  const [streamConnection, setStreamConnection] = useState<StreamConnectionState>("open");
   const [autoRefreshError, setAutoRefreshError] = useState(false);
   // 決定 10：遅延通知（`generation-slow`）の対象単位 ID。単位が `running` でなくなったら消える。
   const [slowUnitIds, setSlowUnitIds] = useState<ReadonlySet<string>>(EMPTY_SLOW_UNIT_IDS);
@@ -392,7 +402,7 @@ export function ResultsPage() {
     setSlowUnitIds(EMPTY_SLOW_UNIT_IDS);
     setFindingsFreshness("current");
     setStreamEnded(false);
-    setStreamDisconnected(false);
+    setStreamConnection("open");
     setAutoRefreshError(false);
 
     // `getRun`・`getFindings`・`getRunUnits`（決定 5。PR12b Task 5）は並行に投げる（決定 3）。
@@ -731,8 +741,8 @@ export function ResultsPage() {
     // 決定 1 の規則 3：購読は `subscribeRunEvents` が既に閉じている。張り直さない印を立てる。
     setStreamEnded(true);
   }, []);
-  const handleConnectionStateChange = useCallback((connection: "open" | "disconnected") => {
-    setStreamDisconnected(connection === "disconnected");
+  const handleConnectionStateChange = useCallback((connection: StreamConnectionState) => {
+    setStreamConnection(connection);
   }, []);
   const handleGenerationSlow = useCallback((unitId: string) => {
     setSlowUnitIds((previous) => {
@@ -755,11 +765,11 @@ export function ResultsPage() {
     onGenerationSlow: handleGenerationSlow,
   });
 
-  // 購読していない間に「接続が切れました。再接続を試みています。」を出したままにしない
-  // （決定 4。実行が終端になった・`run-settled` で閉じた後は、切れているのではなく張っていない）。
+  // 購読していない間に切断の案内を出したままにしない（決定 4。実行が終端になった・`run-settled` で
+  // 閉じた後は、切れているのではなく張っていない）。
   useEffect(() => {
     if (!streamEnabled) {
-      setStreamDisconnected(false);
+      setStreamConnection("open");
     }
   }, [streamEnabled]);
 
@@ -941,7 +951,7 @@ export function ResultsPage() {
       ? autoUpdateNotice({
           runStatus: state.run.status,
           streamEnded,
-          streamDisconnected,
+          streamConnection,
           autoRefreshError,
         })
       : null;

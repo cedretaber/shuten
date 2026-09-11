@@ -12,7 +12,7 @@
  *    積まない（サーバーは再送しないので、到着数を数えると取りこぼしぶん恒久的にずれる）。
  *    受け取った `data` の中身はログにも画面にも出さない（`events.ts` と同じ規律）。
  *
- * 状態（`streamEnded` / `streamDisconnected`）と実際の取り直しは持たない。どちらも
+ * 状態（`streamEnded` / `streamConnection`）と実際の取り直しは持たない。どちらも
  * `ResultsPage` の責務で、この hook は `onSettled` / `onConnectionStateChange` / `onRefresh` /
  * `onGenerationSlow` で知らせるだけにする（決定 1：規則 4 の「取り直しの成功だけで
  * `streamEnded` を下ろす」判定は REST の成否を知る `ResultsPage` にしか書けない）。
@@ -28,6 +28,17 @@ import { useApiClient } from "../../api/context.tsx";
 
 export type RefreshKind = "light" | "heavy";
 
+/**
+ * 決定 4：SSE の接続状態。
+ *
+ * - `open`：開通した（再接続の成功も含む）。
+ * - `reconnecting`：切れていて、`EventSource` が自分で再接続を試みている。
+ * - `closed`：恒久的に閉じた（`EventSource` の `readyState` が CLOSED）。**以後は再接続しない**ので、
+ *   `ResultsPage` は「再接続を試みています」ではなく「自動更新は停止しています」に倒す
+ *   （最終レビュー Important 1）。
+ */
+export type StreamConnectionState = "open" | "reconnecting" | "closed";
+
 export interface RunStreamOptions {
   readonly runId: string;
   /**
@@ -40,7 +51,7 @@ export interface RunStreamOptions {
   /** 決定 1 の規則 3：`run-settled` を受けた（購読は既に閉じてある）。 */
   readonly onSettled: () => void;
   /** 決定 4：SSE の接続状態。`open` は再接続の成功も含む。 */
-  readonly onConnectionStateChange: (state: "open" | "disconnected") => void;
+  readonly onConnectionStateChange: (state: StreamConnectionState) => void;
   /** 決定 10：遅延通知の unitId。 */
   readonly onGenerationSlow: (unitId: string) => void;
 }
@@ -112,10 +123,12 @@ export function useRunStream(options: RunStreamOptions): void {
         // 中身が読めないので安全側に倒す（決定 2 の表の最終行）。値は一切見ない。
         optionsRef.current.onRefresh("heavy");
       },
-      onError() {
+      onError(state) {
         if (closed) return;
         // 決定 4：切断の印を立てるだけ。切れている間に取り直しても意味が無い。
-        optionsRef.current.onConnectionStateChange("disconnected");
+        // 再接続中（`reconnecting`）と恒久的な切断（`closed`）はそのまま区別して渡す——
+        // 案内の文面が変わるため（最終レビュー Important 1）。
+        optionsRef.current.onConnectionStateChange(state);
       },
     });
 

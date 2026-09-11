@@ -190,20 +190,26 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 たびにエラーが出る。
 
 - `refreshing`（ボタンの `disabled` と「更新中…」）は**手動の取り直しのときだけ**立てる。
-- 自動更新の状態は次の 3 つを 1 行で表す。同時に 2 行出さない（上から優先）。
+- 自動更新の状態は次の 4 つを 1 行で表す。同時に 2 行出さない（上から優先）。
 
   | 状態 | 出す文 |
   | --- | --- |
   | `streamEnded` かつ `run.status === "running"`（決定 1 の規則 3・4。取り直しが失敗したままの状態） | 「自動更新は停止しています。「最新の状態を取得」を押してください。」 |
-  | SSE が切れている（`onError` を受けてから次の `onOpen` まで） | 「サーバーとの接続が切れました。再接続を試みています。」 |
+  | SSE が恒久的に閉じた（`onError` の時点で `readyState === CLOSED`。以後 `EventSource` は再接続しない） | 「自動更新は停止しています。「最新の状態を取得」を押してください。」 |
+  | SSE が切れていて再接続中（`onError` の時点で `readyState === CONNECTING`。次の `onOpen` まで） | 「サーバーとの接続が切れました。再接続を試みています。」 |
   | 自動の取り直しが失敗した（`autoRefreshError`） | 「最新情報の取得に失敗しました。「最新の状態を取得」を押してください。」 |
 
-- `onError`（`EventSource` の接続断。自動再接続が走る）は `streamDisconnected` を立てるだけで、
-  取り直しは行わない（切れている間に取っても意味が無い）。次の `onOpen` で下ろす。
+- `onError`（`EventSource` の接続断）は接続状態の印を立てるだけで、取り直しは行わない
+  （切れている間に取っても意味が無い）。次の `onOpen` で下ろす。**その際 `readyState` を見て、
+  自動再接続が走る（`CONNECTING`）のか、恒久的に閉じた（`CLOSED`）のかを区別する**——WHATWG の
+  規定では、再接続の試行が 2xx 以外や MIME 不一致で返ると `error` を発火して `CLOSED` になり、
+  以後は再接続しない。区別しないと「再接続を試みています」が嘘になり、実行が `running` のままだと
+  購読の依存（`[runId, enabled]`）も変わらないので死んだ購読が張り替えられず、自動更新が戻らない。
+  恒久的に閉じたときは 1 行目と同じ文に倒し、手動の「最新の状態を取得」へ導く。
 - `autoRefreshError` は自動の取り直しが 1 回でも成功したら消す。連続して失敗しても行は増えない。
   文言に「再接続」を持ち出さない：REST の取得が失敗しても `EventSource` を張り直すとは限らず、
   終端イベントの後なら接続はこちらが意図して閉じている。「再接続を試みています」は
-  SSE が実際に切れている 2 行目だけの文言である。
+  SSE が切れていて**実際に再接続が走る** 3 行目だけの文言である。
 - 手動の `refreshError`（PR12a で入れた、内容を消さずに出す帯）はそのまま残す。
 
 ### 決定 5：観点別の進捗は `GET /api/runs/:id/units` を数えて作る
@@ -376,10 +382,14 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 - `failure.reason`（`FAILURE_REASON_LABELS`）
 - `failure.origin`（新しいラベル。`ensure-loaded` →「モデルの準備」、`chat` →「生成」、`local` →「アプリ内」）
 - `attempts`、`elapsedMs`、時刻（`formatDateTime`）
+- `RecheckUnitDto.findingId`（再確認単位の行に「指摘 → 再確認（指摘 ID: …）」として出す。ID だけで、
+  指摘の本文は出さない。「画面ごとの仕様」の「失敗単位の一覧」節）
 
-`message` / `pendingNote` / `finishReason` は**受け取っても描画しない**。
+`message` / `pendingNote` / `finishReason` / `RecheckUnitDto.reason`（再確認の自由記述）は
+**受け取っても描画しない**。
 漏えい検査（`leak.test.tsx`）を拡張し、`/units` の応答に番兵（接続先 URL・API キー・原稿の断片）を
-入れた状態で結果画面を描画し、`document.body.textContent` に出ないことを見る（テスト B11）。
+`message` / `pendingNote` / `finishReason` / `RecheckUnitDto.reason` に入れた状態で結果画面を描画し、
+`document.body.textContent` に出ないことを見る（テスト B11）。
 
 ### 決定 13：一覧の途中挿入は許す。並べ替えの状態を持たない
 
@@ -511,7 +521,7 @@ jsdom の制約（PR12a で確認済み）：`getBoundingClientRect()` は常に
 | B13 | 決定 1・2：`status === "running"` でないときは購読しない。`running` になったら購読する |
 | B14 | 決定 1 の規則 3・4：`run-settled` の後の取り直しが**失敗**したら購読は張り直されず、「自動更新は停止しています」が出る。その後の取り直しで**軽い取得が成功して `status` が `running`** なら、**続く `getFindings` が失敗しても**購読が張り直される |
 | B15 | 決定 3 の 2 段反映：取り直しで `getRun` + `getRunUnits` が成功し `getFindings` が失敗したとき、状態・進捗・ボタンは新しい値に追従し、既に出ている指摘一覧は消えない |
-| B16 | 決定 4：`onError` で「サーバーとの接続が切れました」が出て、次の `onOpen` で下ろされる（続く取り直しの成否によらない）。行は同時に 2 つ出ない |
+| B16 | 決定 4：再接続中の `onError` で「サーバーとの接続が切れました」が出て、次の `onOpen` で下ろされる（続く取り直しの成否によらない）。`readyState === CLOSED` の `onError` では代わりに「自動更新は停止しています」が出る。行は同時に 2 つ出ない |
 | S1 | 実ブラウザでの確認（決定 15）：`/events` の要求が決着後に増え続けないこと、左右が独立にスクロールすること |
 
 S1 の手順（Playwright、`pnpm dev`）：
@@ -547,7 +557,9 @@ S1 の手順（Playwright、`pnpm dev`）：
 - `pnpm check`（typecheck + lint + test）が緑。
 - `pnpm build` が緑。
 - `git diff --check main...HEAD` が無出力（行末の空白・衝突マーカーが無い）。
-- B1〜B16 のテストが在り、S1 の確認を実施して結果を PR 本文に書いてある。
+- B1〜B16 のテストが在り、S1 の確認を**実施できた範囲**と**未確認のまま残る範囲**の両方を
+  PR 本文に書いてある（この環境には LM Studio が無く、S1 の一部は実施できない。下の
+  「持ち越し・既知の制限」に挙げたものがその未確認の範囲にあたる）。
 - `docs/plans/2026-09-07-mvp-roadmap.md` の PR12b を実施済みにし、持ち越しを書き足してある。
 - `README.md` の「現在の状態」を更新してある。
 - `packages/web/src/api/client.ts` と `features/results/run-header.tsx` の「PR12b が担当」という
