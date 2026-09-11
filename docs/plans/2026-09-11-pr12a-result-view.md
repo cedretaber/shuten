@@ -2,7 +2,7 @@
 
 作成日：2026-09-11
 状態：計画済み（タスク分解まで）
-仕様：`docs/spec/mvp-spec.md`（v0.9）4（手順 5〜7）、5.3（上部の状態表示を除く）、5.4、
+仕様：`docs/spec/mvp-spec.md`（v0.9.1）4（手順 5〜7）、5.3（上部の状態表示を除く）、5.4、
 9（本文をテキストとして表示、原文表示と位置情報の対応を保つ）、11 節（6・7・9・10・11・12・13 項の UI 側）
 前提：`docs/plans/2026-09-07-mvp-roadmap.md` の PR12a 節、`docs/reference/invariants.md`、
 `docs/plans/2026-09-09-pr10-http-api.md`（決定 1〜19。API の契約はここが正本）、
@@ -166,7 +166,7 @@ function buildBodyView(body: string, highlights: readonly Highlight[]): BodyPara
 - 実装は素朴な O(段落数 × 強調数) でよい（申し送り 6。10 万字で 23〜30 ms）。
 - 段落ブロックに改行文字を入れない。空段落は CSS の `min-height` でつぶさない。
 
-### 決定 5：本文末尾の改行ぶんの空ブロックは足さない（2026-09-11 にユーザーが確定）
+### 決定 5：本文末尾の改行ぶんの空ブロックは足さない（2026-09-11 にユーザーが確定。仕様 v0.9.1）
 
 申し送り 8 のとおり、`splitParagraphs` は末尾の区切りの後に段落を作らないので、素直に作ると
 **本文末尾の改行 1 つぶんが表示に現れない**（改行 n 個なら空行 n−1 個になる）。途中の空行は正しく残る。
@@ -175,6 +175,10 @@ function buildBodyView(body: string, highlights: readonly Highlight[]): BodyPara
 **足さない**を採る。失われるのは末尾の空行 1 つだけで、校正に必要な情報を含まない。足す案では
 段落 ID を持たないブロックが 1 つできるため、`BodyParagraph.id` を `number | null` にするか末尾
 ブロックを別のフィールドで返す必要があり、型・描画・テストがその分だけ複雑になる。
+
+この振る舞いは仕様 5.3「空白、改行、段落を保った表示」の例外にあたるので、**仕様書側に明記した**
+（v0.9.1。5.3 節の本文表示の行と 15 節の改訂記録。表示だけの差で、保存する本文・位置情報・強調範囲の
+対応は変わらない）。
 
 したがって `buildBodyView` の出力は `splitParagraphs` の段落と 1 対 1 に対応する。この振る舞いを
 テストで固定する（R1）：末尾が LF・CRLF・CR の 3 通り、連続する末尾改行（`"あ\n\n"` は 2 ブロックで
@@ -215,8 +219,14 @@ class は React が付ける（`className` に選択中かどうかを反映す�
 仕様 5.3 は「同じ範囲に複数指摘がある場合はすべて参照可能にする」とする。
 
 - セグメントは `data-findings="id1 id2 …"` を持ち、**クリックで一覧順（`start` 昇順）の先頭を選ぶ**。
-- 詳細パネルの先頭に「同じ箇所の他の指摘（N 件）」を出し、各行のクリックでそちらへ切り替える。
 - 循環選択（クリックのたびに次へ移る）はしない。クリックの結果が毎回同じになる方を採る。
+- 詳細パネルの先頭に、次の **2 つを別々の見出しで**出す。各行のクリックでそちらへ切り替える。
+  - **「同じ範囲の他の指摘（N 件）」**：`range.start` と `range.end` が**完全に一致**する指摘。
+    仕様 5.3 の「同じ範囲に複数指摘がある場合はすべて参照可能にする」はこれを指す。
+  - **「範囲が重なる他の指摘（N 件）」**：範囲が重なるが一致しない指摘。同じセグメントを
+    クリックしたときに到達できるようにするために出す。**「同じ箇所」と呼ばない**
+    （`[0,10)` と `[9,20)` は 1 文字しか共有しない）。
+- どちらも絞り込み後に見えている指摘から作る（隠れている指摘への導線は作らない）。
 
 ### 決定 9：位置特定失敗の指摘の移動先は `run.targets` から引く
 
@@ -300,14 +310,21 @@ PR11 決定 16 と同じ形で、列挙から日本語ラベルへの写像を `
 ### 決定 14：`listFindings` の N+1 は本 PR で計測して決着させる
 
 ロードマップの持ち越し「`listFindings` の N+1 は PR12a で件数を見て判断する」。
-`GET /api/runs/:id/findings` は指摘 1 件ごとに `findRecheckUnitByFinding` と `findJudgment` を
-呼んでいる（`packages/server/src/api/findings.ts`）。better-sqlite3 は同期なので、実測して決める。
+`GET /api/runs/:id/findings` は指摘 1 件ごとに 3 つの問い合わせを出している。
+`listFindings` の中の `toFindingWithReasons` → `listReasons`（理由）、ハンドラー側の
+`findRecheckUnitByFinding`（再確認）と `findJudgment`（採否）である
+（`packages/server/src/db/repositories/findings.ts`、`packages/server/src/api/findings.ts`）。
+**実質 3N+1** で、当初「N+1」と書いていたよりも 1 件あたりの回数が多い。better-sqlite3 は同期なので
+実測して決める。
 
 - 指摘 800 件（スパイクと同じ規模）を投入した DB に対する `GET /api/runs/:id/findings` の所要時間を
   `packages/server` のテストで測る。
-- **100 ms 以下なら据え置き**（テストに計測を残し、ロードマップの持ち越しを「計測して据え置き」に
-  書き換える）。**超えるならサーバー側の後続 PR に回す**（本 PR ではサーバーの実装を変えない。
-  結果を計画書とロードマップに記録する）。
+- **判断に使う値は、ウォームアップ 1 回の後に 5 回測った中央値**とする（1 回の測定では判断しない）。
+- **中央値が 100 ms 以下なら据え置き**（ロードマップの持ち越しを「計測して据え置き」に書き換える）。
+  **超えるならサーバー側の後続 PR に回す**（本 PR ではサーバーの実装を変えない。結果を計画書と
+  ロードマップに記録する）。
+- **CI で赤くするしきい値は判断値と分ける。** テストに残す上限は 1,000 ms（環境差で揺れないための
+  歯止めであって、据え置きの判断基準ではない）。
 
 ### 決定 15：テストの方針（スパイクの申し送り 2・3 を反映）
 
@@ -363,6 +380,8 @@ PR11 決定 16 と同じ形で、列挙から日本語ラベルへの写像を `
   作り直されないこと（段落コンポーネントの描画回数で見る）。
 - **R3：絞り込み（`features/results/finding-filter.test.ts`）** — 既定で抑制候補・撤回候補が隠れること、
   各項目の述語、隠れている指摘が強調に渡らないこと（決定 7）、選択中の指摘が消えたら選択が外れること。
+  一覧の見出しに**引用の全文**が入っていること（結合文字・ZWJ の絵文字を含む引用で、切られていない
+  ことを `textContent` の一致で見る）。
 - **R4：指摘詳細（`features/results/finding-detail.test.tsx`）** — 決定 12 の表を 1 行ずつ。
   位置特定失敗時の「LLM の引用（原文との一致未確認）」、`suggestion-inappropriate` の修正案の扱い、
   初回判定が必ず残ること。
@@ -727,6 +746,16 @@ export interface BodyViewProps {
   readonly onSelectFinding: (findingId: string) => void;
 }
 export function BodyView(props: BodyViewProps);
+
+/** 段落コンポーネントの props。 */
+export interface BodyParagraphProps {
+  readonly paragraph: BodyParagraph;
+  readonly selectedIdHere: string | null;
+  readonly onSelectFinding: (findingId: string) => void;
+}
+
+/** `React.memo` に渡す比較関数。3 つの props をすべて参照等価で比べる。 */
+export function paragraphPropsEqual(a: BodyParagraphProps, b: BodyParagraphProps): boolean;
 ```
 
 **規則**
@@ -738,20 +767,29 @@ export function BodyView(props: BodyViewProps);
 - 選択の塗り分けは props 経由（決定 6）。段落コンポーネントは `React.memo` で包み、
   props は `{ paragraph, selectedIdHere, onSelectFinding }`。`selectedIdHere` は
   「その段落に `selectedFindingId` を含むセグメントがあれば `selectedFindingId`、無ければ `null`」。
+- `React.memo` には**明示の比較関数 `paragraphPropsEqual` を渡す**。これを export して単体テストで
+  検査する（描画回数を数えるモックも DOM ノードの同一性も使わない）。
+- 比較が効くように、呼び出し側は `paragraphs` を `useMemo`（`body` と `highlights` に依存）、
+  `onSelectFinding` を `useCallback` で作り、参照を安定させる。安定していなければ `React.memo` は
+  何も抑止しない。
 - `dangerouslySetInnerHTML` を使わない。
 - クリックのハンドラーは `<span>` に付ける（容器の委譲にしない。テストで要素を特定しやすい）。
 
 **手順**
 
-1. `body-view.test.tsx` に R2 を書く。
+1. `body-view.test.tsx` に R2 を書く。`paragraphPropsEqual` の検査は
+   「3 つとも同じ参照 → `true`」「`selectedIdHere` が `null` から `"f1"` に変わる → `false`」
+   「`paragraph` が別インスタンス（内容が同じでも） → `false`」
+   「`onSelectFinding` が別関数 → `false`」の 4 件。
    - 段落数が `paragraphs` の長さと一致し、`<p>` の `textContent` に `\n` も `\r` も含まれないこと。
    - `data-findings` の値が空白区切りの ID 列になっていること。
    - `[data-findings~="f1"]` で引けること（jsdom で `~=` が動くのは確認済み。申し送り 3）。
    - 強調をクリックすると `onSelectFinding` が先頭の ID で呼ばれること。
-   - `selectedFindingId` を変えても本文全体が作り直されないこと。確かめ方は「選択に関係のない
-     段落の DOM ノードを `rerender` の前後で取り、同じインスタンスであること
-     （`expect(before).toBe(after)`）」とする。描画回数を数えるモックは使わない。
-   - 選択中の指摘を含む `<span>` にだけ選択用の class が付くこと（`className` の比較）。
+   - 選択中の指摘を含む `<span>` にだけ選択用の class が付き、選択を移すと前の `<span>` の class が
+     戻ること（`className` の比較）。
+   - 再描画の抑止は**比較関数 `paragraphPropsEqual` の単体テスト**で検査する（下記）。
+     DOM ノードの同一性では検査しない——子が再描画されても同じ DOM ノードが再利用されるため、
+     常に緑になって何も守らない。
    - 空段落が `<p>` として残ること。
 2. 落ちるのを見る。
 3. `body-view.tsx` と `results.module.css` を実装する。
@@ -874,6 +912,12 @@ export function toHighlights(findings: readonly FindingDto[]): Highlight[];
 - 一覧の並びはサーバーの順のまま。クライアントで再ソートしない。
 - 絞り込みの状態は `results-page.tsx` のローカル状態。URL にも `localStorage` にも保存しない。
 - 絞り込みの変更で選択中の指摘が一覧から消えたら、選択を `null` に戻す。
+- **一覧の見出しで引用の文字列を切らない。** 引用は全文を DOM に置き、はみ出しは CSS
+  （`overflow: hidden; text-overflow: ellipsis; white-space: nowrap`）で省略表示する。
+  ブラウザ側で文字列を切ると、結合文字・異体字セレクタ・ZWJ の絵文字を書記素の途中で割りうる。
+  `String.prototype.slice` はコード単位、`Array.from(...).slice(...)` はコードポイント単位で、
+  どちらも書記素境界ではない。書記素境界を計算する道（`Intl.Segmenter`）は申し送り 1 で閉じている
+  ので、**切らない**のが唯一の整合した解である。長い引用も 1 行に収まる。
 
 **手順**
 
@@ -883,7 +927,7 @@ export function toHighlights(findings: readonly FindingDto[]): Highlight[];
    の合成で確認）。
 2. 落ちるのを見る。
 3. `finding-filter.ts` を実装する。
-4. `finding-list.tsx`（行：分類ラベル・引用の先頭を切り詰めた見出し・採否・再確認状態・
+4. `finding-list.tsx`（行：分類ラベル・引用の見出し・採否・再確認状態・
    位置特定失敗の印）と `finding-filter.tsx`（チェックボックス群と 2 つの切り替え）を実装し、
    `results-page.tsx` の仮表示を置き換える。選択状態（`selectedFindingId`）を
    `results-page.tsx` が持ち、`BodyView` と一覧の両方に渡す。
@@ -892,9 +936,7 @@ export function toHighlights(findings: readonly FindingDto[]): Highlight[];
 6. `pnpm check`。
 7. コミット。
 
-**完了条件**：R3 と R7 が緑。引用の切り詰めが書記素境界を壊さないこと
-（`Array.from(quote).slice(0, 30).join("")` のように**コードポイント単位以上**で切る。
-`String.prototype.slice` で切らない）。
+**完了条件**：R3 と R7 が緑。**一覧の見出しで引用の文字列を切っていないこと**（下記）。
 
 ### Task 7：指摘詳細（決定 3・9・12）
 
@@ -925,11 +967,20 @@ export interface RecheckDisplay {
 }
 export function describeRecheck(finding: FindingDto): RecheckDisplay;
 
+/** 決定 8 の 2 群を選択中の指摘から作る。自分自身は含めない。 */
+export function relatedFindings(
+  selected: FindingDto,
+  visible: readonly FindingDto[],
+): { readonly sameRange: FindingDto[]; readonly overlapping: FindingDto[] };
+
 export interface FindingDetailProps {
   readonly finding: FindingDto;
   readonly detail: FindingDetailDto | null; // 取得中は null
   readonly body: string;
-  readonly siblings: readonly FindingDto[]; // 同じ箇所の他の指摘（決定 8）
+  /** `range` が完全に一致する他の指摘（決定 8）。 */
+  readonly sameRange: readonly FindingDto[];
+  /** 範囲が重なるが一致しない他の指摘（決定 8）。 */
+  readonly overlapping: readonly FindingDto[];
   readonly onSelectFinding: (findingId: string) => void;
   readonly onNavigate: () => void;
 }
@@ -955,8 +1006,12 @@ export interface FindingDetailProps {
 3. `finding-detail.ts` を実装する。
 4. `finding-detail.tsx` を実装し、`results-page.tsx` から選択時に `getFinding` を呼んで渡す
    （取得中は `detail: null` で候補・診断の欄だけ「読み込み中」）。世代番号で古い応答を捨てる。
-   同じ箇所の他の指摘（`siblings`）は、選択中の指摘と `range` が重なる可視の指摘から作る。
-5. `results-page.test.tsx` に「選択すると `getFinding` が 1 回呼ばれる」「取得前でも引用と理由が
+   `sameRange` は選択中の指摘と `range.start` / `range.end` が**完全に一致**する可視の指摘、
+   `overlapping` は**重なるが一致しない**可視の指摘（どちらも自分自身を除く）。決定 8 のとおり
+   見出しを分け、後者を「同じ箇所」と呼ばない。
+5. `finding-detail.test.ts` に「`[0,10)` と `[0,10)` は `sameRange`、`[0,10)` と `[9,20)` は
+   `overlapping`、`[0,10)` と `[10,20)`（隣接するだけ）はどちらにも入らない」を足す。
+   `results-page.test.tsx` に「選択すると `getFinding` が 1 回呼ばれる」「取得前でも引用と理由が
    出る」「他の指摘のリンクで選択が移る」を足す。
 6. `pnpm check`。
 7. コミット。
