@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ROUTES, runPath } from "../../app/routes.ts";
+import { formatDateTime } from "../results/format-date-time.ts";
 import { RunListPage } from "./run-list-page.tsx";
 
 /** `notImplemented` パターン（`results-page.test.tsx` と同じ流儀）。呼ばれない口は例外にする。 */
@@ -140,8 +141,22 @@ describe("RunListPage", () => {
     expect(link).toHaveTextContent("原稿A");
     expect(link).toHaveTextContent("model-a");
     expect(link).toHaveTextContent("完了");
-    expect(link).toHaveTextContent("2026-09-10 01:02:03");
-    expect(link).toHaveTextContent("2026-09-10 02:03:04");
+    // 時刻表示は裁定によりローカル時刻（実行環境のタイムゾーン依存）になったため、ハードコードした
+    // UTC 文字列ではなく、画面と同じ式（`format-date-time.ts` 参照）で期待値を求める。
+    // `formatDateTime` 自体の正しさ（オフセットの適用・境界）は format-date-time.test.ts の役割で、
+    // ここでは「画面がその関数を正しい引数で呼んでいる」配線だけを見る。
+    const expectedStarted = formatDateTime(
+      run.startedAt,
+      -new Date(run.startedAt).getTimezoneOffset(),
+    );
+    const expectedFinished = formatDateTime(
+      run.finishedAt,
+      -new Date(run.finishedAt as string).getTimezoneOffset(),
+    );
+    expect(expectedStarted).not.toBeNull();
+    expect(expectedFinished).not.toBeNull();
+    expect(link).toHaveTextContent(expectedStarted as string);
+    expect(link).toHaveTextContent(expectedFinished as string);
   });
 
   it("終了していない実行では終了時刻を出さない", async () => {

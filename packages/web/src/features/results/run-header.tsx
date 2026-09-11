@@ -53,9 +53,15 @@ export function RunHeader(props: RunHeaderProps) {
           )}
           {run.stopMessage !== null && <p className={styles.stopMessage}>{run.stopMessage}</p>}
           <p className={styles.statusLine}>モデル: {run.modelId}</p>
-          <p className={styles.statusLine}>開始: {formatDateTime(run.startedAt)}</p>
+          {/* 裁定（最終レビュー Important 3）：ローカル時刻で表示する。オフセットは表示対象の
+              瞬間ごとに `-new Date(iso).getTimezoneOffset()` で求める（`format-date-time.ts` 参照）。 */}
+          <p className={styles.statusLine}>
+            開始: {formatDateTime(run.startedAt, -new Date(run.startedAt).getTimezoneOffset())}
+          </p>
           {run.finishedAt !== null && (
-            <p className={styles.statusLine}>終了: {formatDateTime(run.finishedAt)}</p>
+            <p className={styles.statusLine}>
+              終了: {formatDateTime(run.finishedAt, -new Date(run.finishedAt).getTimezoneOffset())}
+            </p>
           )}
         </div>
       )}

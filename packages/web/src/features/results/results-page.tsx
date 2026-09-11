@@ -23,8 +23,16 @@
  * `BodyView` 側の `React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
  *
  * 絞り込みの状態（`filter`）はこのコンポーネントのローカル状態で、URL にも `localStorage` にも
- * 保存しない。絞り込みで選択中の指摘が一覧から消えたら選択を `null` に戻す（`handleFilterChange`）。
- * データの再取得（更新ボタン・`id` の変更）で選択中の指摘そのものが無くなった場合も同様に戻す。
+ * 保存しない。選択中の指摘が可視集合（`visible` = 絞り込み後に一覧へ出ている指摘）から消えたら
+ * 選択を `null` に戻す——絞り込みの変更・採否の保存・データの再取得（更新ボタン）のどの経路でも
+ * 起こりうるため、個別の経路ごとに解除処理を持たず `[visible, selectedFindingId]` を見る 1 つの
+ * `useEffect` に一本化する（最終レビュー Important 2）。
+ *
+ * 更新（再取得）の失敗（最終レビュー Important 1）：`fetchAll("refresh")` が失敗しても、
+ * 表示中の `loaded` の内容（本文・一覧・詳細・選択）はそのまま残し、`refreshError` にエラーを
+ * 入れて添えて見せる（`state` を `"error"` に倒さない）。`state` が `"error"` に倒れるのは
+ * 初回取得（`fetchAll("initial")`）の失敗のときだけで、その場合は再試行の操作子
+ * （「最新の状態を取得」ボタン）を出す。
  *
  * `progress`（PR12b の担当）と `targets`（Task 9 が使う）は本タスクでも読み捨てるだけで描画しない。
  *
@@ -116,6 +124,10 @@ export function ResultsPage() {
   // 更新ボタンによる再取得中は、直前の表示内容を残したまま「更新中…」を示す（初回の読み込み中とは
   // 別に持つ。初回は state が "loading" になるのでボタン自体がまだ画面に無い）。
   const [refreshing, setRefreshing] = useState(false);
+  // 更新（再取得）の失敗メッセージ。`state` はいじらず、これだけを立てて `loaded` の内容を
+  // 残したまま添えて見せる（最終レビュー Important 1）。次の更新を試みたとき、または初回取得
+  // （id 変更を含む）をやり直したときにクリアする。
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   // 絞り込みと選択（Task 6、決定 7・8・10）。どちらもこの画面のセッションだけのローカル状態
   // （URL にも localStorage にも保存しない）。id が変わったら（別の実行への直リンク遷移）
@@ -137,8 +149,11 @@ export function ResultsPage() {
         // 更新ボタン（"refresh"）では戻さない——絞り込みは操作中の状態として保つ。
         setFilter(DEFAULT_FINDING_FILTER);
         setSelectedFindingId(null);
+        setRefreshError(null);
       } else {
         setRefreshing(true);
+        // 前回の更新失敗の表示を、新しい試みの結果が出るまで一旦消す。
+        setRefreshError(null);
       }
 
       // `getRun` と `getFindings` は並行に投げる（決定 3）。`findingsPromise` の拒否は
@@ -165,25 +180,39 @@ export function ResultsPage() {
                 findings,
               });
               setRefreshing(false);
-              // 更新ボタンでの再取得で、選択中の指摘そのものが無くなっていたら選択を戻す
-              // （絞り込みで隠れただけの場合は handleFilterChange の役割。ここは指摘自体の消失）。
-              setSelectedFindingId((current) =>
-                current !== null && findings.some((f) => f.id === current) ? current : null,
-              );
+              // 選択中の指摘が消えたかどうかの判定は、可視集合（`visible`）を監視する
+              // `useEffect`（下）に一本化する。ここでは選択を触らない（最終レビュー Important 2。
+              // ここで `filter` を見て判定しようとしないこと——`fetchAll` の deps に `filter` が
+              // 無く、古い値を読んでしまう）。
             })
             .catch((cause: unknown) => {
               if (requestGenerationRef.current !== generation) return;
               setRefreshing(false);
-              // `getManuscript`・`getFindings` の失敗は 404 でも「その実行はありません」にしない
-              // （実行自体は取得できているため）。取得の失敗はエラーとして見せる（空として見せない。
-              // 本文だけ描いて黙らない）。
+              if (mode === "refresh") {
+                // 再取得の失敗では `loaded` の内容を保ったまま、エラーを添えて見せる
+                // （本文・一覧・詳細・選択を消さない。最終レビュー Important 1）。
+                setRefreshError(errorMessageFrom(cause));
+                return;
+              }
+              // 初回取得の失敗（`getManuscript`・`getFindings`）は 404 でも「その実行はありません」
+              // にしない（実行自体は取得できているため）。取得の失敗はエラーとして見せる
+              // （空として見せない。本文だけ描いて黙らない）。
               setState({ kind: "error", message: errorMessageFrom(cause) });
             });
         },
         (cause: unknown) => {
           if (requestGenerationRef.current !== generation) return;
           setRefreshing(false);
+          if (mode === "refresh") {
+            // 再取得の失敗では `loaded` の内容を保ったまま、エラーを添えて見せる
+            // （本文・一覧・詳細・選択を消さない。最終レビュー Important 1）。
+            setRefreshError(errorMessageFrom(cause));
+            return;
+          }
           // `getRun` の 404 だけが「その実行はありません」になる（発生源で写し方を分ける）。
+          // これは初回取得（`mode === "initial"`）のときだけの分岐——再取得時に実行が消えている
+          // 場合も上の分岐でエラー表示にする（「その実行はありません」に倒すと本文・一覧が消える
+          // ため）。
           if (cause instanceof ApiRequestError && cause.status === 404) {
             setState({ kind: "not-found" });
             return;
@@ -203,6 +232,13 @@ export function ResultsPage() {
 
   const handleRefresh = useCallback(() => {
     fetchAll("refresh");
+  }, [fetchAll]);
+
+  // 初回取得の失敗（`state.kind === "error"`）からの再試行（最終レビュー Important 1）。
+  // "refresh" ではなく "initial" を使う——まだ何も `loaded` になっていないので、絞り込み・選択を
+  // 戻す通常の初回取得と同じ扱いでよい（`fetchAll` の "loading" 分岐で state も戻る）。
+  const handleRetryInitial = useCallback(() => {
+    fetchAll("initial");
   }, [fetchAll]);
 
   // 本文の強調（クリック）と一覧の行（クリック）の両方から同じ状態を更新する。参照を安定させ、
@@ -242,20 +278,13 @@ export function ResultsPage() {
     [state, scrollToTarget],
   );
 
-  // 絞り込みの変更では、判定を絞り込み後の集合に対して行う（`setState` の関数形は現在の state
-  // を渡すだけで、変更後の filter は見えないため）。選択中の指摘が新しい絞り込みで消えたら
-  // 選択を null に戻す。
-  const handleFilterChange = useCallback(
-    (next: FindingFilter) => {
-      setFilter(next);
-      setSelectedFindingId((current) => {
-        if (current === null || state.kind !== "loaded") return current;
-        const stillVisible = visibleFindings(state.findings, next).some((f) => f.id === current);
-        return stillVisible ? current : null;
-      });
-    },
-    [state],
-  );
+  // 絞り込みの変更を反映するだけ。選択中の指摘が新しい絞り込みで可視集合から消えたときの解除は
+  // `[visible, selectedFindingId]` を見る `useEffect`（下）が一本化して受け持つ（最終レビュー
+  // Important 2。以前はここで個別に解除していたが、絞り込み以外の経路（採否の保存・再取得）では
+  // 選択が残ってしまう抜け穴があったため、経路を 1 つに集約した）。
+  const handleFilterChange = useCallback((next: FindingFilter) => {
+    setFilter(next);
+  }, []);
 
   // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに 1 回だけ `getFinding` を
   // 呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。`requestGenerationRef`
@@ -316,8 +345,22 @@ export function ResultsPage() {
   const visible = useMemo(() => visibleFindings(findings, filter), [findings, filter]);
   const highlights = useMemo(() => toHighlights(visible), [visible]);
 
-  // 選択中の指摘そのもの（一覧から探す。絞り込みで隠れていても選択は残りうるが、その場合は
-  // `handleFilterChange` が既に選択を null に戻しているので、通常は `visible` にも含まれる）。
+  // 選択中の指摘が可視集合（`visible`）に無ければ選択を外す（最終レビュー Important 2）。
+  // 絞り込みの変更・採否の保存で条件から外れる・再取得で再確認が確定し既定の絞り込みから
+  // 外れる、の 3 経路すべてがここを通る唯一の解除処理（経路ごとに個別の解除処理を持たない）。
+  // `fetchAll` の成功時にここで潰そうとしないこと——`fetchAll` の deps に `filter` が無く、
+  // 古い値を読んでしまう。この `useEffect` はレンダー後の `visible`（常に最新の `filter` で
+  // 計算済み）を見るので、その問題が起きない。
+  useEffect(() => {
+    if (selectedFindingId === null) return;
+    const stillVisible = visible.some((f) => f.id === selectedFindingId);
+    if (!stillVisible) {
+      setSelectedFindingId(null);
+    }
+  }, [visible, selectedFindingId]);
+
+  // 選択中の指摘そのもの（一覧から探す。可視集合から消えていても選択は一瞬残りうるが、上の
+  // `useEffect` が次のレンダーで null に戻す）。
   const selectedFinding = useMemo(
     () =>
       selectedFindingId === null
@@ -363,7 +406,19 @@ export function ResultsPage() {
         </p>
       )}
 
-      {state.kind === "error" && <p className={styles.error}>{state.message}</p>}
+      {state.kind === "error" && (
+        <div>
+          <p className={styles.error}>{state.message}</p>
+          {/* 初回取得の失敗には再試行の導線を置く（最終レビュー Important 1）。"最新の状態を
+              取得" と同じラベルにして、更新ボタンと同じ操作だと分かるようにする。 */}
+          <button type="button" className={styles.refreshButton} onClick={handleRetryInitial}>
+            最新の状態を取得
+          </button>
+          <p>
+            <Link to={ROUTES.home}>トップへ戻る</Link>
+          </p>
+        </div>
+      )}
 
       {state.kind === "loaded" && (
         <>
@@ -373,6 +428,10 @@ export function ResultsPage() {
             onRefresh={handleRefresh}
             refreshing={refreshing}
           />
+
+          {/* 更新（再取得）の失敗（最終レビュー Important 1）：`loaded` の内容は残したまま、
+              エラーだけを添えて見せる。本文・一覧・詳細・選択は消えない。 */}
+          {refreshError !== null && <p className={styles.error}>{refreshError}</p>}
 
           {!isSettingsStop(state.run) && (
             <div className={styles.layout}>

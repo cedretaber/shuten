@@ -104,8 +104,16 @@ function RunListItem(props: { readonly run: RunSummaryDto }) {
         <span className={styles.runMeta}>
           <span>モデル: {run.modelId}</span>
           <span>{RUN_STATUS_LABELS[run.status]}</span>
-          <span>開始: {formatDateTime(run.startedAt)}</span>
-          {run.finishedAt !== null && <span>終了: {formatDateTime(run.finishedAt)}</span>}
+          {/* 裁定（最終レビュー Important 3）：ローカル時刻で表示する。`run-header.tsx` と同じ
+              作法で、表示対象の瞬間ごとにオフセットを求める（`format-date-time.ts` 参照）。 */}
+          <span>
+            開始: {formatDateTime(run.startedAt, -new Date(run.startedAt).getTimezoneOffset())}
+          </span>
+          {run.finishedAt !== null && (
+            <span>
+              終了: {formatDateTime(run.finishedAt, -new Date(run.finishedAt).getTimezoneOffset())}
+            </span>
+          )}
         </span>
       </Link>
     </li>

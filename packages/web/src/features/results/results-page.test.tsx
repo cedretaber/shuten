@@ -381,6 +381,60 @@ describe("ResultsPage: R7 最新の状態を取得", () => {
   });
 });
 
+// 最終レビュー Important 1：更新（再取得）の失敗で、表示中の結果が全部消える回帰の再発防止。
+describe("ResultsPage: 最終レビュー Important 1 更新の失敗", () => {
+  it("読み込み済みの状態で更新に失敗しても本文と一覧が残り、エラーが出る", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi
+      .fn<() => Promise<FindingDto[]>>()
+      .mockResolvedValueOnce([finding1])
+      .mockRejectedValueOnce(new Error("指摘の再取得に失敗しました"));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const expectedParagraphs = splitParagraphs(BODY).length;
+    expect(paragraphElements().length).toBe(expectedParagraphs);
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    await waitFor(() => expect(screen.getByText("指摘の再取得に失敗しました")).toBeInTheDocument());
+    // 本文・一覧は消えずに残る。
+    expect(paragraphElements().length).toBe(expectedParagraphs);
+    expect(screen.getByText("1 / 1 件")).toBeInTheDocument();
+    // 更新ボタンも押せる状態のまま（再試行できる）。
+    const refreshButton = screen.getByRole("button", { name: "最新の状態を取得" });
+    expect(refreshButton).not.toBeDisabled();
+  });
+
+  it("初回の取得に失敗すると再試行の操作子が出て、押すと再取得される", async () => {
+    const user = userEvent.setup();
+    // フォールバック文言（`errorMessageFrom` の既定値）と区別できるよう、意図的に異なる文言にする
+    // （「メッセージが実際に伝播した」ことと「フォールバックが発火した」ことを取り違えないため）。
+    const getRun = vi
+      .fn<() => Promise<RunDetailDto>>()
+      .mockRejectedValueOnce(new Error("初回取得の失敗（テスト用）"))
+      .mockResolvedValueOnce(makeRunDetail({ status: "completed" }));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("初回取得の失敗（テスト用）")).toBeInTheDocument());
+    const retryButton = screen.getByRole("button", { name: "最新の状態を取得" });
+
+    await user.click(retryButton);
+
+    await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
+    expect(getRun).toHaveBeenCalledTimes(2);
+  });
+});
+
 // Task 6（指摘一覧と絞り込み、決定 7・8・10）。BODY = "一段落目\n二段落目\n三段落目" の
 // 段落 0（"一段落目"、範囲 [0,4)）に finding-1（notation）、段落 1（"二段落目"、範囲 [5,9)）に
 // finding-2（grammar）を located で置く。
@@ -715,6 +769,74 @@ describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新�
     // getFindings は初回の 1 回のまま）。
     await waitFor(() => expect(within(row).getByText("却下")).toBeInTheDocument());
     expect(getFindings).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 最終レビュー Important 2：絞り込み以外の経路（採否の保存）で選択中の指摘が可視集合から外れたとき、
+// 詳細パネルと移動ボタンが（対応する要素が無いまま）残ってしまわないこと。
+describe("ResultsPage: 最終レビュー Important 2 採否の保存で絞り込みから外れたとき", () => {
+  it("詳細が閉じ、移動ボタンが消える", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({
+      id: "finding-1",
+      quote: "あ",
+      judgment: {
+        findingId: "finding-1",
+        status: "undecided",
+        note: null,
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const updatedJudgment: JudgmentDto = {
+      findingId: "finding-1",
+      status: "rejected",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(updatedJudgment));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding, putJudgment });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+
+    // 絞り込みを「未判断」だけにする（採否フィルターの「採用予定」「却下」「保留」を外す。
+    // ロールで絞る——「却下」はこの後 JudgmentControl のラジオにも同名で出るが、role が
+    // "checkbox" と "radio" で異なるため取り違えない）。
+    await user.click(screen.getByRole("checkbox", { name: "採用予定" }));
+    await user.click(screen.getByRole("checkbox", { name: "却下" }));
+    await user.click(screen.getByRole("checkbox", { name: "保留" }));
+
+    // finding-1（undecided）はまだ可視のまま。
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "本文の該当箇所へ移動" })).toBeInTheDocument();
+
+    // 「却下」で保存する。応答の judgment.status が "rejected" になり、絞り込み
+    // （未判断のみ）から外れる。
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(putJudgment).toHaveBeenCalledTimes(1));
+
+    // 可視集合から消え、選択も外れて詳細・移動ボタンが消える（「一覧に行が無く強調も無いのに
+    // 詳細だけ残る」を作らない）。可視集合の更新（レンダー N）と選択を外す `useEffect`（レンダー
+    // N+1）は別のコミットなので、詳細・移動ボタンの消滅も `waitFor` で待つ
+    // （`act` によるカスケードのフラッシュに暗黙に頼らない）。
+    await waitFor(() => expect(screen.getByText("0 / 1 件")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "本文の該当箇所へ移動" }),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() => expect(document.querySelector(`.${findingListStyles.detail}`)).toBeNull());
   });
 });
 
