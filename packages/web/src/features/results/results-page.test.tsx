@@ -627,12 +627,14 @@ describe("ResultsPage: Task 7 指摘詳細の取得配線", () => {
 
     await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
     // getFinding はまだ解決していないが、引用・理由は finding（一覧が持つ情報）から既に出ている。
-    // 本文の段落表示にも同じ文字「一」（BODY.slice(0,1)）が出るため、詳細パネル
-    // （`.detail`）の中だけを見て一意に絞る。
+    // 本文の段落表示にも、詳細パネルの見出し（分類ラベル＋原文、仕様 5.4）にも同じ文字「一」
+    // （BODY.slice(0,1)）が出るため、詳細パネルの中の「原文」節（`<h3>` を含む `<section>`）
+    // だけを見て一意に絞る。
     const detailPanel = document.querySelector(`.${findingListStyles.detail}`) as HTMLElement;
     expect(detailPanel).not.toBeNull();
-    expect(within(detailPanel).getByText("原文")).toBeInTheDocument();
-    expect(within(detailPanel).getByText(BODY.slice(0, 1))).toBeInTheDocument();
+    const quoteHeading = within(detailPanel).getByText("原文");
+    const quoteSection = quoteHeading.closest("section") as HTMLElement;
+    expect(within(quoteSection).getByText(BODY.slice(0, 1))).toBeInTheDocument();
     expect(within(detailPanel).getByText(/誤字の可能性がある/)).toBeInTheDocument();
     // 元候補・位置診断の欄だけが「読み込み中」。
     expect(within(detailPanel).getByText("読み込み中…")).toBeInTheDocument();

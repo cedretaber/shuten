@@ -98,6 +98,9 @@ export function FindingDetail(props: FindingDetailProps) {
     finding.locateStatus === "located" && finding.range !== null
       ? { heading: "原文", text: body.slice(finding.range.start, finding.range.end) }
       : { heading: "LLM の引用（原文との一致未確認）", text: finding.quote };
+  // `quote.heading` から見出しの出し分けを再判定する（`finding.range` の null 絞り込みを
+  // 上のオブジェクト生成式で使い切っているため、ここで独立に再判定すると絞り込みが効かない）。
+  const resolved = quote.heading === "原文";
 
   const sortedReasons = [...finding.reasons].sort(
     (a, b) => PERSPECTIVE_ORDER.indexOf(a.perspective) - PERSPECTIVE_ORDER.indexOf(b.perspective),
@@ -105,7 +108,18 @@ export function FindingDetail(props: FindingDetailProps) {
 
   return (
     <div className={styles.detail}>
-      <h2 className={styles.detailHeading}>{FINDING_CATEGORY_LABELS[finding.category]}</h2>
+      {/*
+       * 仕様 5.4「分類と短い見出し」。裁定：見出しは「分類ラベル ＋ 原文」の 1 行にする。
+       * 位置特定失敗時は `finding.quote`（LLM の引用）を使い、見出しからも未確認だと分かるよう
+       * 注記を添える（切り詰めない。はみ出しは CSS の省略表示に任せる。一覧の見出しと同じ理由）。
+       */}
+      <h2 className={styles.detailHeading}>
+        <span className={styles.detailHeadingCategory}>
+          {FINDING_CATEGORY_LABELS[finding.category]}
+        </span>
+        <span className={styles.detailHeadingQuote}>{quote.text}</span>
+        {!resolved && <span className={styles.detailHeadingUnverified}>（LLM 引用・未確認）</span>}
+      </h2>
 
       {finding.suppression !== null && (
         <p className={styles.suppressionNote}>許容語『{finding.suppression.word}』により抑制</p>

@@ -188,9 +188,37 @@
   padding: var(--space-md);
 }
 
+/*
+ * 見出し（仕様 5.4「分類と短い見出し」。裁定：分類ラベル ＋ 原文を 1 行にする）。
+ * `.detailHeadingQuote` だけを縮めて省略記号を出し、分類ラベルと未確認の注記は常に全文を見せる
+ * （はみ出しても切れない）。文字列自体は JS で切り詰めない（一覧の見出しと同じ理由）。
+ */
 .detailHeading {
   margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
   font-size: var(--font-size-md);
+}
+
+.detailHeadingCategory {
+  flex: 0 0 auto;
+  color: var(--color-fg-muted);
+}
+
+.detailHeadingQuote {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailHeadingUnverified {
+  flex: 0 0 auto;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
 }
 
 .suppressionNote {

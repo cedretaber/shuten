@@ -5,14 +5,29 @@
  * ここでは `FindingDetail` コンポーネントを直接描画し、決定 9（`paragraphId` を出さない）、
  * 位置確定時・位置特定失敗時の引用の出し分け、取得中・取得失敗の欄の出し分け、修正案の扱い、
  * 関連する他の指摘のリンク、`onNavigate` の有無での操作子の出し分けを検査する。
+ *
+ * 見出し（仕様 5.4「分類と短い見出し」。裁定：分類ラベル ＋ 原文を 1 行にする）の内容は、
+ * 見出し本体（「原文」節）と同じ引用文字列を使うため、`getByText` の単純な一致は複数ヒットして
+ * あいまいになる。以降のテストでは、本文側（「原文」／「LLM の引用…」の `<h3>` を含む
+ * `<section>`）に `within` でスコープしてから引用文字列を検査する。
  */
 
 import type { CandidateDto, DiagnosticDto, FindingDetailDto, FindingDto } from "@shuten/shared";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { FindingDetailProps } from "./finding-detail.tsx";
 import { FindingDetail } from "./finding-detail.tsx";
+
+/** 「原文」または「LLM の引用（原文との一致未確認）」の見出しを含む `<section>` を返す。 */
+function quoteSection(headingText: string): HTMLElement {
+  const heading = screen.getByText(headingText);
+  const section = heading.closest("section");
+  if (section === null) {
+    throw new Error(`見出し「${headingText}」を含む section が見つかりません`);
+  }
+  return section as HTMLElement;
+}
 
 const BODY = "これはテスト用の本文です。誤字を含みます。";
 
@@ -119,8 +134,7 @@ describe("FindingDetail: 引用の出し分け", () => {
     });
     render(<FindingDetail {...baseProps({ finding })} />);
 
-    expect(screen.getByText("原文")).toBeInTheDocument();
-    expect(screen.getByText(BODY.slice(5, 10))).toBeInTheDocument();
+    expect(within(quoteSection("原文")).getByText(BODY.slice(5, 10))).toBeInTheDocument();
     expect(screen.queryByText("無視されるはずの LLM 引用")).not.toBeInTheDocument();
   });
 
@@ -132,8 +146,58 @@ describe("FindingDetail: 引用の出し分け", () => {
     });
     render(<FindingDetail {...baseProps({ finding })} />);
 
-    expect(screen.getByText("LLM の引用（原文との一致未確認）")).toBeInTheDocument();
-    expect(screen.getByText("LLM が申告した引用")).toBeInTheDocument();
+    expect(
+      within(quoteSection("LLM の引用（原文との一致未確認）")).getByText("LLM が申告した引用"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("FindingDetail: 見出し（仕様 5.4「分類と短い見出し」。裁定：分類ラベル ＋ 原文）", () => {
+  it("位置確定時は、見出しに分類ラベルと本文から切り出した原文の両方が出る", () => {
+    const finding = makeFinding({
+      category: "grammar",
+      locateStatus: "located",
+      range: { start: 5, end: 10 },
+      quote: "無視されるはずの LLM 引用",
+    });
+    render(<FindingDetail {...baseProps({ finding })} />);
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.textContent).toContain("文法");
+    expect(heading.textContent).toContain(BODY.slice(5, 10));
+    // 見出しには LLM の生の引用（quote）ではなく、本文から切り出した原文が出る。
+    expect(heading.textContent).not.toContain("無視されるはずの LLM 引用");
+  });
+
+  it("位置特定失敗時は、見出しに finding.quote が使われ、未確認であることも見出しから分かる", () => {
+    const finding = makeFinding({
+      category: "grammar",
+      locateStatus: "not-found",
+      range: null,
+      quote: "LLM が申告した引用",
+    });
+    render(<FindingDetail {...baseProps({ finding })} />);
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.textContent).toContain("文法");
+    expect(heading.textContent).toContain("LLM が申告した引用");
+    expect(heading.textContent).toContain("未確認");
+  });
+
+  it("見出しの引用は結合文字・ZWJ の絵文字を含んでいても全文が DOM に入る（切り詰めない）", () => {
+    // 「が」の濁点を結合文字で表現した例 + ZWJ の家族の絵文字。書記素境界を無視した
+    // `slice`/`Array.from(...).slice(...)` はどちらもこの文字列を割りうる。
+    const quoteWithCombiningAndZwj =
+      "これはか\u{3099}テストです\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}";
+    const finding = makeFinding({
+      locateStatus: "not-found",
+      range: null,
+      quote: quoteWithCombiningAndZwj,
+    });
+    render(<FindingDetail {...baseProps({ finding })} />);
+
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading.textContent).toContain(quoteWithCombiningAndZwj);
   });
 });
 
@@ -143,7 +207,7 @@ describe("FindingDetail: 取得中・取得失敗の欄の出し分け（元候�
 
     expect(screen.getByText("読み込み中…")).toBeInTheDocument();
     // 一覧が持つ情報（finding）だけで引用・理由は既に出ている。
-    expect(screen.getByText("これ")).toBeInTheDocument();
+    expect(within(quoteSection("原文")).getByText("これ")).toBeInTheDocument();
     expect(screen.getByText(/誤字がある/)).toBeInTheDocument();
   });
 
@@ -157,7 +221,7 @@ describe("FindingDetail: 取得中・取得失敗の欄の出し分け（元候�
     expect(screen.getByText("指摘詳細の取得に失敗しました")).toBeInTheDocument();
     expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
     // 詳細全体は消えていない（引用は出続ける）。
-    expect(screen.getByText("これ")).toBeInTheDocument();
+    expect(within(quoteSection("原文")).getByText("これ")).toBeInTheDocument();
   });
 
   it("取得済みなら候補の locateStatus（outside-target を含む）が出る", () => {
