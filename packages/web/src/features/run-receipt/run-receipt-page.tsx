@@ -16,7 +16,7 @@ import { Link, useParams } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES } from "../../app/routes.ts";
-import { RUN_STATUS_LABELS, RUN_STOP_REASON_LABELS } from "./labels.ts";
+import { RUN_STATUS_LABELS, RUN_STOP_REASON_LABELS } from "../results/labels.ts";
 import styles from "./run-receipt.module.css";
 
 type LoadState =
