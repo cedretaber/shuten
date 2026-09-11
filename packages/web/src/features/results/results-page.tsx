@@ -29,22 +29,22 @@
  * 起こりうるため、個別の経路ごとに解除処理を持たず `[visible, selectedFindingId]` を見る 1 つの
  * `useEffect` に一本化する（最終レビュー Important 2）。
  *
- * 更新（再取得）の失敗（最終レビュー Important 1）：`fetchAll("refresh")` が失敗しても、
+ * 更新（再取得）の失敗（最終レビュー Important 1）：取り直し（`performRefresh`）が失敗しても、
  * 表示中の `loaded` の内容（本文・一覧・詳細・選択）はそのまま残し、`refreshError` にエラーを
  * 入れて添えて見せる（`state` を `"error"` に倒さない）。`state` が `"error"` に倒れるのは
- * 初回取得（`fetchAll("initial")`）の失敗のときだけで、その場合は再試行の操作子
+ * 初回取得（`fetchInitial`）の失敗のときだけで、その場合は再試行の操作子
  * （「最新の状態を取得」ボタン）を出す。
  *
  * 進捗と実行制御（PR12b Task 5、決定 5・6・7・8・9・10・11）：初回取得に `getRunUnits` を足し
  * （`getFindings` と同じく `getRun` と並行に投げる。決定 5）、`run.progress` とあわせて
  * `RunHeader`（実体は `run-progress.tsx`・`run-control.tsx`）へ渡す。停止・再開・失敗単位の
  * 再試行・復旧確認の 4 操作は `runControlAction` に集約する：API を呼び、成功・失敗を問わず
- * `fetchAll("refresh")` の完了を待ってから `pending` を `null` に戻す（202 の応答の `RunDto` を
+ * 取り直し（`requestRefresh("heavy", ...)`）の完了を待ってから `pending` を `null` に戻す（202 の応答の `RunDto` を
  * 画面の状態へ継ぎ当てない——`RunDetailDto` ではなく進捗も対象も持たないため。かつ、先に
  * `pending` を戻すと取り直し前の古い `run.status` のままボタンが再度押せてしまい、二重送信の
  * 窓が開く）。操作の失敗は `controlFailureOf` で `ControlFailure` に写して保持する
- * （`error.message` は画面に出さない）。`slowUnitIds`（決定 10）はこの Task では空集合のまま
- * 持つだけで、実際に埋めるのは SSE を足す後続 Task の担当。
+ * （`error.message` は画面に出さない）。`slowUnitIds`（決定 10）を実際に埋めるのは
+ * Task 8 の `generation-slow`（下記「自動更新」節）。
  *
  * 指摘詳細（Task 7、決定 3・9・12）：選択中の指摘 ID が変わるたびに `getFinding` を 1 回呼ぶ
  * （キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。専用の世代番号
@@ -58,8 +58,8 @@
  * 自体は変化しないため、選択変更だけを見る仕組みでは再取得されない。失敗単位の再試行で同じ指摘に
  * 元候補が増える経路があるため、実際に古びる）。取得処理そのものは `fetchDetail` に切り出し、
  * 「選択が変わったとき」と「更新が成功し、選択中の指摘があるとき」の両方から呼ぶ。`fetchDetail`
- * 自身が `detailGenerationRef` を進めるので、古い応答の破棄は従来どおり効く。`fetchAll` から
- * `selectedFindingId` を直接読まない（`filter` と同じ理由で `fetchAll` の deps に含めていないため、
+ * 自身が `detailGenerationRef` を進めるので、古い応答の破棄は従来どおり効く。`performRefresh` から
+ * `selectedFindingId` を直接読まない（`filter` と同じ理由で deps に含めていないため、
  * 古い値を読んでしまう）。代わりに毎レンダーで同期するだけの `selectedFindingIdRef` を介す。
  *
  * 本文への移動（Task 9、決定 9、仕様 4 の手順 5・5.3）：本文の容器（`.bodyColumn`）に
@@ -270,13 +270,13 @@ export function ResultsPage() {
 
   // 絞り込みと選択（Task 6、決定 7・8・10）。どちらもこの画面のセッションだけのローカル状態
   // （URL にも localStorage にも保存しない）。id が変わったら（別の実行への直リンク遷移）
-  // 両方とも既定に戻す（`fetchAll` の "initial" 分岐でリセットする。理由は下記）。
+  // 両方とも既定に戻す（`fetchInitial` でリセットする。理由は下記）。
   const [filter, setFilter] = useState<FindingFilter>(DEFAULT_FINDING_FILTER);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
 
-  // `fetchAll` の更新成功コールバックから「今選ばれている指摘」を読むための ref
-  // （PR21 レビュー指摘 1）。`fetchAll` の deps に `selectedFindingId` を含めたくない（`filter` と
-  // 同じ理由——選択のたびに `fetchAll` を作り直したくない）ため、レンダーのたびに素直に同期する
+  // 取り直し（`performRefresh`）の成功コールバックから「今選ばれている指摘」を読むための ref
+  // （PR21 レビュー指摘 1）。`performRefresh` の deps に `selectedFindingId` を含めたくない
+  // （`filter` と同じ理由——選択のたびに作り直したくない）ため、レンダーのたびに素直に同期する
   // だけの ref で渡す（`useEffect` を挟まない。値を読むのは非同期コールバックの中だけなので、
   // コミット前のタイミングでも実害は無い）。
   const selectedFindingIdRef = useRef<string | null>(selectedFindingId);
@@ -323,7 +323,7 @@ export function ResultsPage() {
   // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに、または更新が成功した
   // ときに `getFinding` を 1 回呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」の
   // とおり）。`requestGenerationRef`（本編の取得）とは別の世代カウンタで、呼び直すたびに世代を
-  // 進めて古い応答を捨てる。`fetchAll` から呼ぶため、`fetchAll` より前に定義する。
+  // 進めて古い応答を捨てる。`performRefresh` から呼ぶため、それより前に定義する。
   const [findingDetail, setFindingDetail] = useState<FindingDetailDto | null>(null);
   const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
   const detailGenerationRef = useRef(0);
@@ -615,7 +615,7 @@ export function ResultsPage() {
   }, [requestRefresh]);
 
   // 実行制御（決定 6・7・8。PR12b Task 5）。停止・再開・失敗単位の再試行・復旧確認の 4 操作は
-  // すべてこの 1 つに集約する：API を呼び、成功・失敗にかかわらず `fetchAll("refresh")` の完了を
+  // すべてこの 1 つに集約する：API を呼び、成功・失敗にかかわらず重い取り直しの完了を
   // 待ってから `pending` を戻す（202 の応答の `RunDto` を画面の状態へ直接継ぎ当てない——
   // `RunDetailDto` と違って進捗も対象も持たないため）。`pending !== null` の間に別の操作を
   // 呼ばれても無視する（`RunControl` 側もすべてのボタンを disabled にするが、二重の防御として
@@ -851,7 +851,7 @@ export function ResultsPage() {
   // 選択中の指摘が可視集合（`visible`）に無ければ選択を外す（最終レビュー Important 2）。
   // 絞り込みの変更・採否の保存で条件から外れる・再取得で再確認が確定し既定の絞り込みから
   // 外れる、の 3 経路すべてがここを通る唯一の解除処理（経路ごとに個別の解除処理を持たない）。
-  // `fetchAll` の成功時にここで潰そうとしないこと——`fetchAll` の deps に `filter` が無く、
+  // 取得の成功時にここで潰そうとしないこと——`fetchInitial` / `performRefresh` の deps に `filter` が無く、
   // 古い値を読んでしまう。この `useEffect` はレンダー後の `visible`（常に最新の `filter` で
   // 計算済み）を見るので、その問題が起きない。
   useEffect(() => {
