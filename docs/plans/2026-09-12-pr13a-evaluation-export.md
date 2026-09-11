@@ -1,7 +1,7 @@
 # PR13a（server + cli：評価ツールとエクスポート）計画書
 
 > **エージェント向け**：superpowers:subagent-driven-development で 1 タスクずつ実装する。
-> 本書の「決定 1〜18」「テスト」節が要件の正本で、タスク分解はその割り付けである。
+> 本書の「決定 1〜22」「テスト」節が要件の正本で、タスク分解はその割り付けである。
 
 - ロードマップ：`docs/plans/2026-09-07-mvp-roadmap.md`（PR13a の節）
 - 仕様：10 全体（評価方法）、8.1（保存する情報）、8.2 末尾（可搬用の一括エクスポート形式は実装設計時に決める）
@@ -24,15 +24,16 @@
 ## PR の分割（決定 1）
 
 5 つの成果物は互いにほぼ独立で、1 本の PR にするとレビュー単位が PR9b・PR12a を超える。
-**PR13a-1（消費側）と PR13a-2（生産側）に分ける。** 根拠と順序は決定 1 に書く。
+**3 本に分ける。**
 
 | | 中身 | 対象 |
 | --- | --- | --- |
-| **PR13a-1** | 正解ファイルの形式、本文ハッシュ、突き合わせと集計、複数回実行の集計、CLI のサブコマンド化 | `packages/cli`、`packages/server`（ハッシュのみ） |
-| **PR13a-2** | エクスポートの口と形式、全文チャット方式の CLI モード、エクスポート JSON を評価の入力に加える | `packages/server`、`packages/cli` |
+| **PR13a-1** | 正解ファイルの形式、本文ハッシュ、**結果 JSON の検証**、突き合わせと集計、複数回実行の集計、CLI のサブコマンド化 | `packages/cli`、`packages/server`（ハッシュのみ） |
+| **PR13a-2** | `GET /api/runs/:id/export` と形式、エクスポート JSON を評価の入力に加えるアダプター | `packages/server`、`packages/cli` |
+| **PR13a-3** | 全文チャット方式（自由形式プロンプト）の CLI モード | `packages/cli`、`packages/server`（生成の呼び出しのみ） |
 
-本書は 5 つすべての設計を含む。タスク分解は PR13a-1 を全量、PR13a-2 は骨子まで書く
-（PR13a-1 の実装で分かることが PR13a-2 の細部に効くため、着手時に本書へ追記する）。
+本書は 5 つすべての設計を含む。タスク分解は PR13a-1 を全量、13a-2 と 13a-3 は骨子まで書く
+（PR13a-1 の実装で分かることが後続の細部に効くため、着手時に本書へ追記する）。
 
 ## 対象外（MUST NOT）
 
@@ -81,7 +82,7 @@
 
 ## 決定
 
-### 決定 1：PR13a を 13a-1（消費側）と 13a-2（生産側）に分け、13a-1 を先にする
+### 決定 1：PR13a を 3 本（13a-1 評価、13a-2 エクスポート、13a-3 全文チャット）に分け、13a-1 を先にする
 
 **理由。** 5 つの成果物のうち、正解ファイル・突き合わせ・複数回集計の 3 つは「結果 JSON を読んで数える」
 側で、エクスポートと全文チャット方式は「結果を出す」側である。触るパッケージも、レビューで見るべき
@@ -91,6 +92,11 @@
 `PipelineResult` だけを入力にすれば 13a-1 は単独で完結し、ユーザーの正解データが揃った時点ですぐ回せる。
 13a-2 のエクスポートは「サーバー経由の通し実行 1 回」を同じ物差しで測るための追加入力で、13a-1 の
 突き合わせ器ができていないと接ぎ先がない。
+
+**エクスポートと全文チャット方式を同じ PR に入れない。** どちらも「結果を出す側」ではあるが、
+HTTP の口を足す変更と、自由形式で LLM を 1 回叩く変更は中身が無関係である。
+レビューで見るべき性質も違う——前者は**漏えいと問い合わせ本数**、後者は**生成の失敗・打ち切り・
+タイムアウト**であり、同じ diff に載せると両方の注意が薄くなる。
 
 **却下した案。** (a) 1 本のままにする → タスク 12 個・変更 2 パッケージ・新形式 3 つになり、最終レビューが
 成立しない。(b) 生産側を先にする → 13a-2 の「エクスポートを評価の入力に加える」が宙に浮く。
@@ -205,7 +211,7 @@ LLM に接続しない）。加えて、3 方向照合の不一致エラーに�
 書記素境界の判定だけ `@shuten/shared` と共有する。
 
 **引用は 1 つの段落に収まっていなければならない。** 段落をまたぐ誤り（閉じ括弧の欠落など）は
-2 項目に分けて書く。段落をまたぐ指定は持ち越しにする（決定 18）。
+2 項目に分けて書く。段落をまたぐ指定は持ち越しにする（決定 22）。
 
 ### 決定 5：検出は「範囲の重なり」で判定する
 
@@ -220,6 +226,9 @@ LLM に接続しない）。加えて、3 方向照合の不一致エラーに�
   誤りの隣に意図した口語があるだけで誤検出が増えるのは実態に合わない。
 - **重複指摘**：1 つの error 項目に 2 件以上が重なったときの余剰件数を別に出す（`duplicateFindings`）。
   検出率は項目単位なので二重に得点されない。
+- **逆向き（1 件の指摘が複数の error 項目に重なる場合）は決定 20 で 1 対 1 に対応付ける。**
+  段落まるごとを引用した 1 件の指摘が、触れただけの誤りをすべて「検出」にできてしまうため。
+- **率の表し方は決定 19**（分母が 0 になりうるので、`rate` は `number | null`）。
 
 **完全一致を条件にしない理由。** LLM は誤りを含む語句を長めに引用する（「歩きはじじめた」ではなく
 「彼は歩きはじじめた」）。完全一致を条件にすると、利用者にとっては正しく拾えている指摘が
@@ -257,13 +266,22 @@ LLM に接続しない）。加えて、3 方向照合の不一致エラーに�
 撤回の判定は `RecheckResult.status === "done"` かつ `output.verdict === "withdraw"`。
 `confirm-with-author` は撤回ではない（指摘は残り、作者に確認を促す。`RECHECK_VERDICTS` は
 `keep` / `withdraw` / `confirm-with-author` の 3 値）。
-**`done` かつ `withdraw` 以外はすべて「残した」側に数える**（`failed`・`pending`・`disabled`・
-`suppressed`、および `confirm-with-author`）。再確認が失敗した指摘を、撤回されたものとしても
-検出されたものとしても扱わないという意味で、これは「未完了を成功にも失敗にも丸めない」
-（不変条件）の適用である。再確認が `failed` / `pending` の件数はレポートに別に出し、
-再確認後の数字がどれだけ未完了を含んでいるかを人が見られるようにする。
 
-`mode: "split"`（再確認なし）の結果 JSON では再確認後 = 再確認前になり、上の表は全 0 になる。
+**「再確認後の集合」と「上の 4 区分」は別の話である。** 混ぜると、再確認が失敗した指摘を
+「再確認が残した」と読める数字になる。次のとおり分ける。
+
+- **再確認後の集合**（決定 5・6 の指標をもう一度計算する対象）：`done` かつ `withdraw` の指摘**だけ**を
+  除く。`failed` / `pending` の指摘は**未検証の初回指摘として残す**（再確認できなかったことは、
+  その指摘が消えることを意味しない）。
+- **上の 4 区分**（`withdrew*` / `kept*`）：**`status === "done"` の再確認だけ**を母集団にする。
+  `failed` / `pending` / `disabled` は `kept*` に混ぜない。
+- `recheckFailed` / `recheckPending` / `recheckDisabled` を**別件数**として出す。再確認後の数字が
+  どれだけ未検証を含んでいるかは、この 3 つを見て人が判断する（「未完了を成功にも失敗にも
+  丸めない」という不変条件の適用）。
+- 抑制された指摘（`suppressed`）は決定 8 のとおり最初から評価集合の外なので、この表に入らない。
+
+`mode: "split"`（再確認なし）の結果 JSON では再確認後 = 再確認前になり、4 区分は全 0、
+`recheckDisabled` が指摘の総数になる。
 
 ### 決定 8：抑制・位置特定失敗・実行性能の数え方
 
@@ -272,7 +290,8 @@ LLM に接続しない）。加えて、3 方向照合の不一致エラーに�
   `suppressedNormal`、どちらでもないものを `suppressedOther` に分ける。
   抑制された指摘は決定 5 の検出・誤検出の集合には**入れない**（利用者に指摘として出ないため）。
 - **位置特定失敗**：`totals.unlocated` の内訳（`notFound` / `ambiguous` / `outsideTarget`）と、
-  失敗率 = 失敗候補数 / 全候補数（`totals.candidates`）をそのまま出す。
+  失敗率 = 失敗候補数 / 全候補数（`totals.candidates`）をそのまま出す（`totals.candidates` が 0 の
+  ときの表し方は決定 19）。
   加えて**参考値**として、失敗候補の引用（`UnlocatedCandidate.llm.quote`）が error 項目の `quote` と
   相互に部分文字列の関係にある件数を出す（`unlocatedQuotingTruth`）。
   **これは検出率に算入しない。** 近似一致で位置を確定しないという仕様 10 節の規定と、
@@ -298,6 +317,18 @@ LLM に接続しない）。加えて、3 方向照合の不一致エラーに�
 - 未知のサブコマンドはエラー（終了コード 1）。
 - 引数が 1 つも無いときは `run` に振られ、既存の「必須オプションがありません: --manuscript, --model」
   になる（振る舞いを変えない）。
+
+**起動の書き方。** 入口は `packages/cli/bin/shuten-eval.ts` で、`shuten` というコマンドは存在しない
+（`packages/cli/package.json` に `bin` も無い）。本書の以降の例で `shuten <サブコマンド>` と書くのは
+略記であり、実際は次のいずれかで起動する。**ルートに `pnpm eval` を足す**（評価では何度も叩くため）。
+
+```sh
+pnpm eval hash --manuscript <原稿>                 # ルートの package.json に "eval" を足す
+node packages/cli/bin/shuten-eval.ts hash --manuscript <原稿>   # 既存の書き方（README 148 行）
+```
+
+`package.json` に `bin` は足さない（グローバル導入を前提にしないため）。
+`README.md` と `docs/reference/truth-format.md` には `pnpm eval` の形で書く。
 - `collectRawOptions` は**サブコマンドごとの既知オプション集合**を受け取る形に変える。
   併せて「同じオプションを複数回書ける」ことを宣言できるようにする（`aggregate --result` で使う）。
   それ以外のオプションは今までどおり重複をエラーにする。
@@ -315,8 +346,7 @@ shuten evaluate --manuscript <原稿> --truth <正解.json> --result <結果.jso
 - `--report` を指定したときだけ Markdown のレポートを書く。**人が判断する指標のための材料**で、
   未検出の error 項目の一覧、誤検出の指摘の一覧（引用・修正案・理由つき）、抑制された指摘の一覧を
   表で出す。決定 11 の「人が埋める欄」を表の列として空で用意する。
-- `--out` と `--report` は入力ファイルのいずれとも同じ実体を指してはならない（既存 `run` の
-  `findOutPathConflict` と同じ検査を使う。実原稿・正解ファイルを潰す事故を防ぐ）。
+- 出力先の衝突検査は決定 21（入力との衝突だけでなく、`--out` と `--report` どうしも見る）。
 - 終了コードは 0（集計できた）／ 1（引数・入出力・ハッシュ不一致・正解の解決失敗）。
   **指標の良し悪しで終了コードを変えない**（決定 14）。
 
@@ -337,7 +367,7 @@ shuten evaluate --manuscript <原稿> --truth <正解.json> --result <結果.jso
 | **人間の確認負担** | **人** | ツールは測らない（`docs/experiments/` に記録する） |
 | **診断候補の正誤** | **人** | 参考値のみ自動（決定 8）。正誤は `docs/experiments/` に記録する |
 
-人が付けた判定をツールに読み戻す経路は作らない（決定 18 の持ち越し）。
+人が付けた判定をツールに読み戻す経路は作らない（決定 22 の持ち越し）。
 
 ### 決定 12：複数回実行の集計は「条件が一致していること」を先に確かめる
 
@@ -355,9 +385,15 @@ shuten aggregate --manuscript <原稿> --truth <正解.json> --result a.json --r
 `versions`（4 つすべて）。`allowedWords` は**順序を含めて**比較する（並びが違えばプロンプトが違う）。
 `seed` は未指定どうし（`undefined`）を一致とみなす。
 
-- `conditions.model`（LM Studio が返した `ModelInfo`）は**一致を要求しない**。`state` や
-  `loadedContextLength` は実行のたびに変わりうる値で、条件ではない。ただし `id` と `quantization` が
-  ばらついていればレポートに注意として出す。
+- `conditions.model`（LM Studio が返した `ModelInfo`）の扱いは項目ごとに分ける。
+  - `id` と **`quantization`：両方の実行で値が取れていて食い違えばエラー**（集計を拒否する）。
+    同じモデル ID でも量子化が違えば別の比較条件であり、仕様 10 節も「モデルの識別情報・量子化」を
+    実行条件として保存せよと言っている。混ぜた数字は読めない。
+  - 片方または両方が `null`（`/api/v0/models` が返さなかった）ときは比較できないので、
+    **エラーにせずレポートに「量子化を確認できなかった」と出す**（取れなかったことを
+    「一致」に丸めない）。
+  - `state` は比較しない（実行のたびに変わる）。`loadedContextLength` は記録上の注意として
+    レポートに出すだけにする。
 - 出す値：各指標の**最小・中央値・最大**と、error 項目ごとの**検出回数 k/N**。
   k/N は「たまたま拾えた誤り」と「安定して拾える誤り」を分ける唯一の材料で、
   1 回の実行では絶対に見えない。
@@ -374,7 +410,7 @@ shuten aggregate --manuscript <原稿> --truth <正解.json> --result a.json --r
 「実用上許容する誤検出・見逃し・確認時間」は未決である。**エージェントが独断で確定しない**という
 AGENTS.md の規定どおり、ツールに合格基準を持たせない。`--fail-under` のようなオプションも作らない。
 
-### 決定 15：全文チャット方式は「ユーザーのプロンプト」をファイルから受け取る（PR13a-2）
+### 決定 15：全文チャット方式は「ユーザーのプロンプト」をファイルから受け取る（PR13a-3）
 
 仕様 10 節の「現在の全文チャット方式」は、ユーザーが LM Studio のチャットに原稿を貼って
 自分の指示で校正させている運用そのものである。**こちらでプロンプトを書いてはならない**
@@ -386,7 +422,7 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
                  [--reasoning-effort ...] [--check-timeout-ms N]
 ```
 
-- プロンプトファイルに **`{{manuscript}}` を必ず 1 つ含める**。無ければ引数エラー
+- プロンプトファイルに **`{{manuscript}}` を 1 つ以上含める**。無ければ引数エラー
   （差し込み位置を暗黙に決めない）。2 つ以上あればすべて置換する。
 - **構造化出力を使わない**（`responseFormat` を渡さない）。`ChatRequest.messages` は
   `[{ role: "user", content: 差し込み済みのプロンプト }]` の 1 通だけ。system は付けない。
@@ -400,7 +436,11 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
   その旨を結果 JSON のコメント欄ではなくレポート（決定 11 の表）と本書に書く。
 - 結果の型は `PipelineResult` と**別**にする（`FullChatResult`。独自の `formatVersion`）。
   検査単位も対象も無いものを `PipelineResult` に詰めると、両方の型が濁る。
-- `runPipeline` は経由せず、`ensureLoaded` → `chat` を直接呼ぶ。
+- `runPipeline` は経由せず、`ensureLoaded` → `chat` を直接呼ぶ。**ただし `ensureLoaded` の戻り値を
+  `isGenerationCapable`（`@shuten/shared`）に通し、満たさなければ生成要求を送らない。**
+  `ensureLoaded` は `state === "loaded"` しか見ないので、ロード済みの embeddings モデルを
+  そのまま通してしまう。通常の実行経路（`run/executor.ts:303`）は同じ検査を入れており、
+  評価用の経路だけ緩いと、種別違いのモデルに 1 万字を投げる事故が起きる。
 - タイムアウトは `--check-timeout-ms` を使う（意味は「この要求のハード上限」で一致する。
   CLI は `recoveryConfirmMs: 0` 相当なので既定の上限がそのまま効く）。1 万字を 1 回で投げるため
   既定値では足りない可能性が高い旨をヘルプとドキュメントに書く。上限は `MAX_TIMEOUT_MS`
@@ -445,13 +485,90 @@ PR12c で `GET /api/runs/:id/findings` の 3N+1 を潰したばかりである�
 PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.test.ts` の `onStatement` 継ぎ目）で
 エクスポートの本数も固定する。
 
-### 決定 18：持ち越し
+### 決定 18：結果 JSON は読む前に zod で検証する
+
+`evaluate` / `aggregate` が読むのは、CLI が書いた JSON ファイルである。**TypeScript の型は実行時に
+何も保証しない**ので、`JSON.parse` の戻り値を `PipelineResult` と名乗らせて `score` に渡すと、
+項目の欠落・未知の enum・`end < start` の範囲が、例外か**黙った誤集計**になる。
+
+- `packages/cli/src/eval/result-schema.ts` に、**評価が読む全項目**の strict な zod スキーマを置く
+  （`bodyHash` だけではない：`status` / `stop` / `conditions` / `findings[].finding.range` /
+  `findings[].finding.sources[].perspective` / `findings[].suppression` / `findings[].recheck` /
+  `unlocated[].candidate.llm.quote` / `totals` の読む項目すべて）。
+- **`conditions.versions.result` が `RESULT_VERSION` と一致しなければ拒否する。** 形式が変わった
+  結果を古い規則で数えない。
+- **型との食い違いを実行時ではなくコンパイル時に見つける。** 評価が読む部分だけを表す型
+  `EvaluationResultInput` を定義してスキーマに `z.ZodType<EvaluationResultInput>` を付け（既存の
+  `llmRecheckOutputSchema` と同じ書き方）、さらに
+  `const _assignable: EvaluationResultInput = {} as PipelineResult;` を置く。
+  `PipelineResult` の形が変わってスキーマとずれたら `pnpm typecheck` が落ちる。
+- 検証に落ちたら**集計せずエラー終了**（終了コード 1）。どの項目がなぜ落ちたかを出す
+  （zod の `issues` の `path` と `code`。**値そのものは出さない**——原稿の断片が入りうるため。決定 9）。
+- 正解ファイルも同じ姿勢で検証する（決定 2 の形式。こちらは元から zod）。
+
+### 決定 19：分母が 0 の率は `null` にする。0 に丸めない
+
+検出率・誤検出率・位置特定失敗率は、いずれも分母が 0 になりうる。
+
+| 率 | 分母が 0 になる場合 |
+| --- | --- |
+| 検出率 | `error` 項目が 0 件（`normal` だけの正解ファイル） |
+| 観点別の検出率 | その観点の `error` 項目が 0 件 |
+| 誤検出率 | 指摘が 0 件（1 件も出なかった実行） |
+| 位置特定失敗率 | 候補が 0 件（`totals.candidates === 0`） |
+
+**率は必ず `{ numerator: number, denominator: number, rate: number | null }` の形で出す。**
+`denominator === 0` のとき `rate` は `null`。
+
+- `0 / 0` を `0` に丸めない。「1 件も拾えなかった」と「数える対象が無かった」は別の事実で、
+  丸めると前者に見える（不変条件「失敗・形式不正を正常な値に置き換えない」）。
+- `NaN` を入れない。`JSON.stringify(NaN)` は**黙って `null` になる**ので、JSON に書いた時点で
+  区別が消えるうえ、`null` に至った理由も残らない。分子と分母を必ず添えるのはそのためである。
+- レポート（Markdown）では `rate === null` の行を `—（分母 0）` と書く。
+- 4 つのケースすべてにテストを置く（`T17`）。
+
+### 決定 20：1 件の指摘に自動で与える検出は最大 1 件（1 対 1 に対応付ける）
+
+決定 5 の重なり判定だけだと、**段落まるごとを引用した 1 件の指摘が、その段落の誤りをすべて
+「検出」にできる**。これは検出率を実態より良く見せる方向の誤りで、放置できない。
+
+**対応付けの規則**（決定的。同じ入力なら必ず同じ結果になる）：
+
+1. 重なりのある（指摘, error 項目）の組をすべて作り、**重なりの長さの降順**に並べる。
+2. 同じ長さなら、error 項目の `range.start` の昇順 → 項目 `id` の辞書順 → 指摘の出現順で決める。
+3. 上から見て、**指摘と項目のどちらもまだ未割り当てなら割り当てる**。片方でも割り当て済みなら飛ばす。
+
+割り当てられた項目だけを「検出」と数える（**これが検出率の正本**）。
+
+そのうえで、**参考値として 1 対 1 を課さない検出数（`detectedLoose`）も出す**。
+この 2 つの差が「広く引用した指摘がどれだけ得点していたか」そのもので、計算はただの再集計なので
+両方出しておけば、どちらの数え方が実態に近いかを実データを見てから判断できる。
+どちらが正本かはレポートに明記する（正本は 1 対 1 のほう）。
+
+加えて **`findingsOverlappingMultipleErrors`（複数の error 項目に重なった指摘の一覧）をレポートに出す**。
+広く引用する癖があるのか、誤りが密集しているだけなのかは、件数ではなく現物を見ないと分からない。
+
+### 決定 21：出力先は入力とも、出力どうしとも、同じ実体を指してはならない
+
+既存 `run` の `findOutPathConflict`（正規化パスの比較 ＋ `stat` の dev/ino 比較）を共通化して使う。
+見る組み合わせを広げる。
+
+- `--out` / `--report` と、**すべての入力**（`--manuscript`・`--truth`・`--result`（複数可））。
+- **`--out` と `--report` どうし。** 片方がもう片方を上書きする。
+- **`aggregate` の `--result` どうし。** `--result a.json --result a.json` は同じ実行を 2 回として数え、
+  **ぶれを偽装する**（同じ値が 2 つあれば分散は小さく出る）。重複を検出したらエラー。
+
+シンボリックリンク・ハードリンク経由の別名も `stat` の dev/ino で捕まえる（既存の実装と同じ）。
+テストでも両方を張って確かめる。
+
+### 決定 22：持ち越し
 
 - **人が付けた判定の読み戻し**（修正案の妥当性・診断候補の正誤をレポートに書き込み、ツールに
   再入力して集計する）。13a では出力までにする。PR13b の実施で本当に要ると分かってから作る。
 - **段落をまたぐ正解項目**（決定 4）。2 項目に分けて書けば表現できる。
 - **全文チャット方式の自動採点**（決定 15）。自由形式の応答からの抽出は本質的に別の問題である。
 - **エクスポートを画面から落とす導線**。仕様 5 節の画面仕様に無い。口だけ作る。
+
 
 ## テスト
 
@@ -462,42 +579,58 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 
 - **T1 本文ハッシュ**：同じ本文なら同じ `bodyHash`、1 文字違えば別の値。`RunConditions.manuscript`
   に載ること。移動後も `manuscript_versions.body_hash` が同じ値であること
-  （変異：`hashBody` の入力を `body` 以外にする → 落ちる）。
+  （変異：`hashBody` の入力を `body` 以外にする → 落ちる）。`hash` サブコマンドが値を 1 行だけ出す。
 - **T2 サブコマンド**：`--` 始まりの argv と空の argv は `run` に振られる（既存のテストが通る）。
-  `evaluate` / `aggregate` に振られる。未知の名前はエラー。`--result` は `aggregate` でだけ
+  `evaluate` / `aggregate` / `hash` に振られる。未知の名前はエラー。`--result` は `aggregate` でだけ
   複数指定できて、`run` の `--out` は今までどおり重複でエラー。
 - **T3 正解の解決**：段落内の 2 回目の出現を `occurrence: 2` で取れる。書記素の内側に落ちる
   一致（結合文字・異体字セレクタ・絵文字）を採らない。段落 ID 超過・0 件・件数不足・
   error と normal の重なりが**すべて 1 回の実行で列挙される**（変異：最初の 1 件で投げる → 落ちる）。
-  エラー文言に引用が含まれないこと。
+  エラー文言に引用が含まれないこと。`--report` があるときだけ、失敗した段落の本文がレポートに出る。
 - **T4 ハッシュの 3 方向照合**：原稿・正解・結果のどれか 1 つを別の本文にすると、集計せずに
-  エラー終了する（3 通りとも）。`bodyHash` の無い結果 JSON を拒否する。
+  エラー終了する（3 通りとも）。`bodyHash` の無い結果 JSON を拒否する。不一致のメッセージに
+  計算したハッシュ値が出る。
 - **T5 検出と誤検出**：重なりの有無で検出が決まる。境界（`e.end === f.start` は重ならない）。
   error と normal の両方に重なる指摘が検出として数えられ誤検出に数えられないこと（決定 5 の優先順位。
   変異：優先順位を逆にする → 落ちる）。1 項目に 2 件重なっても検出率は 1 件ぶん、余剰が
   `duplicateFindings` に出る。
 - **T6 観点**：観点違いで拾った指摘が「全体」には入り「観点一致」には入らない
   （変異：観点一致の判定を落とす → 落ちる）。誤検出は指摘側の観点で分類される。
-- **T7 再確認の前後**：撤回された指摘が再確認前には入り再確認後には入らない。決定 7 の 4 つの数が
-  それぞれ独立に動く（`withdrewTruePositive` と `withdrewFalsePositive` を取り違える変異で落ちる）。
-  `mode: "split"` の結果では 4 つとも 0。
-- **T8 抑制**：抑制された指摘が検出・誤検出の集合に入らず、`suppressedTruth` / `suppressedNormal` /
-  `suppressedOther` に分かれる（変異：抑制を誤検出に数える → 落ちる）。
+- **T7 再確認の前後**（決定 7）：`done` かつ `withdraw` の指摘だけが再確認後の集合から消える。
+  **`failed` / `pending` の指摘は再確認後にも残り、4 区分（`withdrew*` / `kept*`）には入らない**
+  （変異：`failed` を `keptTruePositive` に数える → 落ちる。変異：`failed` を再確認後から除く → 落ちる）。
+  `withdrewTruePositive` と `withdrewFalsePositive` を取り違える変異で落ちる。
+  `recheckFailed` / `recheckPending` / `recheckDisabled` がそれぞれ独立に動く。
+  `mode: "split"` の結果では 4 区分が全 0 で `recheckDisabled` が指摘の総数。
+- **T8 抑制**：抑制された指摘が検出・誤検出の集合にも 4 区分にも入らず、`suppressedTruth` /
+  `suppressedNormal` / `suppressedOther` に分かれる（変異：抑制を誤検出に数える → 落ちる）。
 - **T9 位置特定失敗**：`totals.unlocated` の転記と失敗率。`unlocatedQuotingTruth` が
   検出率に影響しないこと（変異：検出率に足す → 落ちる）。
 - **T10 複数回集計**：条件が 1 つでも違う結果を混ぜるとエラー（項目ごとに 1 例ずつ）。
   `--result` が 1 本ならエラー。k/N が正しい。中央値が偶数本でも決まる。
-  `conditions.model` の違いはエラーにならず注意として出る。
-- **T11 出力**：`--out` 未指定で標準出力に JSON。`--out` が `--manuscript` / `--truth` / `--result` と
-  同じ実体ならエラー（`run` の既存テストと同じ形）。指標 JSON に `formatVersion` がある。
+  **`quantization` が両方取れていて食い違えばエラー**（変異：警告にする → 落ちる）。
+  片方が `null` ならエラーにせず注意として出る。`state` の違いはエラーにならない。
+- **T11 出力**：`--out` 未指定で標準出力に JSON。指標 JSON に `formatVersion` がある。
   レポート Markdown に人手の欄が空で出る。
+- **T16 結果 JSON の検証**（決定 18）：項目の欠落・未知の enum・`end < start` の範囲・
+  `versions.result` の不一致で、それぞれ集計せずエラー終了する（変異：スキーマを `passthrough` に
+  ゆるめる → 落ちる）。エラー文言に値そのものが出ないこと（`path` と `code` だけ）。
+  `EvaluationResultInput` と `PipelineResult` の代入検査がコンパイル時に効いていること
+  （型を崩すと `pnpm typecheck` が落ちる。テストではなく型の話なのでコメントで明示する）。
+- **T17 分母 0**（決定 19）：`error` 項目 0 件／指摘 0 件／候補 0 件／その観点の `error` 0 件の
+  4 ケースで、`rate` が `null` になり `numerator` と `denominator` が付く
+  （変異：`0` に丸める → 落ちる。変異：`NaN` を入れる → JSON 化で `null` になるが
+  `denominator` が 0 でないことで落ちる）。レポートに `—（分母 0）` と出る。
+- **T18 多対一の対応付け**（決定 20）：段落まるごとを引用した 1 件の指摘が 3 つの error 項目に
+  重なるとき、検出は 1 件だけ（変異：1 対 1 を外す → 落ちる）。`detectedLoose` は 3 件。
+  `findingsOverlappingMultipleErrors` にその指摘が出る。重なりの長さが同じ組でも
+  結果が一意に決まる（並べ替えの規則を変えると落ちる固定データを置く）。
+- **T19 出力先の衝突**（決定 21）：`--out` と `--report` が同じ実体ならエラー。
+  `aggregate --result a.json --result a.json`（同じパス／シンボリックリンク／ハードリンク）で
+  エラー（変異：正規化パスだけ見る → リンクの 2 例で落ちる）。出力が入力のいずれかと同じ実体でもエラー。
 
-### PR13a-2
+### PR13a-2（エクスポート）
 
-- **T12 全文チャット**：`{{manuscript}}` が無いプロンプトはエラー。2 つあればすべて置換。
-  `responseFormat` を渡していないこと（モックの `chat` が受けた引数を見る）。
-  `truncated` 例外が `status: "failed"` として結果に残る（成功として保存しない。変異：例外を
-  握りつぶして本文を保存する → 落ちる）。`reasoningContent` が別項目に入る。
 - **T13 エクスポート**：仕様 8.1 の全単位が入っている。位置特定失敗の候補と診断が
   `unlocatedCandidates` / `unlocatedDiagnostics` に入る（変異：`findings` 側にだけ入れる → 落ちる）。
   存在しない実行 ID は 404。
@@ -505,30 +638,50 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
   API キーが応答に出ない。
 - **T15 エクスポートのクエリ本数**：指摘 3 件と 30 件で問い合わせ本数が変わらない
   （PR12c の `onStatement` 継ぎ目を使う。変異：候補を指摘ごとに引く → 落ちる）。
+- **T20 評価入力アダプター**：エクスポート JSON から作った評価入力が、同じ実行の
+  `PipelineResult` から作ったものと同じ指標を出す。
+
+### PR13a-3（全文チャット方式）
+
+- **T12 全文チャット**：`{{manuscript}}` が無いプロンプトはエラー。2 つあればすべて置換。
+  `responseFormat` を渡していないこと（モックの `chat` が受けた引数を見る）。
+  `truncated` 例外が `status: "failed"` として結果に残る（成功として保存しない。変異：例外を
+  握りつぶして本文を保存する → 落ちる）。`reasoningContent` が別項目に入る。
+- **T21 モデル種別**（決定 15）：`type` が `llm` / `vlm` のモデルには送信する。
+  **`embeddings` と、種別が取れない（`null`）モデルには生成要求を送らない**
+  （変異：`isGenerationCapable` の検査を外す → 落ちる。モックの `chat` が呼ばれたかで見る）。
 
 ## 完了条件
 
 ### PR13a-1
 
 1. `docs/reference/truth-format.md` に正解ファイルの書き方が（合成の例だけで）書かれている。
-2. `shuten evaluate` が仕様 10 節の自動集計分をすべて出し、人手の指標は空欄として示す。
-3. `shuten aggregate` が N 本のぶれと k/N を出し、条件の不一致を拒否する。
-4. 既存の `shuten --manuscript ... --model ...` が今までどおり動く。
+   段落 ID が 0 起点で空行も 1 段落であること、`bodyHash` の取り方（`pnpm eval hash`）を含む。
+2. `pnpm eval evaluate` が仕様 10 節の自動集計分をすべて出し、人手の指標は空欄として示す。
+   率はすべて `{ numerator, denominator, rate }` で、分母 0 では `rate` が `null`。
+3. `pnpm eval aggregate` が N 本のぶれと k/N を出し、条件の不一致（量子化を含む）を拒否する。
+4. 既存の `node packages/cli/bin/shuten-eval.ts --manuscript ... --model ...` が今までどおり動く。
    **既存テストの期待値を変えない**——ただし型の追随は許す（`RunConditions.manuscript` に
    `bodyHash` が増えるので `main.test.ts` と `run/pipeline.test.ts` の `PipelineResult` の組み立てに
-   1 項目足す、`args.ts` の置き場所を変えたなら import 行を直す、の 2 種類だけ）。
-   **期待値（`expect` の右辺）とテスト名は 1 つも書き換えない。**
-5. `pnpm check` が通る。Windows は CI の `windows-latest` で確認する（実機は未確認と明記する）。
-6. ロードマップの PR13a 節と依存関係を、分割（決定 1）に合わせて更新する。
+   1 項目足す、の 1 種類だけ）。**期待値（`expect` の右辺）とテスト名は 1 つも書き換えない。**
+5. 結果 JSON と正解ファイルを、読む前に zod で検証している（決定 18）。
+6. `pnpm check` が通る。Windows は CI の `windows-latest` で確認する（実機は未確認と明記する）。
+7. ロードマップの PR13a 節と依存関係を、3 分割（決定 1）に合わせて更新する。
 
-### PR13a-2
+### PR13a-2（エクスポート）
 
 1. `GET /api/runs/:id/export` が仕様 8.1 の全単位を返し、`api/leak.test.ts` の表に載っている。
 2. エクスポートの問い合わせ本数が指摘の件数に依存しない。
-3. `shuten full-chat` がユーザーのプロンプトで 1 回生成し、打ち切りを失敗として残す。
+3. エクスポート JSON を `evaluate` の入力にできる。
 4. 仕様書 8.2 末尾の「可搬用の一括エクスポート形式は実装設計時に決める」を、決めた旨に改訂し、
    15 節の改訂記録に追記する（同じコミットに含める）。
 5. `pnpm check` が通る。
+
+### PR13a-3（全文チャット方式）
+
+1. `pnpm eval full-chat` がユーザーのプロンプトで 1 回生成し、打ち切りを失敗として残す。
+2. 生成できない種別のモデルに要求を送らない（決定 15）。
+3. `pnpm check` が通る。
 
 ## タスク分解（PR13a-1）
 
@@ -540,7 +693,7 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
 - `main.test.ts` と `run/pipeline.test.ts` が組み立てている `PipelineResult` に `bodyHash` を足す
   （型の追随。期待値は変えない。完了条件 4）。
 - `hash` サブコマンドは Task 2 でサブコマンドの器ができてから足す。
-- T1 を書く。`RESULT_VERSION` は変えない（変えないことをコメントで明示する）。
+- T1 の前半（ハッシュ）を書く。`RESULT_VERSION` は変えない（変えないことをコメントで明示する）。
 
 ### Task 2：CLI をサブコマンド化する（決定 9）
 
@@ -549,43 +702,61 @@ PR12c と同じ「クエリ本数のテスト」（`api/findings.query-count.tes
   出して `args.ts` がそれを使う形にし、新しい解釈器は `args/evaluate.ts` のように `args/` 配下に置く。
 - `collectRawOptions` を「既知オプション集合」と「複数回指定を許すオプション集合」を受け取る形にする。
 - `main.ts` の入口でサブコマンドを振り分ける。`--` 始まりと空の argv は `run`。未知の名前はエラー。
-- `hash` サブコマンド（決定 3）をここで足す。
-- T2 を書く。**既存の `args.test.ts` / `main.test.ts` を書き換えない**（後方互換の証拠になる）。
+- `hash` サブコマンド（決定 3）をここで足す。ルートの `package.json` に `"eval"` スクリプトを足す。
+- T2 と T1 の後半（`hash`）を書く。**既存の `args.test.ts` / `main.test.ts` を書き換えない**
+  （後方互換の証拠になる）。
 
 ### Task 3：正解ファイルの読み込みと位置解決（決定 2・4）
 
 - `packages/cli/src/eval/truth.ts`：zod スキーマ（`kind` の判別可能ユニオン）、`id` の一意性、
   段落内の完全一致と書記素境界、`occurrence`、**解決失敗の全件列挙**、error と normal の重なり検査。
+- 段落 ID が 0 起点で空行も 1 段落であることを、zod のエラー文言に含める。
 - T3 を書く。エラー文言に引用を含めない（これもテストで見る）。
 
-### Task 4：突き合わせと指標の算出（決定 5〜8）
+### Task 4：結果 JSON の検証（決定 18）
 
-- `packages/cli/src/eval/score.ts`：純粋関数。入力は「解決済みの正解項目」と `PipelineResult`、
+- `packages/cli/src/eval/result-schema.ts`：`EvaluationResultInput` 型、`z.ZodType<EvaluationResultInput>`
+  を付けた strict なスキーマ、`PipelineResult` からの代入検査、`versions.result` の照合。
+- 検証失敗は `path` と `code` だけを出してエラー終了（値を出さない）。
+- T16 を書く。
+
+### Task 5：突き合わせと指標の算出（決定 5〜8・19・20）
+
+- `packages/cli/src/eval/score.ts`：純粋関数。入力は「解決済みの正解項目」と検証済みの結果、
   出力は指標のオブジェクト（`formatVersion` 付き）。ファイル入出力を含めない。
-- T5〜T9 を書く。各変異が 1 つずつ落ちることを確かめる。
+- 率は `{ numerator, denominator, rate }`（決定 19）。検出の対応付けは 1 対 1（決定 20）。
+- T5〜T9・T17・T18 を書く。各変異が 1 つずつ落ちることを確かめる。
 
-### Task 5：`evaluate` の配線と出力（決定 10・11・13）
+### Task 6：`evaluate` の配線と出力（決定 10・11・13・21）
 
 - `packages/cli/src/eval/report.ts`（Markdown 整形）と `args/evaluate.ts`、`main.ts` の接続。
-- ハッシュの 3 方向照合（決定 3）と出力先の衝突検査（既存 `findOutPathConflict` の再利用）。
-- T4・T11 を書く。
+- ハッシュの 3 方向照合（決定 3）と、出力先の衝突検査（決定 21。既存 `findOutPathConflict` を
+  共通化して入力・出力の全組み合わせを見る形にする）。
+- T4・T11・T19 の `evaluate` 側を書く。
 
-### Task 6：`aggregate`（決定 12）
+### Task 7：`aggregate`（決定 12・21）
 
-- `packages/cli/src/eval/aggregate.ts`：条件一致の検査、最小・中央値・最大、k/N。
-- `args/aggregate.ts`（`--result` は複数指定可、2 本以上必須）と `main.ts` の接続。
-- T10 を書く。
+- `packages/cli/src/eval/aggregate.ts`：条件一致の検査（量子化を含む）、最小・中央値・最大、k/N。
+- `args/aggregate.ts`（`--result` は複数指定可、2 本以上必須、重複はエラー）と `main.ts` の接続。
+- T10 と T19 の `aggregate` 側を書く。
 
-### Task 7：ドキュメント（完了条件 1・6）
+### Task 8：ドキュメント（完了条件 1・7）
 
 - `docs/reference/truth-format.md`（合成の例のみ。リポジトリに実データを置かない旨を明記）。
-- ロードマップの PR13a 節を 13a-1 / 13a-2 に分け、PR 一覧・依存関係・見直し節を更新する。
-- `README.md` の現在の状態に PR13a-1 を追記する。
+- ロードマップの PR13a 節を 13a-1 / 13a-2 / 13a-3 に分け、PR 一覧・依存関係・見直し節を更新する。
+- `README.md` の現在の状態に PR13a-1 を追記し、`pnpm eval` の書き方を載せる。
 
-## タスク分解（PR13a-2。着手時に本書へ詳細を追記する）
+## タスク分解（PR13a-2・13a-3。着手時に本書へ詳細を追記する）
 
-- **Task 8**：`GET /api/runs/:id/export`（決定 16・17）。一括取得と `Map` で組み立て、
+### PR13a-2（エクスポート）
+
+- **Task 9**：`GET /api/runs/:id/export`（決定 16・17）。一括取得と `Map` で組み立て、
   `api/leak.test.ts` の `ENDPOINTS` に追加。T13・T14・T15。
-- **Task 9**：`full-chat` サブコマンドと `FullChatResult`（決定 15）。T12。
-- **Task 10**：エクスポート JSON を `evaluate` の入力に加えるアダプター（決定 1 の「接ぎ先」）。
+- **Task 10**：エクスポート JSON を `evaluate` の入力に加えるアダプター（決定 1 の「接ぎ先」）。T20。
 - **Task 11**：仕様書 8.2 の改訂と 15 節の改訂記録、ロードマップと README の更新。
+
+### PR13a-3（全文チャット方式）
+
+- **Task 12**：`full-chat` サブコマンドと `FullChatResult`（決定 15）。`isGenerationCapable` の検査を
+  含む。T12・T21。
+- **Task 13**：ロードマップと README の更新。
