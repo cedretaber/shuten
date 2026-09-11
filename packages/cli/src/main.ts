@@ -13,6 +13,7 @@ import { ingestUtf8Bytes } from "@shuten/shared";
 
 import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
+import { readManuscriptText, writeResultOrFixedError } from "./io.ts";
 
 /**
  * server の既定値（`packages/server/src/config.ts` の `loadConfig`）と合わせる。
@@ -203,21 +204,12 @@ async function runRun(
   }
   const apiKey = parseLmStudioApiKey(env.SHUTEN_LM_STUDIO_API_KEY);
 
-  let manuscriptBytes: Uint8Array;
-  try {
-    manuscriptBytes = await io.readManuscriptBytes(args.manuscriptPath);
-  } catch {
-    // Node の fs の例外メッセージはパスを含むため、原因を連結せず固定文言だけを出す（決定 9）。
-    io.writeErrorLine("原稿ファイルを読み込めません");
+  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+  if (!manuscriptText.ok) {
+    io.writeErrorLine(manuscriptText.error);
     return 1;
   }
-  let text: string;
-  try {
-    text = ingestUtf8Bytes(manuscriptBytes);
-  } catch (error) {
-    io.writeErrorLine(`原稿ファイルを UTF-8 として読み込めません: ${messageOf(error)}`);
-    return 1;
-  }
+  const text = manuscriptText.value;
 
   let allowedWordsRaw = "";
   if (args.allowedWordsPath !== null) {
@@ -269,11 +261,9 @@ async function runRun(
   }
 
   const json = JSON.stringify(result, null, 2);
-  try {
-    await io.writeResult(args.outPath, json);
-  } catch {
-    // fs の書き出し失敗のメッセージも書き込み先パスを含みうるため、固定文言だけを出す（決定 9）。
-    io.writeErrorLine("結果の書き出しに失敗しました");
+  const written = await writeResultOrFixedError(io, args.outPath, json);
+  if (!written.ok) {
+    io.writeErrorLine(written.error);
     return 1;
   }
 
@@ -292,27 +282,17 @@ async function runHash(argv: readonly string[], io: MainIO): Promise<number> {
   }
   const args = parsed.value;
 
-  let manuscriptBytes: Uint8Array;
-  try {
-    manuscriptBytes = await io.readManuscriptBytes(args.manuscriptPath);
-  } catch {
-    io.writeErrorLine("原稿ファイルを読み込めません");
-    return 1;
-  }
-  let text: string;
-  try {
-    text = ingestUtf8Bytes(manuscriptBytes);
-  } catch (error) {
-    io.writeErrorLine(`原稿ファイルを UTF-8 として読み込めません: ${messageOf(error)}`);
+  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+  if (!manuscriptText.ok) {
+    io.writeErrorLine(manuscriptText.error);
     return 1;
   }
 
-  const hash = hashBody(text);
-  try {
-    // outPath は常に null（標準出力への 1 行だけ）。末尾の改行のみで、ほかには何も出さない。
-    await io.writeResult(null, hash);
-  } catch {
-    io.writeErrorLine("結果の書き出しに失敗しました");
+  const hash = hashBody(manuscriptText.value);
+  // outPath は常に null（標準出力への 1 行だけ）。末尾の改行のみで、ほかには何も出さない。
+  const written = await writeResultOrFixedError(io, null, hash);
+  if (!written.ok) {
+    io.writeErrorLine(written.error);
     return 1;
   }
 
