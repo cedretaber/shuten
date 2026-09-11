@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@shuten/server": "workspace:*",
-    "@shuten/shared": "workspace:*"
+    "@shuten/shared": "workspace:*",
+    "zod": "4.5.4"
   }
 }
