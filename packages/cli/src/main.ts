@@ -16,17 +16,19 @@ import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
 import { aggregateRuns, checkRunConditions } from "./eval/aggregate.ts";
 import { formatAggregateReport } from "./eval/aggregate-report.ts";
-import { formatEvaluationReport, formatTruthResolveFailureReport } from "./eval/report.ts";
+import { formatEvaluationReport } from "./eval/report.ts";
 import type { EvaluationResultInput } from "./eval/result-schema.ts";
 import { parseResultJson, validateFindingRanges } from "./eval/result-schema.ts";
 import { scoreRun } from "./eval/score.ts";
-import { parseTruthFile, resolveTruthEntries } from "./eval/truth.ts";
+import { resolveTruthEntries } from "./eval/truth.ts";
 import type { FileIdentity, NamedPath } from "./io.ts";
 import {
+  checkOutputConflict,
   findPathConflict,
   readEvalResultText,
   readManuscriptText,
-  readTruthText,
+  readTruthFile,
+  reportTruthResolveFailure,
   writeResultOrFixedError,
 } from "./io.ts";
 
@@ -334,29 +336,14 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
 
   // 2. 出力先の衝突検査（決定 21）。--out/--report 対 全入力、--out と --report どうしだけを見る。
   //    入力どうし（--manuscript と --truth が同じ実体、など）は決定 21 が挙げている組ではない。
-  //    `findPathConflict` は渡した配列の全組み合わせを見るため、入力を混ぜて渡したうえで
-  //    「衝突の片方が --out か --report でなければ無視する」形に絞る（`run` の
-  //    `findOutPathConflict` が --out だけに絞っているのと同じ形）。入力どうしが同じファイルを
-  //    指す場合は、ここでは何も言わず、後続の読み込み・検証がより的確な原因（JSON として読めない、
-  //    ハッシュが食い違う等）を報告する。
-  const namedPaths: NamedPath[] = [
-    ...(args.outPath === null ? [] : [{ name: "--out", path: args.outPath }]),
-    ...(args.reportPath === null ? [] : [{ name: "--report", path: args.reportPath }]),
+  //    ここでは何も言わず、後続の読み込み・検証がより的確な原因（JSON として読めない、
+  //    ハッシュが食い違う等）を報告する（`checkOutputConflict` の絞り込み。`io.ts`）。
+  const conflictCheck = await checkOutputConflict(io, args.outPath, args.reportPath, [
     { name: "--manuscript", path: args.manuscriptPath },
     { name: "--truth", path: args.truthPath },
     { name: "--result", path: args.resultPath },
-  ];
-  const rawConflict = await findPathConflict(io, namedPaths);
-  // pair の並び順（`findPathConflict` は配列内で先に現れた方を [0] に置く）には依存しない。
-  const isOutputName = (name: string): boolean => name === "--out" || name === "--report";
-  const outputConflict =
-    rawConflict !== null && (isOutputName(rawConflict[0]) || isOutputName(rawConflict[1]))
-      ? rawConflict
-      : null;
-  if (outputConflict !== null) {
-    io.writeErrorLine(
-      `引数エラー: ${outputConflict[0]} と ${outputConflict[1]} が同じファイルを指しています`,
-    );
+  ]);
+  if (conflictCheck.handled) {
     return 1;
   }
 
@@ -368,26 +355,13 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   }
   const text = manuscriptText.value;
 
-  // 4. 正解ファイルを読む → JSON.parse → parseTruthFile。
-  const truthText = await readTruthText(io, args.truthPath);
-  if (!truthText.ok) {
-    io.writeErrorLine(truthText.error);
+  // 4. 正解ファイルを読む → JSON.parse → parseTruthFile（`readTruthFile`。`io.ts`）。
+  const truthResult = await readTruthFile(io, args.truthPath);
+  if (!truthResult.ok) {
+    io.writeErrorLine(truthResult.error);
     return 1;
   }
-  let truthJson: unknown;
-  try {
-    truthJson = JSON.parse(truthText.value);
-  } catch {
-    // JSON.parse の例外メッセージは不正な断片を含みうるため連結しない（決定 9 と同じ姿勢）。
-    io.writeErrorLine("正解ファイルの JSON 構文が不正です");
-    return 1;
-  }
-  const parsedTruth = parseTruthFile(truthJson);
-  if (!parsedTruth.ok) {
-    io.writeErrorLine(`正解ファイルの検証に失敗しました: ${parsedTruth.errors.join("; ")}`);
-    return 1;
-  }
-  const truth = parsedTruth.value;
+  const truth = truthResult.value;
 
   // 5. 結果 JSON を読む → JSON.parse → parseResultJson。
   const resultText = await readEvalResultText(io, args.resultPath);
@@ -439,24 +413,11 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
     return 1;
   }
 
-  // 8. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く。
+  // 8. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く
+  //    （`reportTruthResolveFailure`。`io.ts`）。
   const resolved = resolveTruthEntries(truth, text);
   if (!resolved.ok) {
-    for (const failure of resolved.failures) {
-      io.writeErrorLine(failure.message);
-    }
-    if (args.reportPath !== null) {
-      const failureReport = formatTruthResolveFailureReport({ failures: resolved.failures, text });
-      const writtenReport = await writeResultOrFixedError(
-        io,
-        args.reportPath,
-        failureReport,
-        "レポート",
-      );
-      if (!writtenReport.ok) {
-        io.writeErrorLine(writtenReport.error);
-      }
-    }
+    await reportTruthResolveFailure(io, resolved.failures, text, args.reportPath);
     return 1;
   }
 
@@ -518,30 +479,26 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   const args = parsed.value;
 
   // 2. 出力先の衝突検査（決定 21）。
-  //    --result どうしの重複（決定 21 の追加分）と、--out/--report 対 全入力・--out と --report
-  //    どうし（evaluate と同じ組）を見る。--manuscript・--truth・--result が互いに衝突していても
-  //    ここでは何も言わない（決定 21 が挙げている組ではない。evaluate と同じ絞り込み）。
-  const namedPaths: NamedPath[] = [
-    ...(args.outPath === null ? [] : [{ name: "--out", path: args.outPath }]),
-    ...(args.reportPath === null ? [] : [{ name: "--report", path: args.reportPath }]),
+  //    --out/--report 対 全入力・--out と --report どうし（evaluate と同じ組。`checkOutputConflict`。
+  //    `io.ts`）に加えて、--result どうしの重複（決定 21 の追加分。aggregate 固有）を見る。
+  //    --manuscript・--truth・--result が互いに衝突していてもここでは何も言わない
+  //    （決定 21 が挙げている組ではない。evaluate と同じ絞り込み）。
+  const conflictCheck = await checkOutputConflict(io, args.outPath, args.reportPath, [
     { name: "--manuscript", path: args.manuscriptPath },
     { name: "--truth", path: args.truthPath },
     ...args.resultPaths.map((path) => ({ name: "--result", path })),
-  ];
-  const rawConflict = await findPathConflict(io, namedPaths);
-  if (rawConflict !== null) {
-    const [a, b] = rawConflict;
-    const isOutputName = (name: string): boolean => name === "--out" || name === "--report";
-    if (isOutputName(a) || isOutputName(b)) {
-      io.writeErrorLine(`引数エラー: ${a} と ${b} が同じファイルを指しています`);
-      return 1;
-    }
-    if (a === "--result" && b === "--result") {
-      // 同じ実行を2回数えると分散が小さく出て、ぶれを偽装する（決定 21）。パスは出さない。
-      io.writeErrorLine("引数エラー: --result に同じファイルが重複して指定されています");
-      return 1;
-    }
-    // --manuscript・--truth と --result の間の衝突は決定 21 の対象外（evaluate と同じ絞り込み）。
+  ]);
+  if (conflictCheck.handled) {
+    return 1;
+  }
+  if (
+    conflictCheck.rawConflict !== null &&
+    conflictCheck.rawConflict[0] === "--result" &&
+    conflictCheck.rawConflict[1] === "--result"
+  ) {
+    // 同じ実行を2回数えると分散が小さく出て、ぶれを偽装する（決定 21）。パスは出さない。
+    io.writeErrorLine("引数エラー: --result に同じファイルが重複して指定されています");
+    return 1;
   }
 
   // 3. 原稿を読む。
@@ -552,25 +509,13 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   }
   const text = manuscriptText.value;
 
-  // 4. 正解ファイルを読む → JSON.parse → parseTruthFile。
-  const truthText = await readTruthText(io, args.truthPath);
-  if (!truthText.ok) {
-    io.writeErrorLine(truthText.error);
+  // 4. 正解ファイルを読む → JSON.parse → parseTruthFile（`readTruthFile`。`io.ts`）。
+  const truthResult = await readTruthFile(io, args.truthPath);
+  if (!truthResult.ok) {
+    io.writeErrorLine(truthResult.error);
     return 1;
   }
-  let truthJson: unknown;
-  try {
-    truthJson = JSON.parse(truthText.value);
-  } catch {
-    io.writeErrorLine("正解ファイルの JSON 構文が不正です");
-    return 1;
-  }
-  const parsedTruth = parseTruthFile(truthJson);
-  if (!parsedTruth.ok) {
-    io.writeErrorLine(`正解ファイルの検証に失敗しました: ${parsedTruth.errors.join("; ")}`);
-    return 1;
-  }
-  const truth = parsedTruth.value;
+  const truth = truthResult.value;
 
   // 5. 各結果 JSON を1本ずつ parseResultJson（形の検証だけ。意味の検証は7で行う）。
   const results: EvaluationResultInput[] = [];
@@ -643,24 +588,11 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     return 1;
   }
 
-  // 9. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く。
+  // 9. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く
+  //    （`reportTruthResolveFailure`。`io.ts`）。
   const resolved = resolveTruthEntries(truth, text);
   if (!resolved.ok) {
-    for (const failure of resolved.failures) {
-      io.writeErrorLine(failure.message);
-    }
-    if (args.reportPath !== null) {
-      const failureReport = formatTruthResolveFailureReport({ failures: resolved.failures, text });
-      const writtenReport = await writeResultOrFixedError(
-        io,
-        args.reportPath,
-        failureReport,
-        "レポート",
-      );
-      if (!writtenReport.ok) {
-        io.writeErrorLine(writtenReport.error);
-      }
-    }
+    await reportTruthResolveFailure(io, resolved.failures, text, args.reportPath);
     return 1;
   }
 

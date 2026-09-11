@@ -1,11 +1,17 @@
 import { resolve } from "node:path";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
+import { formatTruthResolveFailureReport } from "./eval/report.ts";
+import type { TruthFile, TruthResolveFailure } from "./eval/truth.ts";
+import { parseTruthFile } from "./eval/truth.ts";
+
 /**
  * `main.ts` のサブコマンド間で共通の入出力ヘルパー（決定 9）。`run` と `hash` の両方が使う
  * 「原稿読み込み＋UTF-8 取り込み」と「結果書き出し」に加え、`evaluate` / `aggregate` が使う
- * 「正解・結果ファイルの読み込み」と「出力先の衝突検査（決定 21）」をここに 1 か所へまとめる。
- * パス漏えい対策（固定文言のみを返す）を複数箇所で同期させ忘れる事故を避けるため。
+ * 「正解・結果ファイルの読み込み」「出力先の衝突検査（決定 21）」「正解の解決に失敗したときの
+ * 報告（決定 4）」をここに 1 か所へまとめる。パス漏えい対策（固定文言のみを返す）を
+ * 複数箇所で同期させ忘れる事故を避けるためと、`evaluate`/`aggregate` の間でこれらの手順が
+ * 一字一句同じになることをコードでも保証するため（レビュー指摘。Task 7）。
  */
 
 /** 呼び出し側の `writeErrorLine` にそのまま渡せる、固定文言のエラー値。 */
@@ -31,6 +37,11 @@ export interface EvalResultReader {
 /** `writeResultOrFixedError` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
 export interface ResultWriter {
   readonly writeResult: (outPath: string | null, content: string) => Promise<void>;
+}
+
+/** 標準エラーへの 1 行出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
+export interface ErrorLineWriter {
+  readonly writeErrorLine: (line: string) => void;
 }
 
 function messageOf(error: unknown): string {
@@ -105,6 +116,59 @@ export async function writeResultOrFixedError(
   }
 }
 
+// --- 正解ファイルの読み込み（`evaluate` / `aggregate` 共通） ------------------------------------
+
+/**
+ * 正解ファイルを読み込み → `JSON.parse` → `parseTruthFile` までを行う（決定 2・9）。
+ * `evaluate`・`aggregate` の両方が一字一句同じ手順を踏んでいたため、ここに 1 か所へまとめた
+ * （レビュー指摘。Task 7）。`JSON.parse` の例外メッセージは不正な断片を含みうるため連結しない
+ * （決定 9 と同じ姿勢）。
+ */
+export async function readTruthFile(io: TruthReader, path: string): Promise<IoResult<TruthFile>> {
+  const truthText = await readTruthText(io, path);
+  if (!truthText.ok) {
+    return { ok: false, error: truthText.error };
+  }
+  let truthJson: unknown;
+  try {
+    truthJson = JSON.parse(truthText.value);
+  } catch {
+    return { ok: false, error: "正解ファイルの JSON 構文が不正です" };
+  }
+  const parsedTruth = parseTruthFile(truthJson);
+  if (!parsedTruth.ok) {
+    return {
+      ok: false,
+      error: `正解ファイルの検証に失敗しました: ${parsedTruth.errors.join("; ")}`,
+    };
+  }
+  return { ok: true, value: parsedTruth.value };
+}
+
+/**
+ * `resolveTruthEntries`（決定 4）の失敗を報告する。失敗メッセージを標準エラーへ全件書き、
+ * `reportPath` があれば失敗レポート（段落本文つき）も書く。`evaluate`・`aggregate` の両方が
+ * 一字一句同じ手順を踏んでいたため、ここに 1 か所へまとめた（レビュー指摘。Task 7）。
+ * 呼び出し側は、この関数を呼んだ後に常に終了コード 1 で返る。
+ */
+export async function reportTruthResolveFailure(
+  io: ErrorLineWriter & ResultWriter,
+  failures: readonly TruthResolveFailure[],
+  text: string,
+  reportPath: string | null,
+): Promise<void> {
+  for (const failure of failures) {
+    io.writeErrorLine(failure.message);
+  }
+  if (reportPath !== null) {
+    const failureReport = formatTruthResolveFailureReport({ failures, text });
+    const writtenReport = await writeResultOrFixedError(io, reportPath, failureReport, "レポート");
+    if (!writtenReport.ok) {
+      io.writeErrorLine(writtenReport.error);
+    }
+  }
+}
+
 // --- 出力先の衝突検査（決定 21） ---------------------------------------------------------------
 
 /** 同一ファイル判定に使う識別情報（`stat` の dev/ino）。 */
@@ -172,4 +236,59 @@ export async function findPathConflict(
     }
   }
   return null;
+}
+
+function isOutputName(name: string): boolean {
+  return name === "--out" || name === "--report";
+}
+
+/** `checkOutputConflict` の戻り値。 */
+export interface OutputConflictCheck {
+  /**
+   * `true` なら `--out`/`--report` が絡む衝突が見つかり、固定文言のエラーを
+   * `io.writeErrorLine` に書き終えている（呼び出し側は追加で何も書かず `return 1` してよい）。
+   */
+  readonly handled: boolean;
+  /**
+   * 見つかった生の衝突（無ければ `null`）。`--out`/`--report` を含まない衝突
+   * （`aggregate` の `--result` どうしの重複など）も呼び出し側が追加判定できるよう、
+   * そのまま返す。
+   */
+  readonly rawConflict: readonly [string, string] | null;
+}
+
+/**
+ * `--out`/`--report`（`null` なら含めない）と `inputs` から衝突検査の対象を組み立てて
+ * `findPathConflict` を呼ぶ（決定 21）。見つかった衝突が `--out`/`--report` を含むものなら、
+ * 固定文言のエラーを `io.writeErrorLine` に書いて `handled: true` を返す。
+ * `--manuscript` と `--truth` が同じ実体、のような入力どうしだけの衝突は、ここでは何も書かず
+ * `handled: false` を返す（決定 21 が挙げている組ではなく、後続の読み込み・検証がより的確な
+ * 原因を報告するため。`evaluate`・`aggregate` で共通の絞り込み）。
+ *
+ * `evaluate`・`aggregate` の両方が「衝突検査の対象を組み立てて `findPathConflict` を呼び、
+ * `--out`/`--report` が絡む衝突だけをエラーにする」という手順を一字一句同じ形で書いていたため、
+ * ここに 1 か所へまとめた（レビュー指摘。Task 7）。`aggregate` はこれに加えて `--result` どうしの
+ * 重複（決定 21 の追加分）も見るため、`rawConflict` を呼び出し側にも返す。
+ */
+export async function checkOutputConflict(
+  io: PathConflictChecker & ErrorLineWriter,
+  outPath: string | null,
+  reportPath: string | null,
+  inputs: readonly NamedPath[],
+): Promise<OutputConflictCheck> {
+  const namedPaths: NamedPath[] = [
+    ...(outPath === null ? [] : [{ name: "--out", path: outPath }]),
+    ...(reportPath === null ? [] : [{ name: "--report", path: reportPath }]),
+    ...inputs,
+  ];
+  const rawConflict = await findPathConflict(io, namedPaths);
+  if (rawConflict === null) {
+    return { handled: false, rawConflict: null };
+  }
+  const [a, b] = rawConflict;
+  if (isOutputName(a) || isOutputName(b)) {
+    io.writeErrorLine(`引数エラー: ${a} と ${b} が同じファイルを指しています`);
+    return { handled: true, rawConflict };
+  }
+  return { handled: false, rawConflict };
 }

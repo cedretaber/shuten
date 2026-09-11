@@ -493,6 +493,22 @@ describe("aggregateRuns: model の扱い（決定12）", () => {
     const outcome = aggregateRuns([baseMetrics(), baseMetrics()], [a, b]);
     expect(outcome.ok).toBe(true);
   });
+
+  it("loadedContextLength が実行間で違ってもエラーにならず、値そのものが notices に出る（比較はしない）", () => {
+    const a = baseResult({
+      conditions: baseConditions({ model: modelInfo({ loadedContextLength: 4096 }) }),
+    });
+    const b = baseResult({
+      conditions: baseConditions({ model: modelInfo({ loadedContextLength: 8192 }) }),
+    });
+    const outcome = aggregateRuns([baseMetrics(), baseMetrics()], [a, b]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const notice = outcome.value.notices.find((n) => n.includes("loadedContextLength"));
+    expect(notice).toBeDefined();
+    expect(notice).toContain("4096");
+    expect(notice).toContain("8192");
+  });
 });
 
 // --- 率の集計：rate が null の実行が混ざる場合（決定12） ------------------------------------------
