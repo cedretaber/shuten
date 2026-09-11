@@ -241,6 +241,32 @@ describe("FindingDetail: 修正案", () => {
   });
 });
 
+describe("FindingDetail: 判定（決定 12 行 2）の再確認理由", () => {
+  it("再確認済みのとき、recheck.reason の本文を出す（reasonKind だけでなく理由の自由記述も）", () => {
+    const finding = makeFinding({
+      recheck: {
+        id: "recheck-1",
+        status: "done",
+        notApplicableReason: null,
+        verdict: "withdraw",
+        reasonKind: "intentional-expression",
+        reason: "文脈から意図的な倒置と判断",
+        suggestionValid: null,
+        failure: null,
+      },
+    });
+    render(<FindingDetail {...baseProps({ finding })} />);
+
+    expect(screen.getByText("文脈から意図的な倒置と判断")).toBeInTheDocument();
+  });
+
+  it("recheck が無い、または reason が null のときは何も出さない", () => {
+    render(<FindingDetail {...baseProps({ finding: makeFinding({ recheck: null }) })} />);
+    // 判定セクション自体は出るが、理由の段落は無い（`理由` セクションとは別物であることの確認）。
+    expect(screen.getByText("判定")).toBeInTheDocument();
+  });
+});
+
 describe("FindingDetail: 抑制候補", () => {
   it("suppression !== null のとき「許容語『〜』により抑制」と明示する", () => {
     const finding = makeFinding({ suppression: { word: "こと", ruleVersion: "1" } });

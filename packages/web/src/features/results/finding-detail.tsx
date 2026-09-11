@@ -160,6 +160,12 @@ export function FindingDetail(props: FindingDetailProps) {
         ) : (
           <p>初回判定：{INITIAL_VERDICT_LABELS[display.finalVerdict.verdict]}</p>
         )}
+        {/* 決定 12（行 2）：「再確認済み」＋ reasonKind・reason。reasonKind は stateLabel に
+            既に含めているので、ここでは再確認の理由の本文（LLM の自由記述）を出す
+            （仕様 5.4「指摘理由と、必要なら判断に迷う点」に対応）。 */}
+        {finding.recheck !== null && finding.recheck.reason !== null && (
+          <p className={styles.detailQuote}>{finding.recheck.reason}</p>
+        )}
       </section>
 
       <section>

@@ -24,7 +24,7 @@ import type {
   RunDto,
 } from "@shuten/shared";
 import { splitParagraphs } from "@shuten/shared";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
@@ -626,13 +626,16 @@ describe("ResultsPage: Task 7 指摘詳細の取得配線", () => {
     await user.click(row);
 
     await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
-    // getFinding はまだ解決していないが、引用・理由は finding（一覧が持つ情報）から既に出ている
-    // （詳細パネルの「原文」見出しの直後の段落で見る。本文の段落表示にも同じ文字「一」が出るため
-    // BODY.slice の文字列一致だけでは一意に絞れない）。
-    expect(screen.getByText("原文")).toBeInTheDocument();
-    expect(screen.getByText(/誤字の可能性がある/)).toBeInTheDocument();
+    // getFinding はまだ解決していないが、引用・理由は finding（一覧が持つ情報）から既に出ている。
+    // 本文の段落表示にも同じ文字「一」（BODY.slice(0,1)）が出るため、詳細パネル
+    // （`.detail`）の中だけを見て一意に絞る。
+    const detailPanel = document.querySelector(`.${findingListStyles.detail}`) as HTMLElement;
+    expect(detailPanel).not.toBeNull();
+    expect(within(detailPanel).getByText("原文")).toBeInTheDocument();
+    expect(within(detailPanel).getByText(BODY.slice(0, 1))).toBeInTheDocument();
+    expect(within(detailPanel).getByText(/誤字の可能性がある/)).toBeInTheDocument();
     // 元候補・位置診断の欄だけが「読み込み中」。
-    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+    expect(within(detailPanel).getByText("読み込み中…")).toBeInTheDocument();
   });
 
   it("他の指摘（同じ範囲）のリンクをクリックすると選択が移り、getFinding がその指摘で呼ばれる", async () => {
