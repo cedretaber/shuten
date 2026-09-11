@@ -516,6 +516,15 @@ export function ResultsPage() {
         // 決定 1 の規則 4：軽い取得の成功だけで判定する。終端状態なら立てたままにする。
         if (detail.run.status === "running") {
           setStreamEnded(false);
+          // 決定 1 の規則 5（PR #22 レビュー）：恒久切断からの復旧は**手動の取り直しの成功**
+          // （`loudRef` が立っている鎖）だけを契機にし、1 本だけ張り直す。自動の取り直しでは
+          // 戻さない——恒久切断の原因が続いている間、接続を作り続けることになるため
+          // （そもそも `"closed"` の間は購読自体が無く、SSE 由来の取り直しは走らない）。
+          // 戻す先は `"open"` ではなく `"reconnecting"`：`onOpen` が来るまでは接続できたと
+          // 偽らない（これから張りに行くので「再接続を試みています」は嘘ではない）。
+          if (loudRef.current) {
+            setStreamConnection((current) => (current === "closed" ? "reconnecting" : current));
+          }
         }
       });
 
@@ -754,8 +763,14 @@ export function ResultsPage() {
   }, []);
 
   // 決定 1 の規則 2：`running` かつ `streamEnded === false` のときだけ張る。
-  const streamEnabled =
+  const streamSupported =
     id !== undefined && state.kind === "loaded" && state.run.status === "running" && !streamEnded;
+  // 決定 1 の規則 5（PR #22 レビュー）：恒久切断（`readyState === CLOSED`）の間は張らない。
+  // `streamConnection` を条件に入れることで `useRunStream` の依存値が変わり、`useEffect` の
+  // cleanup が走って死んだ `EventSource` が確実に閉じる。ここを見ないと、閉じた購読が
+  // 張りっぱなしのまま「自動更新は停止しています」とだけ出る（案内どおりに手動で取り直しても
+  // 自動更新が戻らない）。
+  const streamEnabled = streamSupported && streamConnection !== "closed";
   useRunStream({
     runId: id ?? "",
     enabled: streamEnabled,
@@ -767,11 +782,17 @@ export function ResultsPage() {
 
   // 購読していない間に切断の案内を出したままにしない（決定 4。実行が終端になった・`run-settled` で
   // 閉じた後は、切れているのではなく張っていない）。
+  //
+  // 見るのは `streamEnabled` ではなく `streamSupported` である（PR #22 レビュー）。`streamEnabled`
+  // で判定すると、恒久切断で `"closed"` になった瞬間に `streamEnabled` が偽になり、この effect が
+  // `"open"` へ戻して再び購読を張る——「閉じる → 即座に張り直す」の無限ループになる。
+  // `"closed"` を下ろすのは手動の取り直しの成功（`performRefresh`）か、実行が `running` でなくなって
+  // `streamSupported` が偽になったときだけにする。
   useEffect(() => {
-    if (!streamEnabled) {
+    if (!streamSupported) {
       setStreamConnection("open");
     }
-  }, [streamEnabled]);
+  }, [streamSupported]);
 
   // 初回取得の失敗（`state.kind === "error"`）からの再試行（最終レビュー Important 1）。
   // 取り直しではなく初回読み込みを使う——まだ何も `loaded` になっていないので、絞り込み・選択を

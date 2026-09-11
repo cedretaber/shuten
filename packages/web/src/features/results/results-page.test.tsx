@@ -2270,6 +2270,50 @@ describe("ResultsPage: 最終レビュー Important 1 恒久的な切断の案�
 
     await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
   });
+
+  // PR #22 レビュー（Important）：案内どおりに「最新の状態を取得」を押しても購読が復旧しない、
+  // という不具合の回帰検査。文言だけを見る上 2 件はこれを検出できない（`streamEnabled` が
+  // `streamConnection` を見ていないと依存値が変わらず、死んだ購読が張り替えられないまま
+  // 文言だけ正しい、という状態が緑になってしまう）。ここでは**購読が張り直されること**を見る。
+  it("B17: 恒久切断の後、「最新の状態を取得」が running で成功したら購読が 1 本張り直される", async () => {
+    const stream = fakeEventSourceStream();
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    await waitFor(() => expect(stream.instances).toHaveLength(1));
+    const first = stream.instances[0];
+    if (first === undefined) throw new Error("購読がまだ張られていない");
+
+    // 1・2：恒久切断 → 「自動更新は停止しています。」
+    act(() => {
+      first.readyState = 2;
+      first.onerror?.(new Event("error"));
+    });
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+    // 死んだ購読は cleanup で閉じる（張りっぱなしにしない）。
+    await waitFor(() => expect(first.closeCallCount).toBe(1));
+    expect(stream.instances).toHaveLength(1);
+
+    // 3・4：案内どおりに手動で取り直す（応答は running）。
+    await userEvent.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    // 5：2 本目の EventSource が作られる。6：停止案内は消える。
+    await waitFor(() => expect(stream.instances).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByText(STREAM_ENDED_NOTICE)).not.toBeInTheDocument());
+    // `onOpen` が来るまでは「接続できている」と偽らない（決定 4：行は同時に 2 つ出ない）。
+    expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]);
+
+    const second = stream.instances[1];
+    if (second === undefined) throw new Error("2 本目の購読が作られていない");
+    act(() => second.onopen?.(new Event("open")));
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([]));
+  });
 });
 
 // レビュー M-1：`fetchDetail` が毎回 `setFindingDetail(null)` すると、実行中に

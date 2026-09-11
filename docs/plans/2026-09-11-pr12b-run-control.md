@@ -88,13 +88,24 @@
 4. **取り直しが成功したときだけ** `streamEnded` を下ろす：成功した応答の `status` が `running` なら
    `streamEnded = false` にする（`useEffect` の依存が変わり、購読が張り直される）。終端状態なら
    `streamEnded` を立てたままにする。
+5. **恒久切断（`readyState === CLOSED`）の間は購読しない**（PR #22 レビュー）。`enabled` の条件に
+   `streamConnection !== "closed"` を加え、`useEffect` の cleanup で死んだ `EventSource` を閉じる。
+   張り直すのは**手動の「最新の状態を取得」が成功し、その応答の `status` が `running` だったとき**
+   だけで、**1 本だけ**作る。自動の取り直しの成功では張り直さない（恒久切断の原因が続いている間、
+   接続を作り続けることになる。そもそも `"closed"` の間は購読が無いので SSE 由来の取り直しも
+   走らない）。張り直しを始めた時点では `"open"` ではなく `"reconnecting"` に戻す——`onOpen` が
+   来るまで「接続できている」と偽らないため（決定 4 の表の 3 行目に倒れる）。
 
 **`streamEnded` を持つのは `ResultsPage` である**（`useRunStream` ではない）。hook は REST の
 取り直しの成否を知らないので規則 4 を実行できず、逆に `ResultsPage` は SSE のイベントを直接
 受け取れない。そこで所有と通知を次のように分ける。
 
 - `ResultsPage` が `streamEnded` と `streamConnection` を持ち、
-  `enabled = run.status === "running" && !streamEnded` を計算して hook に渡す。
+  `enabled = run.status === "running" && !streamEnded && streamConnection !== "closed"` を計算して
+  hook に渡す（最後の項は規則 5）。
+- 「購読していない間は切断の案内を消す」effect は `enabled` ではなく **`streamConnection` を除いた
+  条件**（`running` かつ `!streamEnded`）で判定する。`enabled` で判定すると、`"closed"` になった
+  瞬間に案内が `"open"` へ戻されて再び購読が張られ、「閉じる → すぐ張り直す」の無限ループになる。
 - `useRunStream` は `enabled` が真のときだけ購読し、`onSettled()` と
   `onConnectionStateChange("open" | "reconnecting" | "closed")` で `ResultsPage` に知らせる。
 - `useEffect` の依存は `[runId, enabled]`。
@@ -205,7 +216,10 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
   規定では、再接続の試行が 2xx 以外や MIME 不一致で返ると `error` を発火して `CLOSED` になり、
   以後は再接続しない。区別しないと「再接続を試みています」が嘘になり、実行が `running` のままだと
   購読の依存（`[runId, enabled]`）も変わらないので死んだ購読が張り替えられず、自動更新が戻らない。
-  恒久的に閉じたときは 1 行目と同じ文に倒し、手動の「最新の状態を取得」へ導く。
+  恒久的に閉じたときは 1 行目と同じ文に倒し、手動の「最新の状態を取得」へ導く。**その案内は
+  実際に効く**：恒久切断の間は購読を閉じておき、手動の取り直しが `running` で成功したら購読を
+  1 本だけ張り直す（決定 1 の規則 5。PR #22 レビュー）。張り直しの最中は 3 行目
+  （「再接続を試みています」）に移る。
 - `autoRefreshError` は自動の取り直しが 1 回でも成功したら消す。連続して失敗しても行は増えない。
   文言に「再接続」を持ち出さない：REST の取得が失敗しても `EventSource` を張り直すとは限らず、
   終端イベントの後なら接続はこちらが意図して閉じている。「再接続を試みています」は
@@ -522,6 +536,7 @@ jsdom の制約（PR12a で確認済み）：`getBoundingClientRect()` は常に
 | B14 | 決定 1 の規則 3・4：`run-settled` の後の取り直しが**失敗**したら購読は張り直されず、「自動更新は停止しています」が出る。その後の取り直しで**軽い取得が成功して `status` が `running`** なら、**続く `getFindings` が失敗しても**購読が張り直される |
 | B15 | 決定 3 の 2 段反映：取り直しで `getRun` + `getRunUnits` が成功し `getFindings` が失敗したとき、状態・進捗・ボタンは新しい値に追従し、既に出ている指摘一覧は消えない |
 | B16 | 決定 4：再接続中の `onError` で「サーバーとの接続が切れました」が出て、次の `onOpen` で下ろされる（続く取り直しの成否によらない）。`readyState === CLOSED` の `onError` では代わりに「自動更新は停止しています」が出る。行は同時に 2 つ出ない |
+| B17 | 決定 1 の規則 5：恒久切断で購読が閉じ、手動の「最新の状態を取得」が `running` で成功すると購読が 1 本だけ張り直され、停止の案内が消える |
 | S1 | 実ブラウザでの確認（決定 15）：`/events` の要求が決着後に増え続けないこと、左右が独立にスクロールすること |
 
 S1 の手順（Playwright、`pnpm dev`）：
@@ -557,7 +572,7 @@ S1 の手順（Playwright、`pnpm dev`）：
 - `pnpm check`（typecheck + lint + test）が緑。
 - `pnpm build` が緑。
 - `git diff --check main...HEAD` が無出力（行末の空白・衝突マーカーが無い）。
-- B1〜B16 のテストが在り、S1 の確認を**実施できた範囲**と**未確認のまま残る範囲**の両方を
+- B1〜B17 のテストが在り、S1 の確認を**実施できた範囲**と**未確認のまま残る範囲**の両方を
   PR 本文に書いてある（この環境には LM Studio が無く、S1 の一部は実施できない。下の
   「持ち越し・既知の制限」に挙げたものがその未確認の範囲にあたる）。
 - `docs/plans/2026-09-07-mvp-roadmap.md` の PR12b を実施済みにし、持ち越しを書き足してある。
@@ -581,11 +596,6 @@ S1 の手順（Playwright、`pnpm dev`）：
   解消ではない。
 - 失敗単位の一覧から、その単位が出した指摘へ移動する経路は持ち越し。
 - 実行一覧（`/runs`）は自動更新しない。
-- `EventSource` が**恒久的に閉じた**（再接続の試行が 2xx 以外や MIME 不一致で返り `readyState` が
-  `CLOSED` になった）あと、自動更新はこの PR の範囲では復活しない。案内は「自動更新は停止しています。
-  『最新の状態を取得』を押してください。」に倒れて嘘をつかなくなり、手動の取り直しでデータは追いつく
-  が、購読そのものは張り直されない（張り直しの合図を `streamEnded` の規則 4 に相乗りさせると、
-  終端イベントの受信と接続の死という別の事象を混ぜることになるため見送った。最終レビュー I-1）。
 - 初回読み込みで `GET /api/runs/:id/units` の取得に失敗すると、結果画面全体が表示されない。
   決定 3 の「そろうまで描かない」（初回読み込みは `getRun` / `getManuscript` / `getRunUnits` /
   `getFindings` が全部そろってから描く）どおりの挙動だが、PR12a までは `/units` を取得していな
