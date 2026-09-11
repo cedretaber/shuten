@@ -285,6 +285,14 @@ function solveDetection(
 
 // --- 指摘集合 1 つぶんの指標 ------------------------------------------------------------------
 
+/**
+ * 決定 5・7 に共通の「正しい指摘か」の判定。error 項目に**重なる**かどうかだけで決める
+ * （1 対 1 のマッチではない）。誤検出の定義を 1 つに保つため、判定はこの関数に集約する。
+ */
+function overlapsAnyErrorEntry(range: Range, errorEntries: readonly ResolvedErrorEntry[]): boolean {
+  return errorEntries.some((entry) => overlaps(range, entry.range));
+}
+
 function scoreFindingSet(
   errorEntries: readonly ResolvedErrorEntry[],
   normalEntries: readonly ResolvedTruthEntry[],
@@ -335,7 +343,9 @@ function scoreFindingSet(
   const falsePositiveFindings: FalsePositiveFinding[] = [];
   const falsePositiveKindByIndex = new Map<number, "on-normal" | "other">();
   findings.forEach((finding, index) => {
-    if ((errorOverlapCount[index] ?? 0) > 0) {
+    // 判定は `overlapsAnyErrorEntry` だけを通す（`errorOverlapCount` を使っても同じ結果になるが、
+    // 「正しい指摘か」の定義をこのファイルで 1 か所に保つため。決定 5・7 で共通の定義）。
+    if (overlapsAnyErrorEntry(finding.range, errorEntries)) {
       return;
     }
     const kind = normalEntries.some((entry) => overlaps(finding.range, entry.range))
@@ -408,14 +418,6 @@ function toScoredFinding(input: EvaluationResultInput["findings"][number]): Scor
 /** 再確認が撤回したか（決定 7）。`confirm-with-author` は撤回ではない。 */
 function isWithdrawn(input: EvaluationResultInput["findings"][number]): boolean {
   return input.recheck.status === "done" && input.recheck.output.verdict === "withdraw";
-}
-
-/**
- * 決定 5・7 に共通の「正しい指摘か」の判定。error 項目に**重なる**かどうかだけで決める
- * （1 対 1 のマッチではない）。誤検出の定義を 1 つに保つため、判定はこの関数に集約する。
- */
-function overlapsAnyErrorEntry(range: Range, errorEntries: readonly ResolvedErrorEntry[]): boolean {
-  return errorEntries.some((entry) => overlaps(range, entry.range));
 }
 
 /** 突き合わせの本体。純粋関数。 */

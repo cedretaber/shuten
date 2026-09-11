@@ -238,6 +238,7 @@ describe("T5 検出と誤検出", () => {
   });
 
   it("normal だけに重なる指摘は on-normal、どちらにも重ならない指摘は other", () => {
+    // 変異：on-normal と other を取り違える → 落ちる。
     const entries = [normalEntry("n1", 10, 14), errorEntry("e1", "typo", 30, 34)];
     const metrics = scoreRun(entries, makeResult([finding("f1", 10, 14), finding("f2", 50, 54)]));
 
@@ -268,6 +269,7 @@ describe("T5 検出と誤検出", () => {
   });
 
   it("truthEntryCounts は error と normal を分けて数える", () => {
+    // 転記の検査。専用の変異は置いていない（kind の取り違えは他の多くのテストが先に落とす）。
     const entries = [
       errorEntry("e1", "typo", 10, 14),
       errorEntry("e2", "naturalness", 20, 24),
@@ -360,6 +362,7 @@ describe("T7 再確認の前後", () => {
   ];
 
   it("done かつ withdraw の指摘だけが再確認後の集合から消える", () => {
+    // 変異：failed / pending も再確認後から除く → findingCount が 3 になって落ちる。
     const metrics = scoreRun(entries, makeResult(findings));
     expect(metrics.beforeRecheck.findingCount).toBe(7);
     expect(metrics.afterRecheck.findingCount).toBe(5);
@@ -416,6 +419,7 @@ describe("T7 再確認の前後", () => {
   });
 
   it("recheckFailed / recheckPending / recheckDisabled はそれぞれ独立に動く", () => {
+    // 変異：これらを totals.rechecks から転記する → 指摘の実態と切り離されて落ちる。
     const metrics = scoreRun(entries, makeResult(findings));
     expect(metrics.recheckFailed).toBe(1);
     expect(metrics.recheckPending).toBe(1);
@@ -513,6 +517,7 @@ describe("T8 抑制", () => {
 
 describe("T9 位置特定失敗", () => {
   it("totals.unlocated を転記し、失敗率は失敗候補数 / 候補数", () => {
+    // 転記と割り算の検査。分母 0 の変異（0 に丸める・NaN）は T17 で落とす。
     const metrics = scoreRun(
       [],
       makeResult([], {
