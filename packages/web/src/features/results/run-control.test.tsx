@@ -122,21 +122,28 @@ describe("RunControl: B9 決定 6 の出し分け", () => {
     expect(stop).toBeDisabled();
   });
 
-  it("recovery-waiting・未確認：再開と復旧確認が出る。停止・再試行は出ない", () => {
+  it("recovery-waiting・未確認：RecoveryNotice の主・副ボタンが出る。停止・再試行・汎用の再開は出ない（Task 7）", () => {
     renderControl(
       baseProps({
         run: makeRun({ status: "recovery-waiting", recoveryConfirmedAt: null }),
         units: FAILED_UNITS,
       }),
     );
-    expect(buttonNames().sort()).toEqual(["復旧を確認", "再開"].sort());
-    // 再開のボタンには決定 8.2 の注記を添える。
+    expect(buttonNames().sort()).toEqual(
+      [
+        "LM Studio 側で生成が止まったことを確認した → 再開する",
+        "確認だけ記録する（この検査は再開しない）",
+      ].sort(),
+    );
+    // 汎用の「再開」ボタン（`同じ検査の続きから…`の注記付き）は recovery-waiting では出ない
+    // （RecoveryNotice に一本化。Task 7）。
+    expect(screen.queryByRole("button", { name: "再開" })).not.toBeInTheDocument();
     expect(
-      screen.getByText("同じ検査の続きから再開します（実行 ID は変わりません）"),
-    ).toBeInTheDocument();
+      screen.queryByText("同じ検査の続きから再開します（実行 ID は変わりません）"),
+    ).not.toBeInTheDocument();
   });
 
-  it("recovery-waiting・確認済み：復旧確認は消えるが再開は残る（決定 7）", () => {
+  it("recovery-waiting・確認済み：副ボタンは消えるが主ボタンは残る（決定 7、Task 7）", () => {
     renderControl(
       baseProps({
         run: makeRun({
@@ -145,7 +152,7 @@ describe("RunControl: B9 決定 6 の出し分け", () => {
         }),
       }),
     );
-    expect(buttonNames()).toEqual(["再開"]);
+    expect(buttonNames()).toEqual(["LM Studio 側で生成が止まったことを確認した → 再開する"]);
   });
 
   it("stopped（settings）：失敗単位があれば再試行だけが出る（停止・再開は出ない）", () => {
@@ -214,7 +221,7 @@ describe("RunControl: クリックでハンドラーを呼ぶ", () => {
     expect(onRetryFailed).toHaveBeenCalledTimes(1);
   });
 
-  it("再開ボタンを押すと onResume が呼ばれる（onConfirmRecovery は呼ばれない）", async () => {
+  it("recovery-waiting の主ボタンを押すと onResume が呼ばれる（onConfirmRecovery は呼ばれない。Task 7）", async () => {
     const onResume = vi.fn();
     const onConfirmRecovery = vi.fn();
     renderControl(
@@ -224,12 +231,16 @@ describe("RunControl: クリックでハンドラーを呼ぶ", () => {
         onConfirmRecovery,
       }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "再開" }));
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "LM Studio 側で生成が止まったことを確認した → 再開する",
+      }),
+    );
     expect(onResume).toHaveBeenCalledTimes(1);
     expect(onConfirmRecovery).not.toHaveBeenCalled();
   });
 
-  it("復旧を確認ボタンを押すと onConfirmRecovery が呼ばれる（onResume は呼ばれない）", async () => {
+  it("recovery-waiting の副ボタンを押すと onConfirmRecovery が呼ばれる（onResume は呼ばれない。Task 7）", async () => {
     const onResume = vi.fn();
     const onConfirmRecovery = vi.fn();
     renderControl(
@@ -239,7 +250,9 @@ describe("RunControl: クリックでハンドラーを呼ぶ", () => {
         onConfirmRecovery,
       }),
     );
-    await userEvent.click(screen.getByRole("button", { name: "復旧を確認" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "確認だけ記録する（この検査は再開しない）" }),
+    );
     expect(onConfirmRecovery).toHaveBeenCalledTimes(1);
     expect(onResume).not.toHaveBeenCalled();
   });

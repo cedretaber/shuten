@@ -1,13 +1,17 @@
 /**
- * 実行制御の出し分けと案内（Task 4、決定 6・7・8・9）。
+ * 実行制御の出し分けと案内（Task 4、決定 6・7・8・9。Task 7 で `showStopButton` を追加）。
  *
  * ここに置くのは純関数だけ（DOM は次の Task の役割）。
  * - `controlAvailability`：決定 6 の表。どのボタンを出すかは「押せる見込みがあるものだけ」の
  *   判断であって、最終判断はサーバー（`orchestrator.ts`）。表とサーバーの判定がずれたら
  *   409 が返る（`controlFailureOf` が受ける）。
+ * - `showStopButton`：決定 6。停止ボタンを表示するか（`canStop` とは別の、表示条件だけの判定。
+ *   `run-control.tsx` の JSDoc 参照）。
  * - `retryableUnitIds`：決定 6・36。再試行できる失敗単位の ID（`input-too-long` の検査単位を
  *   除く）。サーバーの `collectRetryTargets`（`orchestrator.ts`）と同じ条件。
  * - `statusNotice`：決定 9。中間状態の案内文。優先順は上から（`stopRequestedAt` が最優先）。
+ *   `recovery-waiting` の仕様 8.2 の定型文は含まない（Task 7 で `recovery-notice.tsx` へ移した。
+ *   `status === "recovery-waiting"` かつ `generationUnconfirmed` が偽のときは null になる）。
  * - `controlFailureOf`：決定 8。操作の失敗を案内文に写す。`ApiRequestError` の `code` だけを見て、
  *   `message`（実行 ID を含み、文面もサーバー都合で変わる）は転記しない。未知の `code` と
  *   `ApiRequestError` 以外の例外は既定の文に落ちる。
@@ -79,7 +83,24 @@ export function controlAvailability(run: RunDto, units: RunUnitsDto | null): Con
 }
 
 /**
+ * 決定 6・レビュー指摘（Task 5 M-1）：停止ボタンを表示するか。`canStop`（押せるか）とは別の判断。
+ *
+ * `running` の間はずっと表示し続ける——`canStop` をそのまま表示条件にすると、停止要求後
+ * （`stopRequestedAt !== null`）にボタン自体が消えてしまい、`disabled` にして「押せなくなった
+ * 理由」を見せ続けることができない（`run-control.tsx` の JSDoc に同じ説明あり）。
+ */
+export function showStopButton(run: RunDto): boolean {
+  return run.status === "running";
+}
+
+/**
  * 決定 9：中間状態の案内文。出さないときは null。優先順は上から（`stopRequestedAt` が最優先）。
+ *
+ * `recovery-waiting` の仕様 8.2 の定型文（「生成の停止を確認できません。LM Studio側を確認して
+ * 再開してください」）はここに含めない（Task 7 で `recovery-notice.tsx` へ移した）。`RecoveryNotice`
+ * は `status === "recovery-waiting"` だけを見て常に出すため、`generationUnconfirmed` の有無に
+ * 関わらず仕様文が出る（Task 4 の持ち越し：`generationUnconfirmed` が真だとこの関数の優先順で
+ * 仕様文に届かない、という抜けを構造的に解消する）。
  *
  * `completed` かつ他の条件に当たらないときだけ null になり、そのときは未処理が無いことを
  * 前提にした表示（「指摘はありません」を含む）を許す。
@@ -90,10 +111,6 @@ export function statusNotice(run: RunDto): string | null {
   }
   if (run.generationUnconfirmed) {
     return "LM Studio 側の生成が終了したか確認できていません。";
-  }
-  if (run.status === "recovery-waiting") {
-    // 仕様 8.2 の表示文をそのまま出す（決定 7）。
-    return "生成の停止を確認できません。LM Studio側を確認して再開してください";
   }
   if (run.status === "partially-failed") {
     return "一部の検査が失敗しました。未処理の範囲があります。";

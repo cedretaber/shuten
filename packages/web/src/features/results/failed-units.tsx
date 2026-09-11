@@ -21,6 +21,10 @@
  * 再確認単位は `findingId` を持つので「指摘 → 再確認」と分かる表示にする。**指摘の本文（原稿の
  * 断片）は出さない**——そもそもこのコンポーネントは `FindingDto` を受け取らないので、原稿の断片を
  * 描く経路自体が無い。
+ *
+ * Task 7（レビュー指摘）：「すべて再試行」はヘッダーの操作列（`run-control.tsx` の `RunControl`）と
+ * ここの 2 か所に出ていたが重複のため、一覧側からは消した（ヘッダーへ一本化）。個別の
+ * 「この単位を再試行」はここに残す。
  */
 
 import type { CheckUnitDto, RecheckUnitDto, RunDto, RunUnitsDto } from "@shuten/shared";
@@ -43,8 +47,6 @@ export interface FailedUnitsProps {
   /** `GET /api/runs/:id/units` の応答。この画面では `state.kind === "loaded"` の間だけ描くため、
    *  常に取得済みのものを渡す（`run-header.tsx` 側の `units: RunUnitsDto | null` とは異なる）。 */
   readonly units: RunUnitsDto;
-  /** 「すべて再試行」（本文なしの `POST /retry-failed`。全件対象）。 */
-  readonly onRetryAll: () => void;
   /** 「この単位を再試行」（`{ unitIds: [unitId] }`）。 */
   readonly onRetryUnit: (unitId: string) => void;
   /** 送信中の操作（`run-control.tsx` の `pending` と同じ union）。null でなければ、この一覧の
@@ -53,7 +55,7 @@ export interface FailedUnitsProps {
 }
 
 export function FailedUnits(props: FailedUnitsProps) {
-  const { run, units, onRetryAll, onRetryUnit, pending } = props;
+  const { run, units, onRetryUnit, pending } = props;
 
   // 仕様書 8.2・画面ごとの仕様「失敗単位の一覧」：`partially-failed` か `stopped` のときだけ出す。
   if (run.status !== "partially-failed" && run.status !== "stopped") {
@@ -68,18 +70,13 @@ export function FailedUnits(props: FailedUnitsProps) {
 
   const busy = pending !== null;
   // 決定 6・36：再試行できる失敗単位の ID（検査単位の `input-too-long` だけ除く）。判定はここで
-  // 書き写さず、`run-control.ts` の純関数をそのまま使う。
+  // 書き写さず、`run-control.ts` の純関数をそのまま使う。「すべて再試行」の要否判定として直接は
+  // 使わないが（ボタン自体をヘッダーへ一本化したため）、`RetryControl`（下）が個別ボタンの出し分けに使う。
   const retryable = new Set(retryableUnitIds(units));
 
   return (
     <div className={styles.failedUnits}>
       <h2 className={styles.failedUnitsHeading}>失敗した処理</h2>
-
-      {retryable.size > 0 && (
-        <button type="button" className={styles.controlButton} onClick={onRetryAll} disabled={busy}>
-          すべて再試行
-        </button>
-      )}
 
       <ul className={styles.failedUnitList}>
         {failedCheckUnits.map((unit) => (

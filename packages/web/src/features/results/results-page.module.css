@@ -124,6 +124,24 @@
 }
 
 /*
+ * 復旧待ち・復旧ブロックの案内（Task 7、決定 7。`recovery-notice.tsx`）。
+ */
+.recoveryNotice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.recoveryBlockedLinks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+/*
  * 進捗の表示（Task 3、決定 5・10・11。`run-progress.tsx`）。仕様 9 節「根拠のない残り時間を
  * 示さない」のとおり、割合バーや残り時間の見た目は持たない（件数の文字列だけ）。
  */

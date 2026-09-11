@@ -14,6 +14,7 @@ import {
   controlAvailability,
   controlFailureOf,
   retryableUnitIds,
+  showStopButton,
   statusNotice,
 } from "./run-control.ts";
 
@@ -273,6 +274,22 @@ describe("controlAvailability", () => {
   });
 });
 
+describe("showStopButton（レビュー指摘 M-1：表示条件を run-control.ts に揃える）", () => {
+  it("running なら真（停止要求の有無を問わない）", () => {
+    expect(showStopButton(makeRun({ status: "running", stopRequestedAt: null }))).toBe(true);
+    expect(
+      showStopButton(makeRun({ status: "running", stopRequestedAt: "2026-09-10T00:01:00.000Z" })),
+    ).toBe(true);
+  });
+
+  it("running 以外は偽", () => {
+    expect(showStopButton(makeRun({ status: "stopped" }))).toBe(false);
+    expect(showStopButton(makeRun({ status: "recovery-waiting" }))).toBe(false);
+    expect(showStopButton(makeRun({ status: "partially-failed" }))).toBe(false);
+    expect(showStopButton(makeRun({ status: "completed" }))).toBe(false);
+  });
+});
+
 describe("statusNotice", () => {
   it("停止要求中（running・stopRequestedAt !== null）が最優先", () => {
     const run = makeRun({
@@ -288,11 +305,9 @@ describe("statusNotice", () => {
     expect(statusNotice(run)).toBe("LM Studio 側の生成が終了したか確認できていません。");
   });
 
-  it("recovery-waiting は決定 7 の仕様文をそのまま出す", () => {
-    const run = makeRun({ status: "recovery-waiting" });
-    expect(statusNotice(run)).toBe(
-      "生成の停止を確認できません。LM Studio側を確認して再開してください",
-    );
+  it("recovery-waiting・generationUnconfirmed 偽は null（決定 7 の仕様文は recovery-notice.tsx が出す）", () => {
+    const run = makeRun({ status: "recovery-waiting", generationUnconfirmed: false });
+    expect(statusNotice(run)).toBeNull();
   });
 
   it("partially-failed の案内文", () => {

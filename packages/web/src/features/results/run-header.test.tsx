@@ -137,6 +137,16 @@ describe("RunHeader: 決定 14 isSettingsStop は 3〜5 を出さない", () => 
     expect(screen.getByRole("link", { name: "検査設定に戻る" })).toBeInTheDocument();
   });
 
+  it("中間状態の案内（statusNotice）も出ない（レビュー指摘 M-4）", () => {
+    // `stopped` かつ `stopReason === "settings"`（isSettingsStop）は、通常の状態表示・進捗だけで
+    // なく決定 9 の中間状態の案内も出さない（PR12a 決定 16 のとおり、開始できなかった検査に
+    // 「未処理の範囲が残っている可能性があります」等の案内は意味を持たないため）。
+    renderHeader(baseProps({ run: makeRun({ status: "stopped", stopReason: "settings" }) }));
+    expect(screen.queryByText(/停止中です/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/一部の検査が失敗/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/停止を要求しました/)).not.toBeInTheDocument();
+  });
+
   it("失敗単位の再試行は controlAvailability の判断に従って出る", () => {
     const units = makeUnits({
       checkUnits: [

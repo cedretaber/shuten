@@ -1438,7 +1438,7 @@ describe("ResultsPage: 実行制御（決定 6・7・8）別の実行への遷�
     );
   }
 
-  it("復旧を確認ボタンを押すと confirmRecovery を呼ぶ（resumeRun は呼ばない）", async () => {
+  it("『確認だけ記録する』ボタンを押すと confirmRecovery を呼ぶ（resumeRun は呼ばない。Task 7）", async () => {
     const user = userEvent.setup();
     const getRun = vi.fn(() =>
       Promise.resolve(makeRunDetail({ status: "recovery-waiting", recoveryConfirmedAt: null })),
@@ -1459,7 +1459,9 @@ describe("ResultsPage: 実行制御（決定 6・7・8）別の実行への遷�
 
     renderPage(client);
 
-    const confirmButton = await screen.findByRole("button", { name: "復旧を確認" });
+    const confirmButton = await screen.findByRole("button", {
+      name: "確認だけ記録する（この検査は再開しない）",
+    });
     await user.click(confirmButton);
 
     await waitFor(() => expect(confirmRecovery).toHaveBeenCalledTimes(1));

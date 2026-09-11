@@ -1,9 +1,13 @@
 /**
  * 失敗単位の一覧と個別再試行（Task 6、決定 6・12。仕様書 8.2「失敗した処理を個別に再試行できる」）。
  *
- * ここでは `FailedUnits` 単体の描画・出し分けだけを見る。「すべて再試行」「この単位を再試行」が
- * `results-page.tsx` の `runControlAction` に正しく配線されること（`retryFailedUnits` の呼ばれ方）は
+ * ここでは `FailedUnits` 単体の描画・出し分けだけを見る。「この単位を再試行」が `results-page.tsx` の
+ * `runControlAction` に正しく配線されること（`retryFailedUnits` の呼ばれ方）は
  * `results-page.test.tsx` 側で見る。
+ *
+ * Task 7（レビュー指摘）：「すべて再試行」はヘッダーの操作列（`RunControl`）と重複していたため、
+ * この一覧からは削除した（`onRetryAll` プロパティごと削除）。ヘッダー側の検査は
+ * `run-control.test.tsx`・`results-page.test.tsx` の役割。
  */
 
 import type { CheckUnitDto, RecheckUnitDto, RunDto, RunUnitsDto } from "@shuten/shared";
@@ -93,13 +97,7 @@ describe("FailedUnits: 出す条件（run.status）", () => {
     const run = makeRun({ status: "running" });
     const units = makeUnits({ checkUnits: [makeCheckUnit()] });
     const { container } = render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
+      <FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -108,13 +106,7 @@ describe("FailedUnits: 出す条件（run.status）", () => {
     const run = makeRun({ status: "completed" });
     const units = makeUnits({ checkUnits: [makeCheckUnit()] });
     const { container } = render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
+      <FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -123,13 +115,7 @@ describe("FailedUnits: 出す条件（run.status）", () => {
     const run = makeRun({ status: "partially-failed" });
     const units = makeUnits();
     const { container } = render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
+      <FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />,
     );
     expect(container).toBeEmptyDOMElement();
   });
@@ -137,30 +123,14 @@ describe("FailedUnits: 出す条件（run.status）", () => {
   it("status が partially-failed かつ失敗した検査単位があれば一覧が出る", () => {
     const run = makeRun({ status: "partially-failed" });
     const units = makeUnits({ checkUnits: [makeCheckUnit()] });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />);
     expect(screen.getByText(/範囲 1/)).toBeInTheDocument();
   });
 
   it("status が stopped かつ失敗した検査単位があれば一覧が出る", () => {
     const run = makeRun({ status: "stopped", stopReason: "aborted" });
     const units = makeUnits({ checkUnits: [makeCheckUnit()] });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />);
     expect(screen.getByText(/範囲 1/)).toBeInTheDocument();
   });
 });
@@ -175,42 +145,13 @@ describe("FailedUnits: input-too-long の非対称（決定 6・36）", () => {
         }),
       ],
     });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />);
     expect(
       screen.getByText(
         "入力が長すぎるため再試行できません（分割長を見直して新しい検査を開始してください）",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "この単位を再試行" })).not.toBeInTheDocument();
-  });
-
-  it("失敗した単位が input-too-long の検査単位だけのときは「すべて再試行」を出さない", () => {
-    const run = makeRun();
-    const units = makeUnits({
-      checkUnits: [
-        makeCheckUnit({
-          failure: { reason: "input-too-long", message: "", finishReason: null, origin: "local" },
-        }),
-      ],
-    });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
-    expect(screen.queryByRole("button", { name: "すべて再試行" })).not.toBeInTheDocument();
   });
 
   it("input-too-long の再確認単位にはボタンがある（検査単位との非対称）", () => {
@@ -232,36 +173,13 @@ describe("FailedUnits: input-too-long の非対称（決定 6・36）", () => {
         }),
       ],
     });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />);
     expect(screen.getAllByRole("button", { name: "この単位を再試行" })).toHaveLength(1);
     expect(
       screen.getByText(
         "入力が長すぎるため再試行できません（分割長を見直して新しい検査を開始してください）",
       ),
     ).toBeInTheDocument();
-  });
-
-  it("再試行できる失敗単位が 1 件以上あれば「すべて再試行」が出る", () => {
-    const run = makeRun();
-    const units = makeUnits({ checkUnits: [makeCheckUnit()] });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "すべて再試行" })).toBeInTheDocument();
   });
 });
 
@@ -273,15 +191,7 @@ describe("FailedUnits: 個別の再試行", () => {
       checkUnits: [makeCheckUnit({ id: "check-1" }), makeCheckUnit({ id: "check-2" })],
     });
     const onRetryUnit = vi.fn();
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={onRetryUnit}
-        pending={null}
-      />,
-    );
+    render(<FailedUnits run={run} units={units} onRetryUnit={onRetryUnit} pending={null} />);
 
     const buttons = screen.getAllByRole("button", { name: "この単位を再試行" });
     expect(buttons).toHaveLength(2);
@@ -290,57 +200,20 @@ describe("FailedUnits: 個別の再試行", () => {
     expect(onRetryUnit).toHaveBeenCalledTimes(1);
     expect(onRetryUnit).toHaveBeenCalledWith("check-1");
   });
-
-  it("『すべて再試行』を押すと onRetryAll が呼ばれる", async () => {
-    const user = userEvent.setup();
-    const run = makeRun();
-    const units = makeUnits({ checkUnits: [makeCheckUnit()] });
-    const onRetryAll = vi.fn();
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={onRetryAll}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "すべて再試行" }));
-    expect(onRetryAll).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("FailedUnits: pending の間はすべての再試行ボタンが disabled（決定 8 と同じ扱い）", () => {
   it("pending が 'stop'（再試行以外の操作）でも再試行ボタンは disabled になる", () => {
     const run = makeRun();
     const units = makeUnits({ checkUnits: [makeCheckUnit()] });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending="stop"
-      />,
-    );
-    expect(screen.getByRole("button", { name: "すべて再試行" })).toBeDisabled();
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending="stop" />);
     expect(screen.getByRole("button", { name: "この単位を再試行" })).toBeDisabled();
   });
 
   it("pending が null なら再試行ボタンは押せる", () => {
     const run = makeRun();
     const units = makeUnits({ checkUnits: [makeCheckUnit()] });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "すべて再試行" })).toBeEnabled();
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />);
     expect(screen.getByRole("button", { name: "この単位を再試行" })).toBeEnabled();
   });
 });
@@ -349,15 +222,7 @@ describe("FailedUnits: 再確認単位の表示（指摘 → 再確認と分か�
   it("再確認単位は findingId から指摘の再確認だと分かる表示になる", () => {
     const run = makeRun();
     const units = makeUnits({ recheckUnits: [makeRecheckUnit({ findingId: "finding-xyz" })] });
-    render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
-    );
+    render(<FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />);
     expect(screen.getByText(/再確認/)).toBeInTheDocument();
     expect(screen.getByText(/finding-xyz/)).toBeInTheDocument();
   });
@@ -393,13 +258,7 @@ describe("FailedUnits: 漏えい検査（決定 12）", () => {
       ],
     });
     const { container } = render(
-      <FailedUnits
-        run={run}
-        units={units}
-        onRetryAll={vi.fn()}
-        onRetryUnit={vi.fn()}
-        pending={null}
-      />,
+      <FailedUnits run={run} units={units} onRetryUnit={vi.fn()} pending={null} />,
     );
 
     const text = container.textContent ?? "";

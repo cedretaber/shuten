@@ -647,7 +647,6 @@ export function ResultsPage() {
           <FailedUnits
             run={state.run}
             units={state.units}
-            onRetryAll={handleRetryFailed}
             onRetryUnit={handleRetryUnit}
             pending={pending}
           />
