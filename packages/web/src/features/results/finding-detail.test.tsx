@@ -416,16 +416,18 @@ describe("FindingDetail: 採否の操作子（Task 8、決定 13）", () => {
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("著者へ確認済み");
   });
 
-  it("保存ボタンを押すと、選択中の指摘の ID 付きで onSaveJudgment が呼ばれる", async () => {
+  it("保存ボタンを押すと、選択中の指摘の ID・引用付きで onSaveJudgment が呼ばれる", async () => {
     const user = userEvent.setup();
     const onSaveJudgment = vi.fn(() => Promise.resolve());
-    const finding = makeFinding({ id: "finding-42" });
+    // `quote` は PR21 レビュー指摘 2（採否保存の失敗の持ち上げ）で追加された引数。呼び出し側
+    // （`results-page.tsx`）が「どの指摘の保存が失敗したか」を示すために使う。
+    const finding = makeFinding({ id: "finding-42", quote: "対象の引用" });
     render(<FindingDetail {...baseProps({ finding, onSaveJudgment })} />);
 
     await user.click(screen.getByRole("radio", { name: "却下" }));
     await user.click(screen.getByRole("button", { name: "保存" }));
 
-    expect(onSaveJudgment).toHaveBeenCalledWith("finding-42", "rejected", null);
+    expect(onSaveJudgment).toHaveBeenCalledWith("finding-42", "rejected", null, "対象の引用");
   });
 
   it("指摘を選び直すと、操作子の入力が新しい指摘の値に切り替わる（前の指摘の入力が残らない）", () => {

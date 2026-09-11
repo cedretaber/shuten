@@ -10,6 +10,7 @@
  * - 「採用予定を選んでも本文は書き換わりません」の趣旨の注記が常に見えること
  */
 
+import type { JudgmentDto } from "@shuten/shared";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -163,6 +164,65 @@ describe("JudgmentControl: 失敗時にエラーを出し、入力を保存前�
     expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "却下" })).not.toBeChecked();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("もとのメモ");
+  });
+});
+
+describe("JudgmentControl: PR21 レビュー指摘 1 未編集なら新しい judgment に追従する", () => {
+  it("ラジオ・メモのどちらも触っていなければ、judgment が更新されたら追従する", () => {
+    const judgmentA: JudgmentDto = {
+      findingId: "finding-1",
+      status: "undecided",
+      note: null,
+      updatedAt: "2026-09-10T00:00:00.000Z",
+    };
+    const { rerender } = render(<JudgmentControl {...baseProps({ judgment: judgmentA })} />);
+    expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
+
+    // `updatedAt` が変わった（＝実際に値が変わった）新しい judgment で再レンダーする。
+    // `results-page.tsx` が「最新の状態を取得」のたびに `findings` 配列ごと新しい参照で作り直す
+    // のを模す（参照だけでなく `updatedAt` も変える——参照比較ではなく値で判定していることを
+    // このテストで固定する）。
+    const judgmentB: JudgmentDto = {
+      findingId: "finding-1",
+      status: "held",
+      note: "サーバー側のメモ",
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    rerender(<JudgmentControl {...baseProps({ judgment: judgmentB })} />);
+
+    expect(screen.getByRole("radio", { name: "保留" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "未判断" })).not.toBeChecked();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("サーバー側のメモ");
+  });
+});
+
+describe("JudgmentControl: PR21 レビュー指摘 1 編集中は上書きせず、更新された旨を示す", () => {
+  it("編集中に judgment が更新されても入力は保たれ、注記が出る", async () => {
+    const user = userEvent.setup();
+    const judgmentA: JudgmentDto = {
+      findingId: "finding-1",
+      status: "undecided",
+      note: null,
+      updatedAt: "2026-09-10T00:00:00.000Z",
+    };
+    const { rerender } = render(<JudgmentControl {...baseProps({ judgment: judgmentA })} />);
+
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+    expect(screen.queryByText(/採否が別の場所で更新されました/)).not.toBeInTheDocument();
+
+    const judgmentB: JudgmentDto = {
+      findingId: "finding-1",
+      status: "held",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    rerender(<JudgmentControl {...baseProps({ judgment: judgmentB })} />);
+
+    // 編集中の入力（却下）を勝手に上書きしない。
+    expect(screen.getByRole("radio", { name: "却下" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "保留" })).not.toBeChecked();
+    // 別の場所で更新されたことは示す。
+    expect(screen.getByText(/採否が別の場所で更新されました/)).toBeInTheDocument();
   });
 });
 

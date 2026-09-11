@@ -17,6 +17,7 @@
  */
 
 import type {
+  CandidateDto,
   FindingDetailDto,
   FindingDto,
   JudgmentDto,
@@ -769,6 +770,220 @@ describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新�
     // getFindings は初回の 1 回のまま）。
     await waitFor(() => expect(within(row).getByText("却下")).toBeInTheDocument());
     expect(getFindings).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** `CandidateDto` の最小構成（`makeFindingDetail` の `candidates` に足すための補助）。 */
+function makeCandidate(overrides: Partial<CandidateDto> = {}): CandidateDto {
+  return {
+    id: "candidate-1",
+    checkUnitId: "unit-1",
+    perspective: "typo",
+    candidateIndex: 0,
+    llm: {
+      paragraphId: 0,
+      quote: "候補の引用",
+      before: "",
+      after: "",
+      category: "notation",
+      reason: "候補の理由",
+      suggestion: null,
+      verdict: "likely-error",
+    },
+    locateStatus: "located",
+    range: { start: 0, end: 1 },
+    ...overrides,
+  };
+}
+
+// PR21 レビュー指摘 1：「最新の状態を取得」が、選択中の指摘の詳細と採否フォームを更新しない
+// 問題への対応。3 つの経路（getFinding の再取得、未編集フォームの追従、編集中フォームの保護）を
+// それぞれ検査する。
+describe("ResultsPage: PR21 レビュー指摘 1 更新で選択中の指摘の詳細も取り直す", () => {
+  it("同じ指摘が選ばれたままでも、更新後に getFinding が再度呼ばれ、増えた元候補が画面に出る", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1]));
+    const candidate1 = makeCandidate({
+      id: "candidate-1",
+      llm: {
+        paragraphId: 0,
+        quote: "候補その1",
+        before: "",
+        after: "",
+        category: "notation",
+        reason: "理由その1",
+        suggestion: null,
+        verdict: "likely-error",
+      },
+    });
+    const candidate2 = makeCandidate({
+      id: "candidate-2",
+      llm: {
+        paragraphId: 0,
+        quote: "候補その2",
+        before: "",
+        after: "",
+        category: "notation",
+        reason: "理由その2",
+        suggestion: null,
+        verdict: "likely-error",
+      },
+    });
+    const getFinding = vi
+      .fn<() => Promise<FindingDetailDto>>()
+      .mockResolvedValueOnce(makeFindingDetail({ id: "finding-1", candidates: [candidate1] }))
+      .mockResolvedValueOnce(
+        makeFindingDetail({ id: "finding-1", candidates: [candidate1, candidate2] }),
+      );
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("候補その1")).toBeInTheDocument();
+    expect(screen.queryByText("候補その2")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+    expect(getFinding).toHaveBeenLastCalledWith("finding-1");
+    expect(await screen.findByText("候補その2")).toBeInTheDocument();
+    expect(screen.getByText("候補その1")).toBeInTheDocument();
+  });
+
+  it("未編集のフォームは、更新後の新しい採否にラジオが追従する", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const finding1Updated = makeFinding({
+      id: "finding-1",
+      quote: "あ",
+      judgment: {
+        findingId: "finding-1",
+        status: "adopt-planned",
+        note: null,
+        updatedAt: "2026-09-11T00:00:00.000Z",
+      },
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi
+      .fn<() => Promise<FindingDto[]>>()
+      .mockResolvedValueOnce([finding1])
+      .mockResolvedValueOnce([finding1Updated]);
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    await waitFor(() => expect(screen.getByRole("radio", { name: "採用予定" })).toBeChecked());
+    expect(screen.getByRole("radio", { name: "未判断" })).not.toBeChecked();
+  });
+
+  it("編集中のフォームは入力を保ったまま、別の場所で更新された旨が表示される", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const finding1Updated = makeFinding({
+      id: "finding-1",
+      quote: "あ",
+      judgment: {
+        findingId: "finding-1",
+        status: "held",
+        note: null,
+        updatedAt: "2026-09-11T00:00:00.000Z",
+      },
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi
+      .fn<() => Promise<FindingDto[]>>()
+      .mockResolvedValueOnce([finding1])
+      .mockResolvedValueOnce([finding1Updated]);
+    const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
+    // 編集中の入力（却下）は保たれたまま、勝手に上書きされない。
+    expect(screen.getByRole("radio", { name: "却下" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "保留" })).not.toBeChecked();
+    expect(screen.getByText(/採否が別の場所で更新されました/)).toBeInTheDocument();
+  });
+});
+
+// PR21 レビュー指摘 2：採否保存の失敗が、指摘を切り替えるだけで消える問題への対応。
+// `JudgmentControl` は指摘ごとに作り直される（`key={finding.id}`）ため、保存を投げた直後に
+// 別の指摘へ切り替えると操作子がアンマウントされる。それでも失敗が選択を変えても消えない場所
+// （ヘッダー直下）に表示されることを検査する。
+describe("ResultsPage: PR21 レビュー指摘 2 保存の失敗は選択を変えても消えない", () => {
+  it("保存中に別の指摘へ切り替えたあとで保存が失敗しても、失敗がヘッダー直下に表示される", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const finding2 = makeFinding({ id: "finding-2", quote: "い" });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
+    const getFinding = vi.fn((findingId: string) =>
+      Promise.resolve(makeFindingDetail({ id: findingId })),
+    );
+    const putJudgmentDeferred = deferred<JudgmentDto>();
+    const putJudgment = vi.fn(() => putJudgmentDeferred.promise);
+    const client = makeClient({ getRun, getManuscript, getFindings, getFinding, putJudgment });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    const rows = document.querySelectorAll(`.${findingListStyles.findingRow}`);
+    await user.click(rows[0] as HTMLElement);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(putJudgment).toHaveBeenCalledTimes(1));
+    expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" });
+
+    // 保存の応答を待たずに別の指摘へ切り替える。finding-1 の操作子はアンマウントされる。
+    await user.click(rows[1] as HTMLElement);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+    expect(document.querySelector(`.${findingListStyles.detail}`)).not.toBeNull();
+
+    putJudgmentDeferred.reject(new Error("保存に失敗しました（テスト用）"));
+
+    // アンマウント済みの操作子ではなく、選択を変えても消えない場所（ヘッダー直下）に出る。
+    await waitFor(() => {
+      expect(document.querySelector(`.${findingListStyles.judgmentErrorItem}`)).not.toBeNull();
+    });
+    const errorItem = document.querySelector(
+      `.${findingListStyles.judgmentErrorItem}`,
+    ) as HTMLElement;
+    // どの指摘の保存が失敗したのか（引用の先頭）が識別できる。
+    expect(within(errorItem).getByText("あ")).toBeInTheDocument();
+    expect(within(errorItem).getByText(/保存に失敗しました（テスト用）/)).toBeInTheDocument();
   });
 });
 

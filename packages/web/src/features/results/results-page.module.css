@@ -56,6 +56,48 @@
   opacity: 0.6;
 }
 
+/*
+ * 採否の保存の失敗（PR21 レビュー指摘 2）。選択を変えても消えない場所（ヘッダー直下）に出す。
+ * `.error`（更新失敗のエラーと同じ配色）をベースに、複数件を積める一覧にする。
+ */
+.judgmentErrorList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.judgmentErrorItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+/* どの指摘の保存が失敗したかを示す引用。文字列自体は切り詰めず、はみ出しだけ CSS で省略する
+   （`.findingQuote` と同じ理由）。 */
+.judgmentErrorQuote {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.judgmentErrorMessage {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .layout {
   display: flex;
   gap: var(--space-lg);
@@ -309,6 +351,15 @@
   margin: 0;
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
+}
+
+/* PR21 レビュー指摘 1：編集中に別の場所で採否が更新されたことを示す注記。エラーではないので
+   `.error` ではなく控えめな配色にする。 */
+.judgmentUpdatedElsewhere {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
 }
 
 .judgmentNoteLabel {

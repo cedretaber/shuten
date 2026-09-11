@@ -19,13 +19,33 @@
  * 書き換えないことを操作付近に明示する」）は、選んだ状態に関わらず操作子の直下に常時表示する
  * （採用予定を選んだときだけ出す、にはしない——選ぶ前に知っておくべき情報のため）。
  *
+ * **PR21 レビュー指摘 1**：`judgment` prop は「最新の状態を取得」のたびに新しい参照で
+ * 差し替わりうる（同じ指摘が選ばれたままでも、`results-page.tsx` の `fetchAll` が成功するたびに
+ * `getFindings` の応答で `findings` 配列ごと作り直されるため）。**編集していない間**（ラジオ・
+ * メモのどちらも触っていない間）は、この新しい `judgment` に追従してラジオ・メモを更新する。
+ * 「編集したか」は素直な `dirty` フラグで判定する——ラジオを選ぶ・メモを入力するたびに立て、
+ * 保存の成功・失敗のどちらでも下ろす（保存が終われば、入力は「保存前の値」か「今まさに保存した
+ * 値」のどちらかに一致するので、もう「編集中」ではない）。
+ *
+ * 参照比較ではなく `judgment.updatedAt`（サーバーが持つ更新時刻）の変化で「実際に値が変わった
+ * か」を判定する（`processedUpdatedAtRef`）。`findings` 配列は再取得のたびに新しい参照で作られる
+ * ため、値が同じでも参照だけは毎回変わる——参照比較だと、無関係な再取得のたびに誤って
+ * 「別の場所で更新された」表示を出してしまう。
+ *
+ * 編集中に新しい `judgment` が届いたときは、入力を勝手に上書きしない代わりに
+ * `updatedElsewhere` を立てて短い注記を出す（文言は本ファイルの JSX を参照）。保存前の値を
+ * 参照する箇所（失敗時の巻き戻し）は `judgment` prop を直接ではなく `latestJudgmentRef`
+ * （毎レンダーで同期する ref）から読む——`handleSave` はレンダーごとに作り直されるクロージャで、
+ * 保存の応答が返ってくる頃には `judgment` prop がさらに新しくなっている場合があるため、常に
+ * 最新の値を読めるようにする。
+ *
  * MUST NOT：採否の記録は `judgments` への記録だけで、本文（原稿版）には一切触れない
  * （`docs/reference/invariants.md`）。このコンポーネントは原稿を書き換える経路を持たない。
  */
 
 import type { JudgmentDto, JudgmentStatus } from "@shuten/shared";
 import { JUDGMENT_STATUSES } from "@shuten/shared";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { JUDGMENT_STATUS_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
 
@@ -43,6 +63,33 @@ export function JudgmentControl(props: JudgmentControlProps) {
   const [note, setNote] = useState<string>(judgment.note ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 編集済みかどうか（PR21 レビュー指摘 1）。ラジオ・メモのどちらかを触ったら true にする、
+  // 素直な dirty フラグ。true の間は、新しい `judgment` prop が届いても入力を上書きしない。
+  const [dirty, setDirty] = useState(false);
+  // 編集中に、別の場所（「最新の状態を取得」による再取得など）で採否が更新されたことを示す注記。
+  const [updatedElsewhere, setUpdatedElsewhere] = useState(false);
+
+  // 毎レンダーで同期する「常に最新の judgment」参照（コメント冒頭を参照）。失敗時の巻き戻しで、
+  // クロージャに固定された古い `judgment` ではなく常に最新の値を読むために使う。
+  const latestJudgmentRef = useRef(judgment);
+  latestJudgmentRef.current = judgment;
+
+  // 直近に処理した `judgment.updatedAt`。参照ではなく値（サーバーの更新時刻）で「実際に採否が
+  // 変わったか」を判定する（`findings` 配列は再取得のたびに新しい参照で作られるため、参照比較
+  // だと無関係な再取得のたびに誤検知する）。
+  const processedUpdatedAtRef = useRef(judgment.updatedAt);
+
+  useEffect(() => {
+    if (processedUpdatedAtRef.current === judgment.updatedAt) return;
+    processedUpdatedAtRef.current = judgment.updatedAt;
+    if (dirty) {
+      // 編集中は入力を勝手に上書きしない。代わりに「別の場所で更新された」ことだけ示す。
+      setUpdatedElsewhere(true);
+      return;
+    }
+    setStatus(judgment.status);
+    setNote(judgment.note ?? "");
+  }, [judgment, dirty]);
 
   const handleSave = () => {
     setSaving(true);
@@ -51,16 +98,35 @@ export function JudgmentControl(props: JudgmentControlProps) {
     onSave(status, noteToSend).then(
       () => {
         setSaving(false);
+        // 保存が終われば、入力は「今まさに保存した値」に一致するので、もう編集中ではない。
+        // これを下ろしておかないと、この後で届く新しい `judgment` prop（今回の保存自体に
+        // よるもの）を「別の場所での更新」と誤検知してしまう。
+        setDirty(false);
+        setUpdatedElsewhere(false);
       },
       (cause: unknown) => {
         setSaving(false);
-        // 失敗時は入力を保存前の値（judgment prop）に戻す（「保存したつもりで保存されていない」
-        // を作らない）。
-        setStatus(judgment.status);
-        setNote(judgment.note ?? "");
+        // 失敗時は入力を保存前の値に戻す（「保存したつもりで保存されていない」を作らない）。
+        // `judgment` ではなく `latestJudgmentRef.current` を読む——保存の応答が届く頃には
+        // `judgment` prop がさらに新しくなっている場合があるため。
+        const latest = latestJudgmentRef.current;
+        setStatus(latest.status);
+        setNote(latest.note ?? "");
         setError(cause instanceof Error ? cause.message : "保存に失敗しました");
+        setDirty(false);
+        setUpdatedElsewhere(false);
       },
     );
+  };
+
+  const handleStatusChange = (value: JudgmentStatus) => {
+    setStatus(value);
+    setDirty(true);
+  };
+
+  const handleNoteChange = (value: string) => {
+    setNote(value);
+    setDirty(true);
   };
 
   return (
@@ -75,7 +141,7 @@ export function JudgmentControl(props: JudgmentControlProps) {
               value={value}
               checked={status === value}
               disabled={saving}
-              onChange={() => setStatus(value)}
+              onChange={() => handleStatusChange(value)}
             />
             {JUDGMENT_STATUS_LABELS[value]}
           </label>
@@ -87,6 +153,13 @@ export function JudgmentControl(props: JudgmentControlProps) {
         「採用予定」を選んでも本文（原稿）は書き換わりません。本文への反映は別途行ってください。
       </p>
 
+      {/* PR21 レビュー指摘 1：編集中に別の場所で採否が更新されたことを示す注記。 */}
+      {updatedElsewhere && (
+        <p className={styles.judgmentUpdatedElsewhere}>
+          採否が別の場所で更新されました。この入力欄の内容はまだ保存されていません。
+        </p>
+      )}
+
       <label className={styles.judgmentNoteLabel}>
         判断メモ（任意）
         <textarea
@@ -94,7 +167,7 @@ export function JudgmentControl(props: JudgmentControlProps) {
           maxLength={2000}
           value={note}
           disabled={saving}
-          onChange={(event) => setNote(event.target.value)}
+          onChange={(event) => handleNoteChange(event.target.value)}
         />
       </label>
 

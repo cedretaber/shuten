@@ -42,6 +42,16 @@
  * カウンタにする。選択を解除しても・別の指摘を選び直しても本編の再取得は要らないため。
  * 取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲（引用・理由・判定など）は
  * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
+ *
+ * **PR21 レビュー指摘 1**：選択中の指摘の詳細（`getFinding`）は、選択が変わったときだけでなく
+ * 「最新の状態を取得」が成功したときにも取り直す（同じ指摘が選ばれたままだと `selectedFindingId`
+ * 自体は変化しないため、選択変更だけを見る仕組みでは再取得されない。失敗単位の再試行で同じ指摘に
+ * 元候補が増える経路があるため、実際に古びる）。取得処理そのものは `fetchDetail` に切り出し、
+ * 「選択が変わったとき」と「更新が成功し、選択中の指摘があるとき」の両方から呼ぶ。`fetchDetail`
+ * 自身が `detailGenerationRef` を進めるので、古い応答の破棄は従来どおり効く。`fetchAll` から
+ * `selectedFindingId` を直接読まない（`filter` と同じ理由で `fetchAll` の deps に含めていないため、
+ * 古い値を読んでしまう）。代わりに毎レンダーで同期するだけの `selectedFindingIdRef` を介す。
+ *
  * 本文への移動（Task 9、決定 9、仕様 4 の手順 5・5.3）：本文の容器（`.bodyColumn`）に
  * `bodyContainerRef` を持たせ、`navigationTargetOf`（`navigate.ts`）で移動先を決めて
  * `findTargetElement` で要素を探し、`scrollIntoViewIfPossible` で移動する。移動するのは
@@ -61,6 +71,17 @@
  * `JudgmentDto` で該当指摘の `judgment` だけを差し替える（一覧を取り直さない）。失敗は
  * そのまま呼び出し元（`JudgmentControl`）へ伝播させ、その場でのエラー表示・入力の巻き戻しを
  * 任せる（ここで catch して握りつぶさない）。
+ *
+ * **PR21 レビュー指摘 2**：`JudgmentControl` は指摘ごとに作り直される（`FindingDetail` が
+ * `key={finding.id}` を付けているため）。保存を投げた直後に別の指摘へ切り替えると、その操作子は
+ * アンマウントされ、そこにだけ出していたエラー表示は失われる。選択を変えても消えない失敗表示を
+ * 出すため、保存の失敗（どの指摘の、どんな理由でか）を `judgmentErrors`（`Map`）としてこの
+ * コンポーネントへ持ち上げ、ヘッダー直下（`refreshError` と同じ並び）に表示する。`handleSaveJudgment`
+ * は失敗を記録したあとそのまま re-throw するので、`JudgmentControl` がまだマウントされていれば
+ * 従来どおりその場のエラー表示・入力の巻き戻しも行われる（二重に出ることを許容する。選択を
+ * 変えても消えない表示は、ここでしか持てないため）。表示する引用（`quote`）は呼び出し側
+ * （`finding-detail.tsx`）から渡してもらう——ここで `state.findings` を検索すると、`state` を
+ * deps に含めない `handleSaveJudgment` から古い値を読むおそれがあるため。
  */
 
 import type {
@@ -110,6 +131,13 @@ function errorMessageFrom(cause: unknown): string {
 /** `state.kind !== "loaded"` の間、`findings` の代わりに使う空配列。毎回同じ参照にする。 */
 const EMPTY_FINDINGS: readonly FindingDto[] = [];
 
+/** 採否の保存に失敗した指摘 1 件ぶんの表示情報（PR21 レビュー指摘 2）。 */
+interface JudgmentSaveError {
+  /** 保存を試みた時点の引用。どの指摘の保存が失敗したのか利用者が識別できるようにする。 */
+  readonly quote: string;
+  readonly message: string;
+}
+
 export function ResultsPage() {
   const { id } = useParams<{ id: string }>();
   const apiClient = useApiClient();
@@ -135,9 +163,47 @@ export function ResultsPage() {
   const [filter, setFilter] = useState<FindingFilter>(DEFAULT_FINDING_FILTER);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
 
+  // `fetchAll` の更新成功コールバックから「今選ばれている指摘」を読むための ref
+  // （PR21 レビュー指摘 1）。`fetchAll` の deps に `selectedFindingId` を含めたくない（`filter` と
+  // 同じ理由——選択のたびに `fetchAll` を作り直したくない）ため、レンダーのたびに素直に同期する
+  // だけの ref で渡す（`useEffect` を挟まない。値を読むのは非同期コールバックの中だけなので、
+  // コミット前のタイミングでも実害は無い）。
+  const selectedFindingIdRef = useRef<string | null>(selectedFindingId);
+  selectedFindingIdRef.current = selectedFindingId;
+
   // 同一コンポーネントインスタンスのまま id が変わる（別の実行への直リンク遷移）ことがある。
   // 古い要求の応答が後から届いて新しい要求の結果を上書きしないよう、要求ごとに世代を数える。
   const requestGenerationRef = useRef(0);
+
+  // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに、または更新が成功した
+  // ときに `getFinding` を 1 回呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」の
+  // とおり）。`requestGenerationRef`（本編の取得）とは別の世代カウンタで、呼び直すたびに世代を
+  // 進めて古い応答を捨てる。`fetchAll` から呼ぶため、`fetchAll` より前に定義する。
+  const [findingDetail, setFindingDetail] = useState<FindingDetailDto | null>(null);
+  const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
+  const detailGenerationRef = useRef(0);
+
+  const fetchDetail = useCallback(
+    (findingId: string) => {
+      const generation = ++detailGenerationRef.current;
+      // 呼び直した直後は前の詳細を出さない（取得中は「一覧が持つ情報だけで描く」状態にする。
+      // `FindingDetail` 側が `detail === null` を「読み込み中」として扱う）。
+      setFindingDetail(null);
+      setFindingDetailError(null);
+      apiClient.getFinding(findingId).then(
+        (detail) => {
+          if (detailGenerationRef.current !== generation) return; // 古い応答
+          setFindingDetail(detail);
+        },
+        (cause: unknown) => {
+          if (detailGenerationRef.current !== generation) return;
+          // 詳細の取得失敗は詳細パネルの当該欄にだけエラーを出す（詳細全体を消さない）。
+          setFindingDetailError(errorMessageFrom(cause));
+        },
+      );
+    },
+    [apiClient],
+  );
 
   const fetchAll = useCallback(
     (mode: "initial" | "refresh") => {
@@ -184,6 +250,15 @@ export function ResultsPage() {
               // `useEffect`（下）に一本化する。ここでは選択を触らない（最終レビュー Important 2。
               // ここで `filter` を見て判定しようとしないこと——`fetchAll` の deps に `filter` が
               // 無く、古い値を読んでしまう）。
+              //
+              // PR21 レビュー指摘 1：更新が成功し、かつ選択中の指摘があれば詳細も取り直す。
+              // 同じ指摘が選ばれたままだと `selectedFindingId` 自体は変化しないため、選択変更
+              // だけを見る useEffect では再取得が走らない（失敗単位の再試行で同じ指摘に元候補が
+              // 増える経路があり、実際に古くなる）。`fetchDetail` 自身が `detailGenerationRef` を
+              // 進めるので、古い応答の破棄は従来どおり効く。
+              if (mode === "refresh" && selectedFindingIdRef.current !== null) {
+                fetchDetail(selectedFindingIdRef.current);
+              }
             })
             .catch((cause: unknown) => {
               if (requestGenerationRef.current !== generation) return;
@@ -221,7 +296,7 @@ export function ResultsPage() {
         },
       );
     },
-    [apiClient, id],
+    [apiClient, id, fetchDetail],
   );
 
   // 初回・再読み込み・直リンクのいずれでも、表示時に 1 回だけ取得する。id が変わったときも
@@ -286,55 +361,65 @@ export function ResultsPage() {
     setFilter(next);
   }, []);
 
-  // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに 1 回だけ `getFinding` を
-  // 呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。`requestGenerationRef`
-  // （本編の取得）とは別の世代カウンタで、選び直すたびに世代を進めて古い応答を捨てる。
-  const [findingDetail, setFindingDetail] = useState<FindingDetailDto | null>(null);
-  const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
-  const detailGenerationRef = useRef(0);
-
+  // 選択中の指摘 ID が変わるたびに詳細を取り直す（`fetchDetail` に切り出し済み。上記コメント参照）。
   useEffect(() => {
     if (selectedFindingId === null) {
       setFindingDetail(null);
       setFindingDetailError(null);
       return;
     }
-    const generation = ++detailGenerationRef.current;
-    // 選び直した直後は前の詳細を出さない（取得中は「一覧が持つ情報だけで描く」状態にする。
-    // `FindingDetail` 側が `detail === null` を「読み込み中」として扱う）。
-    setFindingDetail(null);
-    setFindingDetailError(null);
-    apiClient.getFinding(selectedFindingId).then(
-      (detail) => {
-        if (detailGenerationRef.current !== generation) return; // 古い応答（選び直した後）
-        setFindingDetail(detail);
-      },
-      (cause: unknown) => {
-        if (detailGenerationRef.current !== generation) return;
-        // 詳細の取得失敗は詳細パネルの当該欄にだけエラーを出す（詳細全体を消さない）。
-        setFindingDetailError(errorMessageFrom(cause));
-      },
-    );
-  }, [apiClient, selectedFindingId]);
+    fetchDetail(selectedFindingId);
+  }, [selectedFindingId, fetchDetail]);
+
+  // 採否の保存に失敗した指摘の一覧（PR21 レビュー指摘 2）。`findingId` をキーにする——同じ指摘で
+  // 保存をやり直せば、成功時にも新しい失敗時にもこのキーが上書き・削除されるので二重に残らない。
+  const [judgmentErrors, setJudgmentErrors] = useState<ReadonlyMap<string, JudgmentSaveError>>(
+    new Map(),
+  );
 
   // 採否と判断メモ（Task 8、決定 13）。`putJudgment` の呼び出しはここに閉じる（状態の持ち主を
   // 1 か所にする。`JudgmentControl` は onSave を呼ぶだけで API を直接呼ばない）。
   const handleSaveJudgment = useCallback(
-    (findingId: string, status: JudgmentStatus, note: string | null): Promise<void> => {
+    (
+      findingId: string,
+      status: JudgmentStatus,
+      note: string | null,
+      quote: string,
+    ): Promise<void> => {
       const body: PutJudgmentRequest = note === null ? { status } : { status, note };
-      return apiClient.putJudgment(findingId, body).then((judgment) => {
-        // 成功したら応答の JudgmentDto で該当指摘の judgment だけを差し替える
-        // （一覧を取り直さない。一覧の行の採否表示もこの差し替えで更新される）。
-        setState((current) => {
-          if (current.kind !== "loaded") return current;
-          return {
-            ...current,
-            findings: current.findings.map((f) => (f.id === findingId ? { ...f, judgment } : f)),
-          };
-        });
+      // 新しい試みを始めるので、その指摘の前回の失敗表示は結果が出るまで一旦消す。
+      setJudgmentErrors((prev) => {
+        if (!prev.has(findingId)) return prev;
+        const next = new Map(prev);
+        next.delete(findingId);
+        return next;
       });
-      // 失敗時はここで catch しない。呼び出し元（JudgmentControl）に reject を伝え、
-      // その場でのエラー表示・入力の巻き戻しを行わせる。
+      return apiClient.putJudgment(findingId, body).then(
+        (judgment) => {
+          // 成功したら応答の JudgmentDto で該当指摘の judgment だけを差し替える
+          // （一覧を取り直さない。一覧の行の採否表示もこの差し替えで更新される）。
+          setState((current) => {
+            if (current.kind !== "loaded") return current;
+            return {
+              ...current,
+              findings: current.findings.map((f) => (f.id === findingId ? { ...f, judgment } : f)),
+            };
+          });
+        },
+        (cause: unknown) => {
+          // PR21 レビュー指摘 2：`JudgmentControl` は指摘ごとに作り直される（`key={finding.id}`）
+          // ため、保存を投げた直後に別の指摘へ切り替えると、その場のエラー表示はアンマウントで
+          // 消えてしまう。選択を変えても消えない表示として、ここに記録してから re-throw する
+          // （呼び出し元がまだマウントされていれば、従来どおりその場のエラー表示・入力の巻き戻しも
+          // 行われる。二重に出ることは許容する——選択を変えても消えない表示は、ここでしか持てない）。
+          setJudgmentErrors((prev) => {
+            const next = new Map(prev);
+            next.set(findingId, { quote, message: errorMessageFrom(cause) });
+            return next;
+          });
+          throw cause;
+        },
+      );
     },
     [apiClient],
   );
@@ -432,6 +517,22 @@ export function ResultsPage() {
           {/* 更新（再取得）の失敗（最終レビュー Important 1）：`loaded` の内容は残したまま、
               エラーだけを添えて見せる。本文・一覧・詳細・選択は消えない。 */}
           {refreshError !== null && <p className={styles.error}>{refreshError}</p>}
+
+          {/* PR21 レビュー指摘 2：採否の保存の失敗。選択を変えても消えない場所（ヘッダー直下、
+              上の更新失敗と同じ並び）に出す。どの指摘の保存が失敗したかを引用で示す（切り詰めない
+              ——はみ出しは CSS の省略表示に任せる。`.findingQuote` などと同じ理由）。 */}
+          {judgmentErrors.size > 0 && (
+            <ul className={styles.judgmentErrorList}>
+              {Array.from(judgmentErrors).map(([findingId, entry]) => (
+                <li key={findingId} className={styles.judgmentErrorItem}>
+                  <span className={styles.judgmentErrorQuote}>{entry.quote}</span>
+                  <span className={styles.judgmentErrorMessage}>
+                    の採否の保存に失敗しました：{entry.message}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {!isSettingsStop(state.run) && (
             <div className={styles.layout}>

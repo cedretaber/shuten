@@ -89,11 +89,14 @@ export interface FindingDetailProps {
   /**
    * 採否の保存を試みる（Task 8、決定 13）。`putJudgment` の呼び出しと成功時の `findings` への
    * 反映は呼び出し側（`results-page.tsx`）の責務。失敗したら reject する。
+   * `quote` は保存を試みた時点の引用（PR21 レビュー指摘 2）。呼び出し側が「どの指摘の保存が
+   * 失敗したか」を選択を跨いで表示するために使う。
    */
   readonly onSaveJudgment: (
     findingId: string,
     status: JudgmentStatus,
     note: string | null,
+    quote: string,
   ) => Promise<void>;
 }
 
@@ -207,7 +210,7 @@ export function FindingDetail(props: FindingDetailProps) {
         <JudgmentControl
           key={finding.id}
           judgment={finding.judgment}
-          onSave={(status, note) => onSaveJudgment(finding.id, status, note)}
+          onSave={(status, note) => onSaveJudgment(finding.id, status, note, finding.quote)}
         />
       </section>
 
