@@ -190,9 +190,13 @@ select candidates.id, candidates.finding_id, check_units.perspective, candidates
 
 - 指摘 A に `candidate_index` 0 と 4、指摘 B に 1 と 2、指摘 C に 3 を与える（**飛び番かつ交互**）。
   A の `reasons` は `candidate_index` 0 → 4 の順、B は 1 → 2 の順になること。
-- 同じ実行に `outside-target`（`finding_id` が null）の候補を 1 件混ぜ、どの指摘の `reasons` にも
-  現れないこと。**これが見分けるのは「候補を実行単位でひとまとめにして全指摘に配る」ような
-  取り違えであって、`finding_id is not null` の有無ではない**（決定 2）。
+- 指摘 A・B にそれぞれ固有の理由を持たせ、同じ実行に `outside-target`（`finding_id` が null）の
+  候補も 1 件混ぜる。**A の `reasons` は A のものだけ、B の `reasons` は B のものだけ**であることを
+  完全一致（`toEqual`）で検査し、`outside-target` がどちらにも現れないことも見る。
+  「`outside-target` が混ざらない」だけを見る形にはしない——`finding_id is not null` を残す限り
+  その候補はそもそも取得されないので、**畳み込みを取り違えても通ってしまう**
+  （レビュー Important。決定 2 も参照）。**見分けたい誤りは「取得した候補を全指摘に配る」
+  ことである**から、他の指摘の理由が混ざったら落ちる形でなければならない。
 - 観点が異なる候補（`typo` と `naturalness`。`Perspective` はこの 2 つだけである。
   `packages/shared/src/llm/schema.ts`）を 1 つの指摘に統合し、`perspective` が候補ごとに
   正しく付くこと（`check_units` との結合が指摘単位に潰れていないこと）。
@@ -203,7 +207,7 @@ select candidates.id, candidates.finding_id, check_units.perspective, candidates
 | --- | --- | --- |
 | C1 | `listFindings` が飛び番・交互の `candidate_index` でも各指摘の `reasons` を昇順で返す（決定 10） | `db/repositories/findings.test.ts` |
 | C2 | `listFindings` が観点の違う複数候補を 1 指摘の `reasons` に正しく並べる（決定 10） | `db/repositories/findings.test.ts` |
-| C3 | `outside-target`（`finding_id` が null）の候補がどの `reasons` にも混ざらない。見分けるのは「候補を実行単位で全指摘に配る」取り違えで、`finding_id is not null` の有無ではない（決定 2） | `db/repositories/findings.test.ts` |
+| C3 | 指摘 A・B の `reasons` がそれぞれ自分の候補だけであることを完全一致で検査し、`outside-target` の候補がどちらにも混ざらない（決定 2・10） | `db/repositories/findings.test.ts` |
 | C4 | 一覧の応答が理由 2 件・再確認あり／なし・採否ありの指摘で従来どおりであること（決定 6） | `api/findings.test.ts` |
 | C5 | `judgments` の行が無い指摘の一覧が 500 `internal`（既存テストをそのまま通す。決定 4） | `api/findings.test.ts`（既存） |
 | C6 | 指摘 3 件と 30 件で、`GET /api/runs/:id/findings` が実行する SQL 文の本数が等しく、上限以下（決定 7） | `api/findings.query-count.test.ts`（新規） |
@@ -247,7 +251,10 @@ test）なので、現状の実装でも通る。通ることに意味がある�
 3. C1〜C3 と既存の `findings.test.ts`（リポジトリ）が通ることを確認する。
 4. **確かめ方**：バッチ化を意図的に壊して、C1〜C3 が落ちることを 1 件ずつ実測する。
    - `order by` を `candidates.id` にする → C1 が落ちる
-   - `Map` のキーを `finding_id` ではなく `run_id` にして全候補を全指摘に配る → C3 が落ちる
+   - `Map` を使わず、取得した候補すべてを各指摘の `reasons` に渡す → C3 が落ちる
+     （A に B の理由が混ざるため。`Map` のキーを `run_id` にする変異は使わない——
+     `outside-target` の不在しか見ない C3 なら通ってしまうのと同じ理由で、
+     **C3 が A・B の理由を完全一致で検査している**ことが前提の変異である）
    - `perspective` を指摘の先頭候補の値で埋める → C2 が落ちる
 
    **`finding_id is not null` を外す変異は使わない。** それでは応答が変わらないのでどのテストも
