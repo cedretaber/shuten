@@ -87,7 +87,11 @@ function requirePerspective(db: AppDatabase, candidate: CandidateRecord) {
   return unit.perspective;
 }
 
-/** 一覧・詳細に共通の `FindingDto` を組み立てる（再確認要約・採否を添える）。 */
+/**
+ * 詳細（`GET /api/findings/:id`）向けに `FindingDto` を組み立てる（再確認要約・採否を添える）。
+ * 一覧は指摘 1 件ごとに問い合わせず、実行 1 件ぶんの `Map` から引いて `toFindingDto` を直接呼ぶ
+ * ので、この関数を通らない（決定 4）。
+ */
 function buildFindingDto(db: AppDatabase, finding: FindingWithReasons) {
   const recheck = findRecheckUnitByFinding(db, finding.id);
   const judgment = requireJudgment(db, finding.id);
