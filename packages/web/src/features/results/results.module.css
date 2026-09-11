@@ -1,0 +1,42 @@
+/**
+ * 本文の描画（body-view.tsx）が使うスタイル。
+ *
+ * 選択の塗り分けは props 経由で React に描かせる設計（決定 6）なので、ここでは
+ * 「選択用 class が付いているかどうか」で見た目を変えるだけで、DOM を直接書き換える
+ * スタイル切り替え（例: ref から class を付け外し）は行わない。
+ */
+
+.body {
+  /* 段落内の空白・全角字下げを保つ。改行文字自体は DOM に入れず、段落ブロック（<p>）が
+     改行を担う。white-space は継承されるので <p> 側では指定しない。 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  line-height: 1.7;
+}
+
+.paragraph {
+  /* 空段落（segments が空）は中身が無く高さ 0 のままだと、margin-top・margin-bottom が
+     自己相殺したうえで前後の段落の margin と 1 つに潰れ、空行が見た目上消えてしまう
+     （CSS のマージン相殺）。jsdom は getBoundingClientRect が常に 0 を返すためテストでは
+     捕まえられない。min-height で本文 1 行ぶんの高さを与えて潰れないようにする
+     （ブリーフの「空段落は min-height でつぶさない」＝ min-height で防ぐ、の指示）。 */
+  min-height: 1.7em;
+  margin: 0 0 var(--space-md);
+}
+
+.paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.highlight {
+  cursor: pointer;
+  border-radius: 2px;
+  background-color: var(--color-highlight-bg);
+  box-shadow: inset 0 -0.15em 0 0 var(--color-highlight-border);
+}
+
+.highlightSelected {
+  background-color: var(--color-highlight-selected-bg);
+  box-shadow: inset 0 -0.15em 0 0 var(--color-accent);
+}
