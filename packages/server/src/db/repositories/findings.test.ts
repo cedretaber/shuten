@@ -1223,9 +1223,13 @@ describe("db/repositories/findings", () => {
     // 偶然一致してテストが通ってしまうため（R18b と同じ姿勢）。
     //
     // さらに、insert の順序（したがって SQLite の rowid 順）を candidate_index の昇順とは
-    // 逆にする（candidate_index 4 → 3 → 2 → 1 → 0 の順で insert する）。挿入順のままだと
-    // orderBy を丸ごと外す取り違えでも SQLite が偶然 rowid 順（≒挿入順）で返し、たまたま
-    // candidate_index の昇順と一致して見分けられなくなるため（レビュー Minor 2）。
+    // 逆にする（candidate_index 4 → 3 → 2 → 1 → 0 の順で insert する）。
+    // ただし**これは「orderBy を丸ごと外す」取り違えの検出には効かない**。その変異は
+    // candidates_run_id_candidate_index_key（run_id, candidate_index）の索引探索により
+    // ORDER BY の有無にかかわらず candidate_index 昇順で返るため、投入順を何にしても
+    // 見分けられないことを実測で確かめてある（計画書 docs/plans/2026-09-11-pr12c-findings-batch.md
+    // の決定 2）。この逆転が効くのは、その索引が使われなくなった／変わった場合に
+    // 並びが崩れたことを気づけるようにする保険としてである。
     insertCandidate(db, {
       id: "c-a-a",
       runId: run.id,
