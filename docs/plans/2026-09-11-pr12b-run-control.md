@@ -112,6 +112,10 @@
 
 `save-rolled-back` を重い側に置くのは、保存の巻き戻しで指摘が消えうるためである。
 
+**初回読み込みの直後に `onOpen` で重い取り直しが 1 回重なるのは意図的である。** サーバーは再送しない
+（`events.ts` の規則 7）ので、最初の `getRun` と購読の確立の間に起きた出来事は他に埋めようがない。
+無駄な 1 回に見えるが、これを削ると「読み込み → 購読」の隙間の取りこぼしが恒久的に残る。
+
 ### 決定 3：再取得は合流させる。デバウンスは入れない
 
 `GET /api/runs/:id/findings` は実質 3N+1 で、指摘 800 件のとき中央値 110〜130 ms かかる
@@ -125,6 +129,15 @@
 
 固定時間のデバウンスは入れない。取り直しの所要時間そのものが間隔を決めるので、遅い環境ほど自然に
 間隔が空く。測っていない待ち時間を足さない。
+
+**手動の取り直し（「最新の状態を取得」）も同じ門を通す。** 自動の取り直しが走っている最中に押されたら、
+`dirtyRef` に `"heavy"` を積み、**追い取得が終わるまで** `refreshing` を立て続ける
+（失敗は手動側の `refreshError` に出す。決定 4）。門を通さないと 3N+1 の取得が 2 本同時に走るか、
+「更新中…」と出ているのに実際には何も走っていない状態になる。
+
+**初回読み込みでも `/units` を取る**（`getRun` / `getFindings` / `getManuscript` と同じ 1 回目）。
+後回しにすると `controlAvailability(run, null)` が最初の描画で「再試行できない」と判断し、
+失敗単位の再試行ボタンが一拍遅れて現れる。
 
 ### 決定 4：SSE 由来の取り直しは「静かに」行う
 
@@ -155,7 +168,9 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
   問い合わせを触る PR）と衝突する。PR12b は web だけで閉じる方が安全。
 
 `/units` は `GET /api/runs/:id` と同じ頻度で取り直す（決定 2 の「軽い取り直し」に含める）。
-`/units` は単位 1 件 1 行の素直な問い合わせで、3N+1 にはなっていない。
+`buildRunUnits`（`packages/server/src/api/run-view.ts`）は一覧の問い合わせ 3 本
+（対象・検査単位・再確認単位）だけで、`findings` のような単位ごとの追加問い合わせを出さない
+（確認済み）。3N+1 にはなっていない。
 
 表示は `progress`（合計）と `/units`（観点別）の両方を使う。合計は `progress` を正とする
 （`/units` を数え直した値と食い違ったら `progress` を出す。どちらもサーバーの同じ DB から来るが、
@@ -207,6 +222,10 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 - 副：**「確認だけ記録する（この検査は再開しない）」** → `POST /api/recovery/confirm`。
   この実行を続けずに、別の新しい検査を始めたいときの経路。`confirmRecovery` は実行の `status` を
   変えずにゲートだけ開ける。
+
+副のボタンを押した後、実行は `recovery-waiting` のまま `recoveryConfirmedAt !== null` になる
+（`confirmRecovery` は `status` を変えない）。この状態では「復旧の確認を記録済みです。」と出し、
+**副のボタンを隠す**（主の「確認して再開」は残す）。
 
 どちらのボタンにも「時間が経ったことは終了の証拠になりません。LM Studio 側で生成が止まったことを
 確かめてから押してください。」を添える（仕様 8.2「時間経過を終了の証拠とみなさない」）。
@@ -265,6 +284,8 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 なったものを落とす。`run-settled` の後は集合を空にする。`check-finished` の DTO は `targetIndex` と
 `perspective` しか持たず `unitId` を持たないので、イベントだけでは対応が取れない。`/units` の
 `id` と突き合わせる（決定 5 で取っているので追加の要求は要らない）。
+`generation-slow` の `unitId` は**検査単位と再確認単位のどちらでもありうる**ので、
+突き合わせは `checkUnits` と `recheckUnits` の両方を見る。
 
 ### 決定 11：進捗の表し方
 
@@ -358,6 +379,11 @@ export interface RunEventHandlers {
   **中身はログにも画面にも出さない**（原稿の断片・接続先が混ざりうる）。
 - `run-settled` を受けたら、`onEvent` を呼ぶ前に `close()` する（決定 1）。
 - `: ping` は `EventSource` がコメントとして無視する（何もしなくてよい）。
+- **注入点は `ApiClient` に一本化する。** `ResultsPage` は `<Route>` が props 無しで描くので、
+  画面のテストから直接 `deps` を渡せない。`createApiClient({ fetch, EventSource })` に構築子を受け、
+  `ApiClient` に `subscribeRunEvents(runId, handlers): () => void` を足す。
+  `App({ client })` が唯一の注入点である状態を崩さない（PR11 決定 14）。`subscribeRunEvents`
+  そのものは `api/events.ts` の独立した関数として持ち、`client.ts` はそれを包むだけにする。
 
 ### 決定 17：文言とラベルの置き場所
 
@@ -423,12 +449,17 @@ S1 の手順（Playwright、`pnpm dev`）：
 
 1. 合成の原稿（同じ段落を繰り返した 1 万字程度。**実原稿を使わない**）を貼って検査を開始する。
    LM Studio に接続しない状態なら実行はすぐ終端状態になる。
-2. `/runs/:id` を開き、Network に `/events` の要求が**ちょうど 1 本**で止まることを見る
-   （決定 1 の無限ループが無いこと）。
+2. `/runs/:id` を開き、Network に `/events` の要求が**1 本も出ない**ことを見る
+   （決定 1 の規則 2：終端状態の実行では購読しない）。
 3. 本文を下までスクロールし、右側の一覧・詳細が画面に残ることを見る（決定 15）。
 4. 画面の写真・原稿・接続先はコミットしない。
 
-実 LLM を動かしての「実行中」の表示は、この環境では確認できない。PR 本文に**未確認**と明記し、
+**この手順では決定 1 の無限ループそのものは踏めない**（LM Studio が無いと実行は画面を開く前に
+終端状態になり、購読が 1 本も張られないため）。無限ループの担保は B2（単体テスト）で、S1 は
+「終端状態で購読しない」ことと決定 15 の目視だけを見る。
+
+実 LLM を動かしての「実行中」の表示（進捗の更新、遅延の通知、停止の効き方、`run-settled` 後に
+`/events` が増え続けないこと）は、この環境では確認できない。PR 本文に**未確認**と明記し、
 ユーザーの手元での確認に委ねる（Windows 未確認と同じ扱い）。
 
 ---
@@ -503,7 +534,13 @@ resumeRun(runId: string): Promise<RunDto>;
 retryFailedUnits(runId: string, body?: { unitIds: readonly string[] }): Promise<RunDto>;
 getRecovery(options?: { signal?: AbortSignal }): Promise<RecoveryDto>;
 confirmRecovery(runId: string): Promise<RecoveryDto>;
+/** Task 2 の `subscribeRunEvents` を包むだけ（決定 16）。実装は Task 2 で入れ、ここでは型だけ置かない。 */
+subscribeRunEvents(runId: string, handlers: RunEventHandlers): () => void;
 ```
+
+`subscribeRunEvents` も**このタスクで `ApiClient` に足す**（中身は Task 2 で実装するので、
+ここでは `api/events.ts` に置く仮実装——購読せず何もしない `unsubscribe` を返す——でよい）。
+`ApiClient` を丸ごと偽装しているテストはこのタスクで 1 度だけ直す（7 つまとめて足し、2 度壊さない）。
 
 - `stop` / `resume` / `retry-failed` の 202 の本文は `{ run: RunDto }`。`@shuten/shared` に同じ形は
   無いので、`client.ts` の中に `z.object({ run: runDtoSchema }).strict()` を持ち、`run` だけを返す
@@ -514,9 +551,10 @@ confirmRecovery(runId: string): Promise<RecoveryDto>;
 - ラベル：`labels.ts` に `PERSPECTIVE_LABELS`（`typo` →「誤字・脱字」、`naturalness` →
   「日本語の自然さ」）と `FAILURE_ORIGIN_LABELS`（`ensure-loaded` →「モデルの準備」、
   `chat` →「生成」、`local` →「アプリ内」）を足し、`satisfies Record<...>` で網羅を担保する。
-  `finding-detail.tsx` と `run-settings-form.tsx` のローカル定義を削り、`labels.ts` から引く
-  （文言は変えない。`finding-detail.tsx` の「`labels.ts`（変更禁止）」というコメントは
-  PR12a のタスク都合なので、この移設に合わせて消す）。
+  `finding-detail.tsx` のローカル定義は削って `labels.ts` から引く（両者の文言は一致しているのを
+  確認済み。「`labels.ts`（変更禁止）」というコメントは PR12a のタスク都合なので消す）。
+  **`features/settings/run-settings-form.tsx` は触らない**：設定画面が結果画面の
+  `features/results/` を参照するのは層が逆で、重複を消すために依存の向きを壊さない。
 
 **Steps**
 
@@ -803,6 +841,9 @@ export function useRunStream(options: RunStreamOptions): void;
    左右が独立してスクロールするようにする。`tokens.css` の値を使う。
 2. `pnpm dev` を起動し、Playwright で S1 の手順 1〜4 を実施する。
    **合成の原稿を使う**（同じ段落の繰り返し。実原稿・個人情報を入れない）。
+   **利用者の実データに触れないよう、`SHUTEN_DATA_DIR` をスクラッチの一時ディレクトリに向け、
+   `SHUTEN_PORT` も既定（3000）から変えて起動する**（既定では `.data/shuten.db` を開く。
+   `packages/server/src/config.ts`・`db/path.ts`）。
 3. 確認結果（`/events` の本数、スクロールの独立）を作業報告に書く。画像はコミットしない。
 4. `pnpm check` → コミット。
 
