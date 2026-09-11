@@ -45,10 +45,32 @@ export interface ResolvedTruthEntry {
   readonly range: Range;
 }
 
+/**
+ * 解決に失敗した理由。`--report` に段落本文と一致位置を差し込めるよう、文字列化する前の
+ * 構造を保つ（決定 4）。`paragraph-out-of-range` は段落自体が存在しないので、`--report` 側は
+ * 本文を出さない分岐になる。
+ */
+export type TruthResolveFailureReason =
+  | { readonly kind: "paragraph-out-of-range"; readonly paragraphCount: number }
+  | { readonly kind: "no-match" }
+  | { readonly kind: "not-enough-matches"; readonly matchCount: number }
+  | { readonly kind: "error-normal-overlap"; readonly otherId: string };
+
+export interface TruthResolveFailure {
+  readonly entryId: string;
+  readonly paragraphId: number;
+  readonly reason: TruthResolveFailureReason;
+  /**
+   * 標準出力・標準エラーにそのまま出してよい 1 行。
+   * 引用（`quote`）と原稿本文を含めない（決定 9）。
+   */
+  readonly message: string;
+}
+
 /** 解決の失敗は 1 件ずつではなく全件を返す（決定 4）。 */
 export type TruthResolveResult =
   | { readonly ok: true; readonly value: readonly ResolvedTruthEntry[] }
-  | { readonly ok: false; readonly errors: readonly string[] };
+  | { readonly ok: false; readonly failures: readonly TruthResolveFailure[] };
 
 // --- zod スキーマ（決定 2 の値域の表を固定する） ------------------------------------------------
 
@@ -188,6 +210,10 @@ export function parseTruthFile(
 /**
  * `paragraphRange` の内側で `quote` に完全一致する範囲をすべて集める。
  * 書記素境界の内側に落ちる一致（開始・終了のどちらかが境界でない）は採らない（仕様書 6.3 と同じ規則）。
+ *
+ * 一致は 1 文字ずつ前進しながら探すため、`quote` が自己重複する場合（例：本文「あああ」に対する
+ * `quote: "ああ"`）は重なった一致も別々に数える。`packages/shared` の `locateQuote` と同じ数え方
+ * （決定 4 は occurrence の数え方まで規定していないため、検査側の既存規則に揃えた）。
  */
 function findQuoteMatches(
   text: string,
@@ -220,12 +246,14 @@ function rangesOverlap(a: Range, b: Range): boolean {
  * - 一致が `occurrence` 件に満たない
  * - `error` の項目と `normal` の項目の範囲が重なる（正解として矛盾している）
  *
- * エラー文言に引用・原稿本文は含めない。`id`・`paragraphId`・見つかった件数・`occurrence` の値だけを使う。
+ * `message` に引用・原稿本文は含めない。`id`・`paragraphId`・見つかった件数・`occurrence` の値だけを使う。
+ * 段落本文や一致位置が要る `--report` は、`reason`（と `entryId`・`paragraphId`）を材料に
+ * 呼び出し側（Task 6）が別途組み立てる。
  */
 export function resolveTruthEntries(truth: TruthFile, text: string): TruthResolveResult {
   const paragraphs = splitParagraphs(text);
   const index = buildGraphemeIndex(text);
-  const errors: string[] = [];
+  const failures: TruthResolveFailure[] = [];
   const resolved: ResolvedTruthEntry[] = [];
 
   for (const entry of truth.entries) {
@@ -235,23 +263,32 @@ export function resolveTruthEntries(truth: TruthFile, text: string): TruthResolv
         paragraphs.length === 0
           ? "有効な段落 ID はありません"
           : `有効な段落 ID は 0〜${String(paragraphs.length - 1)}`;
-      errors.push(
-        `${entry.id}: paragraphId ${String(entry.paragraphId)} は範囲外です（段落数 ${String(paragraphs.length)}、${validRange}。段落 ID は 0 起点で、空行も 1 段落として数えます）`,
-      );
+      failures.push({
+        entryId: entry.id,
+        paragraphId: entry.paragraphId,
+        reason: { kind: "paragraph-out-of-range", paragraphCount: paragraphs.length },
+        message: `${entry.id}: paragraphId ${String(entry.paragraphId)} は範囲外です（段落数 ${String(paragraphs.length)}、${validRange}。段落 ID は 0 起点で、空行も 1 段落として数えます）`,
+      });
       continue;
     }
 
     const matches = findQuoteMatches(text, paragraph.range, entry.quote, index);
     if (matches.length === 0) {
-      errors.push(
-        `${entry.id}: paragraphId ${String(entry.paragraphId)} 内に quote と完全一致する箇所が見つかりません`,
-      );
+      failures.push({
+        entryId: entry.id,
+        paragraphId: entry.paragraphId,
+        reason: { kind: "no-match" },
+        message: `${entry.id}: paragraphId ${String(entry.paragraphId)} 内に quote と完全一致する箇所が見つかりません`,
+      });
       continue;
     }
     if (matches.length < entry.occurrence) {
-      errors.push(
-        `${entry.id}: paragraphId ${String(entry.paragraphId)} 内の一致は ${String(matches.length)} 件で、occurrence（${String(entry.occurrence)}）に届きません`,
-      );
+      failures.push({
+        entryId: entry.id,
+        paragraphId: entry.paragraphId,
+        reason: { kind: "not-enough-matches", matchCount: matches.length },
+        message: `${entry.id}: paragraphId ${String(entry.paragraphId)} 内の一致は ${String(matches.length)} 件で、occurrence（${String(entry.occurrence)}）に届きません`,
+      });
       continue;
     }
 
@@ -273,15 +310,23 @@ export function resolveTruthEntries(truth: TruthFile, text: string): TruthResolv
         continue;
       }
       if (rangesOverlap(a.range, b.range)) {
-        errors.push(
-          `${a.entry.id} と ${b.entry.id} は kind が異なるのに範囲が重なっています（正解として矛盾しています）`,
-        );
+        // 組は必ず一方が error・他方が normal（同じ kind 同士は上でスキップ済み）。
+        // entryId は常に error 側、otherId は常に normal 側に決定的に割り当てる
+        // （ループの並び順に依存させないため）。
+        const errorSide = a.entry.kind === "error" ? a : b;
+        const normalSide = a.entry.kind === "error" ? b : a;
+        failures.push({
+          entryId: errorSide.entry.id,
+          paragraphId: errorSide.entry.paragraphId,
+          reason: { kind: "error-normal-overlap", otherId: normalSide.entry.id },
+          message: `${errorSide.entry.id} と ${normalSide.entry.id} は kind が異なるのに範囲が重なっています（正解として矛盾しています）`,
+        });
       }
     }
   }
 
-  if (errors.length > 0) {
-    return { ok: false, errors };
+  if (failures.length > 0) {
+    return { ok: false, failures };
   }
   return { ok: true, value: resolved };
 }

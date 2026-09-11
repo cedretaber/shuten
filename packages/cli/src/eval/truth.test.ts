@@ -310,19 +310,55 @@ describe("resolveTruthEntries", () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
 
-      expect(result.errors).toHaveLength(4);
-      const joined = result.errors.join("\n");
+      expect(result.failures).toHaveLength(4);
+      const byId = new Map(result.failures.map((f) => [f.entryId, f]));
+
+      const toofar = byId.get("e-toofar");
+      expect(toofar?.paragraphId).toBe(5);
+      expect(toofar?.reason).toEqual({ kind: "paragraph-out-of-range", paragraphCount: 3 });
+
+      const notfound = byId.get("e-notfound");
+      expect(notfound?.paragraphId).toBe(0);
+      expect(notfound?.reason).toEqual({ kind: "no-match" });
+
+      const insufficient = byId.get("e-insufficient");
+      expect(insufficient?.paragraphId).toBe(1);
+      expect(insufficient?.reason).toEqual({ kind: "not-enough-matches", matchCount: 2 });
+
+      // error 側が entryId、normal 側が reason.otherId になる（決定的な割り当て）。
+      const overlap = byId.get("e-overlap");
+      expect(overlap?.paragraphId).toBe(2);
+      expect(overlap?.reason).toEqual({ kind: "error-normal-overlap", otherId: "n-overlap" });
+      expect(byId.has("n-overlap")).toBe(false);
+
+      // message には id・paragraphId・件数・occurrence の値だけを使い、引用・原稿本文を含めない。
+      const joined = result.failures.map((f) => f.message).join("\n");
       expect(joined).toContain("e-toofar");
       expect(joined).toContain("e-notfound");
       expect(joined).toContain("e-insufficient");
       expect(joined).toContain("e-overlap");
       expect(joined).toContain("n-overlap");
-
-      // エラー文言に引用・原稿本文を含めない。
       expect(joined).not.toContain("存在しない文字列");
       expect(joined).not.toContain("りんご");
       expect(joined).not.toContain("正常な文章の例");
       expect(joined).not.toContain("最初の段落");
+    });
+
+    it("error/normal の重なりの entryId/otherId の割り当ては宣言順に依存しない", () => {
+      // truth ファイル内で normal を error より先に書いても、entryId は常に error 側になる。
+      const text = "重なる文章の例";
+      const entries: TruthEntry[] = [
+        normalEntry({ id: "n-first", paragraphId: 0, quote: "文章の例" }),
+        errorEntry({ id: "e-second", paragraphId: 0, quote: "重なる文章の例" }),
+      ];
+      const result = resolveTruthEntries(truthOf(entries), text);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toMatchObject({
+        entryId: "e-second",
+        reason: { kind: "error-normal-overlap", otherId: "n-first" },
+      });
     });
   });
 });
