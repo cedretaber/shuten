@@ -146,10 +146,10 @@ function RecoveryBlockedNotice(props: { readonly runId: string }) {
           {otherRunIds.map((id) => (
             <li key={id}>
               {/* 申し送り（Task 7 のブリーフより）：ここは同じコンポーネント（`ResultsPage`）の
-                  まま実行 ID が変わる初めての経路になる。取り直し・`pending` の送信チェーンが
-                  実行 ID や世代番号に紐づいていないため、送信中にこのリンクを踏むと旧実行の
-                  取り直しが新実行の画面を上書きしうる（構造的な弱点。手当ては SSE と取り直しを
-                  書き直す後続 Task が行う）。 */}
+                  まま実行 ID が変わる初めての経路になる。当時は取り直し・`pending` の送信チェーンが
+                  実行 ID や世代番号に紐づいておらず、送信中にこのリンクを踏むと旧実行の取り直しが
+                  新実行の画面を上書きしうる構造的な弱点だった。PR12b Task 8 で `results-page.tsx` に
+                  実行 ID ごとの世代（`runScopeRef`）を導入して解消済み（申し送り 1(a)・1(b)）。 */}
               <Link to={runPath(id)}>この検査を確認する（{id}）</Link>
             </li>
           ))}

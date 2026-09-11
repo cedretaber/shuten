@@ -12,7 +12,8 @@
  * 3. 中間状態の案内（決定 9・`statusNotice`）、4+5. 進捗（決定 10・11・`RunProgress`。
  * 遅延通知はコントローラーの裁定で `RunProgress` 側に一本化しており、ここでは描かない）、
  * 6+7. 操作と操作結果の案内（決定 6・7・8・`RunControl`）、8. 「最新の状態を取得」（PR12a のまま。
- * 自動更新の失敗の案内は SSE を足す後続 Task の担当）。
+ * 自動更新の状態を表す 1 行（決定 4）は `RunHeader` の外——呼び出し元の `results-page.tsx`
+ * （PR12b Task 8）が SSE の購読・取り直しの合流を持つため、そちらで描く）。
  */
 
 import type { ProgressDto, RunDto, RunUnitsDto } from "@shuten/shared";
