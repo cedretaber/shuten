@@ -300,13 +300,22 @@ describe("statusNotice", () => {
     expect(statusNotice(run)).toBe("停止を要求しました。実行中の要求の終了を待っています。");
   });
 
-  it("generationUnconfirmed が真なら、recovery-waiting でなくても出す", () => {
+  it("generationUnconfirmed が真なら、recovery-waiting 以外では出す", () => {
     const run = makeRun({ status: "stopped", generationUnconfirmed: true });
     expect(statusNotice(run)).toBe("LM Studio 側の生成が終了したか確認できていません。");
   });
 
   it("recovery-waiting・generationUnconfirmed 偽は null（決定 7 の仕様文は recovery-notice.tsx が出す）", () => {
     const run = makeRun({ status: "recovery-waiting", generationUnconfirmed: false });
+    expect(statusNotice(run)).toBeNull();
+  });
+
+  it("recovery-waiting・generationUnconfirmed 真（サーバー側の不変条件どおり実運用で必ず起きる組み合わせ）も null（レビュー指摘 I-1）", () => {
+    // `packages/server/src/run/state.ts` の不変条件：`recovery-waiting` は必ず
+    // `generationUnconfirmed === true` を伴って書かれる。この組み合わせで
+    // `generationUnconfirmed` の文に奪われて仕様 8.2 の定型文が出なくなる、という
+    // 誤りが無いことを確かめる（`recovery-waiting` を `generationUnconfirmed` より先に判定する）。
+    const run = makeRun({ status: "recovery-waiting", generationUnconfirmed: true });
     expect(statusNotice(run)).toBeNull();
   });
 

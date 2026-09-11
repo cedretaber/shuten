@@ -10,8 +10,8 @@
  * - `retryableUnitIds`：決定 6・36。再試行できる失敗単位の ID（`input-too-long` の検査単位を
  *   除く）。サーバーの `collectRetryTargets`（`orchestrator.ts`）と同じ条件。
  * - `statusNotice`：決定 9。中間状態の案内文。優先順は上から（`stopRequestedAt` が最優先）。
- *   `recovery-waiting` の仕様 8.2 の定型文は含まない（Task 7 で `recovery-notice.tsx` へ移した。
- *   `status === "recovery-waiting"` かつ `generationUnconfirmed` が偽のときは null になる）。
+ *   `recovery-waiting` は `generationUnconfirmed` より先に判定して null を返す
+ *   （仕様 8.2 の定型文は `recovery-notice.tsx` が持つ。レビュー指摘 I-1）。
  * - `controlFailureOf`：決定 8。操作の失敗を案内文に写す。`ApiRequestError` の `code` だけを見て、
  *   `message`（実行 ID を含み、文面もサーバー都合で変わる）は転記しない。未知の `code` と
  *   `ApiRequestError` 以外の例外は既定の文に落ちる。
@@ -96,11 +96,18 @@ export function showStopButton(run: RunDto): boolean {
 /**
  * 決定 9：中間状態の案内文。出さないときは null。優先順は上から（`stopRequestedAt` が最優先）。
  *
- * `recovery-waiting` の仕様 8.2 の定型文（「生成の停止を確認できません。LM Studio側を確認して
- * 再開してください」）はここに含めない（Task 7 で `recovery-notice.tsx` へ移した）。`RecoveryNotice`
- * は `status === "recovery-waiting"` だけを見て常に出すため、`generationUnconfirmed` の有無に
- * 関わらず仕様文が出る（Task 4 の持ち越し：`generationUnconfirmed` が真だとこの関数の優先順で
- * 仕様文に届かない、という抜けを構造的に解消する）。
+ * `recovery-waiting` は `generationUnconfirmed` より先に判定し、null を返す——仕様 8.2 の定型文
+ * （「生成の停止を確認できません。LM Studio側を確認して再開してください」）は `RecoveryNotice`
+ * （決定 7）が持つので、ここでは出さない（レビュー指摘 I-1）。
+ *
+ * サーバー側の不変条件として `recovery-waiting` は必ず `generationUnconfirmed === true` を伴って
+ * 書かれる（`packages/server/src/run/state.ts`・`orchestrator.ts`。`confirmRecovery` はどちらも
+ * 変えない）。`generationUnconfirmed` を `recovery-waiting` より先に判定すると、「`recovery-waiting`
+ * かつ `generationUnconfirmed === false`」という実運用で到達しない組み合わせのときだけ仕様文が
+ * 出て、実際に起こる「`recovery-waiting` かつ `generationUnconfirmed === true`」では
+ * `generationUnconfirmed` の文（「LM Studio 側の生成が終了したか確認できていません。」）に
+ * 奪われて仕様文が一度も出ない、という誤りになる。`recovery-waiting` を先に判定することで、
+ * `generationUnconfirmed` の案内は `recovery-waiting` 以外の状態（`stopped` など）でだけ出る。
  *
  * `completed` かつ他の条件に当たらないときだけ null になり、そのときは未処理が無いことを
  * 前提にした表示（「指摘はありません」を含む）を許す。
@@ -108,6 +115,9 @@ export function showStopButton(run: RunDto): boolean {
 export function statusNotice(run: RunDto): string | null {
   if (run.status === "running" && run.stopRequestedAt !== null) {
     return "停止を要求しました。実行中の要求の終了を待っています。";
+  }
+  if (run.status === "recovery-waiting") {
+    return null;
   }
   if (run.generationUnconfirmed) {
     return "LM Studio 側の生成が終了したか確認できていません。";

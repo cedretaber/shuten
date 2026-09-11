@@ -113,6 +113,25 @@ describe("RunHeader: 決定 9 の中間状態の案内", () => {
     ).toBeInTheDocument();
   });
 
+  it("recovery-waiting・generationUnconfirmed 真（実運用で必ず起きる組み合わせ）でも仕様 8.2 の文が出て、二重表示にならない（レビュー指摘 I-1）", () => {
+    // `packages/server/src/run/state.ts` の不変条件：`recovery-waiting` は必ず
+    // `generationUnconfirmed === true` を伴って書かれる。旧実装（`generationUnconfirmed` を
+    // `recovery-waiting` より先に判定）だと、この実運用で必ず起きる組み合わせのときに
+    // 仕様 8.2 の定型文が一度も出ないという誤りがあった。
+    renderHeader(
+      baseProps({
+        run: makeRun({ status: "recovery-waiting", generationUnconfirmed: true }),
+      }),
+    );
+    expect(
+      screen.getByText("生成の停止を確認できません。LM Studio側を確認して再開してください"),
+    ).toBeInTheDocument();
+    // `statusNotice` 側の「生成が終了したか確認できていません」は出ない（二重表示にならない）。
+    expect(
+      screen.queryByText("LM Studio 側の生成が終了したか確認できていません。"),
+    ).not.toBeInTheDocument();
+  });
+
   it("completed は案内が出ない", () => {
     renderHeader(baseProps({ run: makeRun({ status: "completed" }) }));
     expect(screen.queryByText(/一部の検査が失敗/)).not.toBeInTheDocument();

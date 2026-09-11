@@ -326,12 +326,19 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 | 条件 | 出す文 |
 | --- | --- |
 | `status === "running" && stopRequestedAt !== null` | 「停止を要求しました。実行中の要求の終了を待っています。」（停止ボタンは `disabled`） |
-| `generationUnconfirmed === true` | 「LM Studio 側の生成が終了したか確認できていません。」 |
-| `status === "recovery-waiting"` | 決定 7 の仕様文（そのまま） |
+| `status === "recovery-waiting"` | `statusNotice` は null。仕様 8.2 の定型文（そのまま。決定 7）は `RecoveryNotice` が持つ |
+| `generationUnconfirmed === true`（`status !== "recovery-waiting"`） | 「LM Studio 側の生成が終了したか確認できていません。」 |
 | `status === "partially-failed"` | 「一部の検査が失敗しました。未処理の範囲があります。」 |
 | `status === "stopped"` | 「停止中です。未処理の範囲が残っている可能性があります。」 |
 
 `completed` のときだけ、未処理が無いことを前提にした表示（「指摘はありません」を含む）を許す。
+
+**`recovery-waiting` は `generationUnconfirmed` より先に判定する。** サーバー側の不変条件として
+`recovery-waiting` は必ず `generationUnconfirmed === true` を伴って書かれる
+（`packages/server/src/run/state.ts`・`orchestrator.ts`）。`generationUnconfirmed` を先に判定すると、
+仕様 8.2 が表示を義務づけた「生成の停止を確認できません。LM Studio側を確認して再開してください」が
+実運用で一度も出ない。`recovery-waiting` のときの案内は `RecoveryNotice`（決定 7）が持ち、
+`statusNotice` は `null` を返す（PR12b Task 7 レビュー指摘 I-1）。
 
 ### 決定 10：`generation-slow` は消える通知として出す
 

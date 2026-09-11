@@ -6,11 +6,13 @@
  * `disabled` になること」「`failure` の文言とリンクが出ること」だけを見る（B9・決定 8 の描画側）。
  */
 
-import type { CheckUnitDto, RunDto, RunUnitsDto } from "@shuten/shared";
+import type { CheckUnitDto, RecoveryDto, RunDto, RunUnitsDto } from "@shuten/shared";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
+import type { ApiClient } from "../../api/client.ts";
+import { ApiClientProvider } from "../../api/context.tsx";
 import type { ControlFailure } from "./run-control.ts";
 import { RunControl, type RunControlProps } from "./run-control.tsx";
 
@@ -92,10 +94,41 @@ function baseProps(overrides: Partial<RunControlProps> = {}): RunControlProps {
   };
 }
 
-function renderControl(props: RunControlProps) {
+/** `notImplemented` パターン（`recovery-notice.test.tsx` と同じ流儀）。呼ばれない口は例外にする。 */
+function makeApiClient(overrides: Partial<ApiClient> = {}): ApiClient {
+  const notImplemented = (name: string) => () => {
+    throw new Error(`${name} は呼ばれない想定`);
+  };
+  return {
+    getConnection: notImplemented("getConnection"),
+    putConnection: notImplemented("putConnection"),
+    checkConnection: notImplemented("checkConnection"),
+    createManuscript: notImplemented("createManuscript"),
+    uploadManuscript: notImplemented("uploadManuscript"),
+    getManuscript: notImplemented("getManuscript"),
+    startRun: notImplemented("startRun"),
+    getRun: notImplemented("getRun"),
+    getRuns: notImplemented("getRuns"),
+    getRunUnits: notImplemented("getRunUnits"),
+    stopRun: notImplemented("stopRun"),
+    resumeRun: notImplemented("resumeRun"),
+    retryFailedUnits: notImplemented("retryFailedUnits"),
+    getRecovery: notImplemented("getRecovery"),
+    confirmRecovery: notImplemented("confirmRecovery"),
+    getFindings: notImplemented("getFindings"),
+    getFinding: notImplemented("getFinding"),
+    putJudgment: notImplemented("putJudgment"),
+    subscribeRunEvents: notImplemented("subscribeRunEvents"),
+    ...overrides,
+  };
+}
+
+function renderControl(props: RunControlProps, client: ApiClient = makeApiClient()) {
   return render(
     <MemoryRouter>
-      <RunControl {...props} />
+      <ApiClientProvider client={client}>
+        <RunControl {...props} />
+      </ApiClientProvider>
     </MemoryRouter>,
   );
 }
@@ -283,5 +316,29 @@ describe("RunControl: 決定 8 操作の失敗の案内", () => {
       baseProps({ run: makeRun({ status: "completed" }), failure: null }),
     );
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("RunControl: recovery-blocked の配線（レビュー指摘 I-3）", () => {
+  it("stopReason === 'recovery-blocked' のとき RecoveryNotice の案内が出る（RunControl が実際に描くことの検査）", async () => {
+    const getRecovery = vi.fn(() =>
+      Promise.resolve({ blocked: true, runIds: ["run-1", "run-2"] } satisfies RecoveryDto),
+    );
+    renderControl(
+      baseProps({
+        run: makeRun({ id: "run-1", status: "stopped", stopReason: "recovery-blocked" }),
+      }),
+      makeApiClient({ getRecovery }),
+    );
+
+    expect(
+      screen.getByText("別の検査の復旧待ちのため停止しています。先にそちらを確認してください。"),
+    ).toBeInTheDocument();
+    const otherRunLink = await screen.findByRole("link", { name: /run-2/ });
+    expect(otherRunLink).toHaveAttribute("href", "/runs/run-2");
+    // 表示中の実行（run-1）自身へのリンクは出ない。
+    expect(
+      screen.queryByRole("link", { name: /^この検査を確認する（run-1）$/ }),
+    ).not.toBeInTheDocument();
   });
 });

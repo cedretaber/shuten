@@ -21,8 +21,10 @@ import { ApiClientProvider } from "../../api/context.tsx";
 import { RecoveryNotice, type RecoveryNoticeProps } from "./recovery-notice.tsx";
 
 const SPEC_SENTENCE = "生成の停止を確認できません。LM Studio側を確認して再開してください";
+// 仕様 8.2 の逐語引用ではなく本 PR 独自の文言なので「LM Studio 側」（スペース有り）に揃える
+// （レビュー指摘 I-2）。SPEC_SENTENCE（仕様 8.2 の逐語引用）はスペース無しのまま混ぜない。
 const TIME_NOTE =
-  "時間が経ったことは終了の証拠になりません。LM Studio側で生成が止まったことを確かめてから押してください。";
+  "時間が経ったことは終了の証拠になりません。LM Studio 側で生成が止まったことを確かめてから押してください。";
 const PRIMARY_LABEL = "LM Studio 側で生成が止まったことを確認した → 再開する";
 const SECONDARY_LABEL = "確認だけ記録する（この検査は再開しない）";
 const BLOCKED_NOTICE = "別の検査の復旧待ちのため停止しています。先にそちらを確認してください。";

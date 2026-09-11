@@ -41,9 +41,12 @@ const RESUME_LABEL = "LM Studio 側で生成が止まったことを確認した
 /** 副（決定 7）。押すと `confirmRecovery` を呼ぶ。この実行を続けずに別の新しい検査を始めたいときの経路。 */
 const CONFIRM_ONLY_LABEL = "確認だけ記録する（この検査は再開しない）";
 
-/** 主・副どちらにも添える注記（仕様 8.2「時間経過を終了の証拠とみなさない」）。 */
+/** 主・副どちらにも添える注記（仕様 8.2「時間経過を終了の証拠とみなさない」）。仕様 8.2 の逐語引用
+ *  ではなく本 PR 独自の文言なので、このリポジトリの表記（「LM Studio 側」＝スペース有り。
+ *  `generationUnconfirmed` の案内と同じ）に合わせる（レビュー指摘 I-2。`RECOVERY_WAITING_NOTICE` は
+ *  仕様 8.2 の逐語引用なのでスペース無しのまま混ぜない）。 */
 const TIME_ELAPSED_NOTE =
-  "時間が経ったことは終了の証拠になりません。LM Studio側で生成が止まったことを確かめてから押してください。";
+  "時間が経ったことは終了の証拠になりません。LM Studio 側で生成が止まったことを確かめてから押してください。";
 
 /** `confirmRecovery` は `status` を変えないため、副を押した後も `recovery-waiting` のまま
  *  `recoveryConfirmedAt !== null`（＝ `canConfirmRecovery` が偽）になる（決定 7）。 */
