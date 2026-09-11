@@ -82,13 +82,29 @@
 
 1. `subscribeRunEvents` は `run-settled` を受け取ったら、**ハンドラーを呼ぶ前に自分で `close()` する**。
    この不変条件はこの関数 1 か所に閉じ込め、単体テストで守る（テスト B2）。
-2. 画面側の購読は `run.status === "running"` のときだけ張る（`useEffect` の依存に `run.status` を置く）。
+2. 画面側の購読は `run.status === "running"` **かつ** `streamEnded === false` のときだけ張る。
    終端状態の実行では 1 本も張らない。
+3. `run-settled` を受けたら `streamEnded` を立てる（＝購読を張り直さない印）。
+4. **取り直しが成功したときだけ** `streamEnded` を下ろす：成功した応答の `status` が `running` なら
+   `streamEnded = false` にする（`useEffect` の依存が変わり、購読が張り直される）。終端状態なら
+   `streamEnded` を立てたままにする。
 
-「`run-settled` 後の再購読」（ロードマップ）はこの 2 の規則の帰結として起きる：再開・再試行を受け付けた
-後の取り直しで `status` が `running` に戻れば、`useEffect` がもう一度購読する。`run-settled` を受けた
-直後は `status` がまだ `running` のまま（取り直しが終わるまで）だが、依存が変わらないので effect は
-再実行されず、再購読は起きない。
+`useEffect` の依存は `[runId, run.status === "running" && !streamEnded]` である。
+
+**規則 3・4 が無いと自動更新が永久に止まる**（レビュー指摘 1）。`run-settled` を受けて購読を閉じた後、
+続けて走る取り直しが失敗すると、画面の `run.status` は `running` のまま・依存も変わらないので
+`useEffect` は再実行されず、購読は二度と張られない。しかも画面には「再接続を試みています」と出ており、
+表示と実態が食い違う。
+
+**張り直しの合図を「取り直しの成功」に限る理由**：成功した応答は DB の正本なので、そこで `running`
+なら購読しても合成 `run-settled` は返らない（サーバーは同じ DB を読む）。取り直しに失敗している間は
+実行が終端かどうか分からず、そこで自動的に張り直すと「購読 → 合成 `run-settled` → 張り直し」の
+ループが復活する。失敗している間は張らず、「自動更新は停止しています。『最新の状態を取得』を
+押してください。」と出して手動の復旧に委ねる（決定 4）。
+
+「`run-settled` 後の再購読」（ロードマップ）はこの規則の帰結として起きる：再開・再試行を受け付けた
+後の取り直しが成功して `status` が `running` に戻れば、`streamEnded` が下りて `useEffect` が
+もう一度購読する。
 
 購読の解除はアンマウント・ルート離脱・`runId` の変更でも行う（`useEffect` の cleanup）。
 `close()` は何度呼んでも安全にする。React の StrictMode による二重マウントでも接続が残らないことを
@@ -125,7 +141,12 @@
 
 - 取り直しは同時に 1 本だけ（`inFlightRef`）。
 - 走っている最中に来た合図は `dirtyRef`（`"light"` / `"heavy"` の強い方）に畳む。
-- 1 本が終わったら、`dirtyRef` が立っていれば**もう 1 本だけ**走らせる。
+- 1 本が終わったら `dirtyRef` を**取り出して空にし**、値があればもう 1 本走らせる。
+  これを **`dirtyRef` が空になるまで繰り返す**。
+
+「追い 1 本だけ」にしてはならない（レビュー指摘 3）。1 本目の追い取得の最中に届いたイベントが
+黙って捨てられ、そのイベントぶんの更新が画面に永久に出ない。実装は「終了時に取り出して空にし、
+値があれば再帰的に次を回す」1 本のループにする。
 
 固定時間のデバウンスは入れない。取り直しの所要時間そのものが間隔を決めるので、遅い環境ほど自然に
 間隔が空く。測っていない待ち時間を足さない。
@@ -139,6 +160,17 @@
 後回しにすると `controlAvailability(run, null)` が最初の描画で「再試行できない」と判断し、
 失敗単位の再試行ボタンが一拍遅れて現れる。
 
+**取り直しの反映は 2 段に分ける**（レビュー指摘 2）。初回読み込み（PR12a 決定 3）は 3 本すべてが
+揃うまで何も描かないが、**取り直しは違う**。
+
+1. `getRun` + `getRunUnits` が成功したら、**その時点で**状態・進捗・操作の可否に反映する。
+2. `getFindings` と選択中の詳細は別に反映し、**失敗しても 1 の反映を戻さない**。
+
+1 本でも失敗したら全部を捨てる作りにすると、3N+1 の `getFindings`（指摘が多いほど失敗しやすい）が
+こけただけで、停止・再開の後の新しい状態がボタンにも進捗にも出なくなる。操作の直後は
+「押した操作が効いたかどうか」が最も知りたい情報なので、そこを重い取得の道連れにしない。
+失敗した側は決定 4 の案内（自動なら 1 行、手動なら `refreshError`）で伝える。
+
 ### 決定 4：SSE 由来の取り直しは「静かに」行う
 
 PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshing` を立てて文言を「更新中…」に変え、
@@ -146,9 +178,17 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 たびにエラーが出る。
 
 - `refreshing`（ボタンの `disabled` と「更新中…」）は**手動の取り直しのときだけ**立てる。
-- 自動更新の失敗は `autoRefreshError`（真偽値）1 つで表し、
-  「自動更新に失敗しました。再接続を試みています。」の 1 行だけを出す。連続して失敗しても増えない。
-- 自動更新が 1 回でも成功したら消す。
+- 自動更新の状態は次の 3 つを 1 行で表す。同時に 2 行出さない（上から優先）。
+
+  | 状態 | 出す文 |
+  | --- | --- |
+  | `streamEnded` かつ `run.status === "running"`（決定 1 の規則 3・4。取り直しが失敗したままの状態） | 「自動更新は停止しています。「最新の状態を取得」を押してください。」 |
+  | SSE が切れている（`onError` を受けてから次の `onOpen` まで） | 「サーバーとの接続が切れました。再接続を試みています。」 |
+  | 自動の取り直しが失敗した（`autoRefreshError`） | 「自動更新に失敗しました。再接続を試みています。」 |
+
+- `onError`（`EventSource` の接続断。自動再接続が走る）は `streamDisconnected` を立てるだけで、
+  取り直しは行わない（切れている間に取っても意味が無い）。次の `onOpen` で下ろす。
+- `autoRefreshError` は自動の取り直しが 1 回でも成功したら消す。連続して失敗しても行は増えない。
 - 手動の `refreshError`（PR12a で入れた、内容を消さずに出す帯）はそのまま残す。
 
 ### 決定 5：観点別の進捗は `GET /api/runs/:id/units` を数えて作る
@@ -258,7 +298,11 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
 未知の `code` は「それ以外」に落ちる（`Record` の網羅ではなく既定値つきの索引にする。
 サーバー側が `code` を増やしても画面が落ちないようにするため）。
 
-操作中は当該ボタンを `disabled` にする（二重送信の防止）。202 を受けたら必ず取り直す。
+`pending !== null`（いずれかの操作を送信中）の間は、**実行制御のボタンをすべて** `disabled` にする
+（レビュー指摘 4）。当該ボタンだけを無効にすると、`recovery-waiting` で同時に出ている
+「確認して再開」と「確認だけ記録」を並行して送れてしまう。サーバー側は壊れないが、
+2 つの応答と 2 つの案内文が競合して、画面がどちらの結果を表しているのか分からなくなる。
+202 を受けたら必ず取り直す。
 
 ### 決定 9：中間状態は `RunDto` の項目から出す
 
@@ -434,7 +478,7 @@ jsdom の制約（PR12a で確認済み）：`getBoundingClientRect()` は常に
 | B2 | `run-settled` を受けたら `onEvent` を呼ぶ**前に** `close()` が呼ばれている（決定 1。fake の `EventSource` が呼び出し順を記録する） |
 | B3 | 返り値を呼ぶと `close()` される。二重に呼んでも 1 回しか閉じない。アンマウントで閉じる |
 | B4 | 検証を通らない `data` は `onUnknownEvent` になり、`onEvent` は呼ばれない。中身がどこにも出ない |
-| B5 | 決定 3 の合流：取り直しの最中に来た合図が 1 本に畳まれ、終わった後にちょうど 1 本だけ追加で走る |
+| B5 | 決定 3 の合流：取り直しの最中に来た 2 件の合図が 1 本に畳まれ、終わった後に追い取得が走る。**その追い取得の最中にもう 1 件送ると 3 本目が走る**（「追い 1 本だけ」の実装なら赤くなる） |
 | B6 | 決定 2 の割り付け：軽い合図では `getFindings` を呼ばず、重い合図では呼ぶ |
 | B7 | 決定 4：自動更新では「更新中…」にならず、失敗しても内容が消えず 1 行の案内だけが出る。手動の取り直しは従来どおり |
 | B8 | 決定 5・11：観点別の件数が `/units` から作られ、割合・残り時間がどこにも出ない |
@@ -443,6 +487,9 @@ jsdom の制約（PR12a で確認済み）：`getBoundingClientRect()` は常に
 | B11 | 決定 12：`/units` の `failure.message` / `pendingNote` / `finishReason` に番兵を入れても画面に出ない（`leak.test.tsx`） |
 | B12 | 決定 9・10：中間状態の文と遅延の通知が出る／消える |
 | B13 | 決定 1・2：`status === "running"` でないときは購読しない。`running` になったら購読する |
+| B14 | 決定 1 の規則 3・4：`run-settled` の後の取り直しが**失敗**したら購読は張り直されず、「自動更新は停止しています」が出る。その後の手動の取り直しが**成功**し、`status` がまだ `running` なら購読が張り直される |
+| B15 | 決定 3 の 2 段反映：取り直しで `getRun` + `getRunUnits` が成功し `getFindings` が失敗したとき、状態・進捗・ボタンは新しい値に追従し、既に出ている指摘一覧は消えない |
+| B16 | 決定 4：`onError` で「サーバーとの接続が切れました」が出て、`onOpen` と続く取り直しの成功で消える。行は同時に 2 つ出ない |
 | S1 | 実ブラウザでの確認（決定 15）：`/events` の要求が決着後に増え続けないこと、左右が独立にスクロールすること |
 
 S1 の手順（Playwright、`pnpm dev`）：
@@ -522,7 +569,9 @@ Task 2（SSE 購読）─────────┘                        → 
 - Modify: `packages/web/src/api/client.test.ts`
 - Modify: `packages/web/src/features/results/labels.ts`
 - Modify: `packages/web/src/features/results/finding-detail.tsx`（`PERSPECTIVE_LABELS` の import に差し替え）
-- Modify: `packages/web/src/features/settings/run-settings-form.tsx`（同上）
+
+`features/settings/run-settings-form.tsx` は**触らない**（後段のとおり、設定画面から結果画面を
+参照する向きを作らない。同じ文言の定義がこの 1 か所に残るのは承知のうえで残す）。
 
 **Interfaces（後続タスクが使う）**
 
@@ -561,7 +610,8 @@ subscribeRunEvents(runId: string, handlers: RunEventHandlers): () => void;
 1. `client.test.ts` に、6 つの口それぞれについて「メソッドと URL と本文が正しい」「応答が
    スキーマ検証を通る」「非 2xx が `ApiRequestError` になる」テストを書く。落ちるのを見る。
 2. `client.ts` に実装する。既存の `request()` をそのまま使う。
-3. `labels.ts` にラベルを足し、2 か所のローカル定義を import に差し替える。
+3. `labels.ts` にラベルを足し、`finding-detail.tsx` のローカル定義を import に差し替える
+   （`run-settings-form.tsx` は触らない）。
 4. `pnpm check` を通してコミットする。
 
 ### Task 2：`subscribeRunEvents`（SSE の購読）
@@ -740,6 +790,8 @@ export interface RunControlProps {
   失敗単位の再試行だけは `controlAvailability` に従う。
 - 再開のボタンには「同じ検査の続きから再開します（実行 ID は変わりません）」を添える。
 - 停止は `run.stopRequestedAt !== null` のとき `disabled` にし、決定 9 の文を出す。
+- `pending !== null` の間は**すべての**実行制御ボタンを `disabled` にする（決定 8）。
+  `recovery-waiting` で 2 つのボタンが同時に出るので、当該ボタンだけでは足りない。
 
 **Steps**
 
@@ -815,19 +867,26 @@ export function useRunStream(options: RunStreamOptions): void;
 ```
 
 - 合流（決定 3）は `results-page.tsx` 側に置く：`inFlightRef`（真偽）と `dirtyRef`
-  （`null | "light" | "heavy"`、強い方を残す）で、取り直しが終わったら 1 本だけ追い取得する。
+  （`null | "light" | "heavy"`、強い方を残す）で、取り直しが終わったら `dirtyRef` を取り出して
+  空にし、値があれば次を走らせる。**`dirtyRef` が空になるまで繰り返す**（B5）。
 - 取り直しの中身：
   - `light` = `getRun` + `getRunUnits`
   - `heavy` = `light` + `getFindings` + 選択中の指摘の詳細（PR12a の `fetchDetail` を再利用）
   - どちらも PR12a の世代カウンター（`generationRef`）で古い応答を捨てる。
+- 反映は 2 段（決定 3）：`getRun` + `getRunUnits` の成功をまず反映し、`getFindings` と詳細は
+  別に反映する。後者の失敗で前者を巻き戻さない（B15）。
 - `refreshing` は手動のときだけ立てる。自動の失敗は `autoRefreshError`（真偽値）に畳む（決定 4）。
+- `streamEnded` / `streamDisconnected` を持ち、決定 1 の規則 3・4 と決定 4 の 3 行の出し分けを行う
+  （B14・B16）。
 - 操作（stop/resume/retry/confirm）の後は、成功・失敗を問わず `heavy` で取り直す（決定 8）。
+  2 段反映があるので、`getFindings` がこけても操作の結果はボタンと進捗に出る。
 
 **Steps**
 
-1. `use-run-stream.test.tsx` に B13（`running` でないと購読しない／`running` になったら購読する）
-   を書いて落ちるのを見る → 実装。
-2. `results-page.test.tsx` に B5・B6・B7 を書いて落ちるのを見る → 合流と静かな更新を実装。
+1. `use-run-stream.test.tsx` に B13・B14（購読の張り直しの条件）を書いて落ちるのを見る → 実装。
+2. `results-page.test.tsx` に B5・B6・B7・B15・B16 を書いて落ちるのを見る → 合流・2 段反映・
+   静かな更新を実装する。B5 は「追い取得の最中にもう 1 件」を必ず含める（含めないと
+   「追い 1 本だけ」の実装でも緑になり、指摘 3 の判別ができない）。
 3. `pnpm check` → コミット。
 
 ### Task 9：左右の独立スクロールと実ブラウザ確認
