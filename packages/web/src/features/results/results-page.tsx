@@ -185,6 +185,16 @@ type ResultsState =
 /** 実行制御（決定 6・7・8）の送信中の操作。`null` なら送信していない。 */
 type PendingControlAction = "stop" | "resume" | "retry" | "confirm" | null;
 
+/**
+ * 指摘の一覧が、いま画面に出ている実行の状態に追いついているか（レビュー I-1）。
+ *
+ * 取り直しの 2 段反映（決定 3）は「状態だけ先に進む」窓を開ける：重い取り直しの 1 段目で
+ * `status` が `completed` になった後、2 段目（`getFindings`）が届く前に 0 件を「指摘はありません」
+ * と断定してしまう。`getFindings` は 3N+1 で中央値 110〜130 ms あり、失敗すればその表示が
+ * 残り続ける。取得の失敗を「空」として見せないため、断定はこれが `current` のときだけにする。
+ */
+type FindingsFreshness = "current" | "pending" | "failed";
+
 function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "実行の取得に失敗しました";
 }
@@ -293,6 +303,8 @@ export function ResultsPage() {
   const [autoRefreshError, setAutoRefreshError] = useState(false);
   // 決定 10：遅延通知（`generation-slow`）の対象単位 ID。単位が `running` でなくなったら消える。
   const [slowUnitIds, setSlowUnitIds] = useState<ReadonlySet<string>>(EMPTY_SLOW_UNIT_IDS);
+  // レビュー I-1：指摘の一覧が実行の状態に追いついているか。
+  const [findingsFreshness, setFindingsFreshness] = useState<FindingsFreshness>("current");
 
   // 取り直しの合流（決定 3）。`inFlightRef` は「今 1 本走っている」、`dirtyRef` は「走り終わったら
   // もう 1 本走らせる」合図（強い方だけを残す）。`loudRef` は手動の取り直しが混ざっているか
@@ -329,20 +341,28 @@ export function ResultsPage() {
   const detailGenerationRef = useRef(0);
 
   const fetchDetail = useCallback(
-    (findingId: string) => {
+    (findingId: string, mode: "select" | "refresh") => {
       const generation = ++detailGenerationRef.current;
-      // 呼び直した直後は前の詳細を出さない（取得中は「一覧が持つ情報だけで描く」状態にする。
-      // `FindingDetail` 側が `detail === null` を「読み込み中」として扱う）。
-      setFindingDetail(null);
-      setFindingDetailError(null);
-      apiClient.getFinding(findingId).then(
+      if (mode === "select") {
+        // 別の指摘を選び直したときは、前の指摘の詳細を出したままにしない（取得中は
+        // 「一覧が持つ情報だけで描く」状態にする。`FindingDetail` 側が `detail === null` を
+        // 「読み込み中」として扱う）。
+        setFindingDetail(null);
+        setFindingDetailError(null);
+      }
+      // レビュー M-1：取り直し（`mode === "refresh"`）では前の値を残す。同じ指摘の詳細を
+      // 取り直しているだけなので、`null` に戻すと実行中は `check-finished` / `target-merged` が
+      // 届くたびに元候補・位置診断の欄が点滅する（自動更新では高頻度で起きる）。
+      invoke(() => apiClient.getFinding(findingId)).then(
         (detail) => {
           if (detailGenerationRef.current !== generation) return; // 古い応答
           setFindingDetail(detail);
+          setFindingDetailError(null);
         },
         (cause: unknown) => {
           if (detailGenerationRef.current !== generation) return;
           // 詳細の取得失敗は詳細パネルの当該欄にだけエラーを出す（詳細全体を消さない）。
+          // 取り直しの失敗では前の値が残っているので、`FindingDetail` は引き続きそれを描く。
           setFindingDetailError(errorMessageFrom(cause));
         },
       );
@@ -370,6 +390,7 @@ export function ResultsPage() {
     // 別の実行へ移ったとき、旧い鎖が終わるまで新しい実行のボタンが disabled のままになる。
     setPending(null);
     setSlowUnitIds(EMPTY_SLOW_UNIT_IDS);
+    setFindingsFreshness("current");
     setStreamEnded(false);
     setStreamDisconnected(false);
     setAutoRefreshError(false);
@@ -457,6 +478,10 @@ export function ResultsPage() {
       // `allSettled` で読むが、先に読まれない経路があるので空の catch を挟む。
       const findingsPromise = kind === "heavy" ? invoke(() => apiClient.getFindings(runId)) : null;
       findingsPromise?.catch(() => {});
+      if (findingsPromise !== null) {
+        // 一覧はこの瞬間から「追いついていない」（レビュー I-1）。
+        setFindingsFreshness("pending");
+      }
 
       const lightPromise = Promise.all([
         invoke(() => apiClient.getRun(runId)),
@@ -487,18 +512,29 @@ export function ResultsPage() {
       const heavyPromise =
         findingsPromise === null
           ? Promise.resolve()
-          : findingsPromise.then((findings) => {
-              if (requestGenerationRef.current !== generation) return;
-              setState((current) =>
-                current.kind !== "loaded" ? current : { ...current, findings },
-              );
-              // PR21 レビュー指摘 1：選択中の指摘があれば詳細も取り直す（同じ指摘が選ばれた
-              // ままだと `selectedFindingId` は変化せず、選択変更だけを見る useEffect では
-              // 再取得されない）。`fetchDetail` 自身が世代を進めるので古い応答は捨てられる。
-              if (selectedFindingIdRef.current !== null) {
-                fetchDetail(selectedFindingIdRef.current);
-              }
-            });
+          : findingsPromise.then(
+              (findings) => {
+                if (requestGenerationRef.current !== generation) return;
+                setState((current) =>
+                  current.kind !== "loaded" ? current : { ...current, findings },
+                );
+                setFindingsFreshness("current");
+                // PR21 レビュー指摘 1：選択中の指摘があれば詳細も取り直す（同じ指摘が選ばれた
+                // ままだと `selectedFindingId` は変化せず、選択変更だけを見る useEffect では
+                // 再取得されない）。`fetchDetail` 自身が世代を進めるので古い応答は捨てられる。
+                if (selectedFindingIdRef.current !== null) {
+                  fetchDetail(selectedFindingIdRef.current, "refresh");
+                }
+              },
+              (cause: unknown) => {
+                if (requestGenerationRef.current !== generation) {
+                  throw cause;
+                }
+                // 一覧は古いまま。0 件を「指摘はありません」と断定させない（レビュー I-1）。
+                setFindingsFreshness("failed");
+                throw cause;
+              },
+            );
 
       return Promise.allSettled([lightPromise, heavyPromise]).then((results) => {
         if (requestGenerationRef.current !== generation) return;
@@ -786,7 +822,7 @@ export function ResultsPage() {
       setFindingDetailError(null);
       return;
     }
-    fetchDetail(selectedFindingId);
+    fetchDetail(selectedFindingId, "select");
   }, [selectedFindingId, fetchDetail]);
 
   // 採否の保存に失敗した指摘の一覧（PR21 レビュー指摘 2）。`findingId` をキーにする——同じ指摘で
@@ -1000,6 +1036,7 @@ export function ResultsPage() {
                 <FindingsPanel
                   run={state.run}
                   findings={state.findings}
+                  freshness={findingsFreshness}
                   visible={visible}
                   filter={filter}
                   onFilterChange={handleFilterChange}
@@ -1043,16 +1080,35 @@ export function ResultsPage() {
 function FindingsPanel(props: {
   readonly run: RunDto;
   readonly findings: readonly FindingDto[];
+  /** レビュー I-1：一覧が実行の状態に追いついているか。0 件の文言の分岐にだけ効く。 */
+  readonly freshness: FindingsFreshness;
   readonly visible: readonly FindingDto[];
   readonly filter: FindingFilter;
   readonly onFilterChange: (next: FindingFilter) => void;
   readonly selectedFindingId: string | null;
   readonly onSelectFinding: (findingId: string) => void;
 }) {
-  const { run, findings, visible, filter, onFilterChange, selectedFindingId, onSelectFinding } =
-    props;
+  const {
+    run,
+    findings,
+    freshness,
+    visible,
+    filter,
+    onFilterChange,
+    selectedFindingId,
+    onSelectFinding,
+  } = props;
 
   if (findings.length === 0) {
+    // レビュー I-1：一覧が追いついていない間は 0 件を断定しない。取得中と取得失敗を
+    // 実行の状態の文言より先に見る——どちらも「いま画面にある 0 件は当てにならない」ことを
+    // 意味し、そちらのほうが利用者に必要な情報なので。
+    if (freshness === "pending") {
+      return <p>指摘を読み込んでいます…</p>;
+    }
+    if (freshness === "failed") {
+      return <p className={styles.error}>指摘の取得に失敗しました</p>;
+    }
     if (run.status === "completed") {
       return <p>指摘はありません</p>;
     }

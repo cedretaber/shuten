@@ -1681,6 +1681,8 @@ describe("ResultsPage: Task 8 取り直しの合流（決定 3。B5）", () => {
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(4));
 
     await resolveRun(4, makeRunDetail({ status: "running" }));
+    // 門が空になったので 5 本目は走らない（合図が無いのに回り続ける実装なら赤くなる）。
+    expect(getRun).toHaveBeenCalledTimes(4);
     // 畳んだぶんは軽い取り直しなので、指摘の取得は初回と開通時の 2 回だけ。
     expect(getFindings).toHaveBeenCalledTimes(2);
   });
@@ -2003,6 +2005,113 @@ describe("ResultsPage: Task 8 run-settled の後（決定 1 の規則 3・4。B1
     await waitFor(() => expect(screen.getByText("指摘の再取得に失敗しました")).toBeInTheDocument());
     expect(autoUpdateNotices()).toEqual([]);
   });
+
+  // 規則 4 の成功側。取り直しが成功して `status` が終端なら `streamEnded` は立てたままにする
+  // （下ろすと、サーバーが合成 `run-settled` を返す実行にもう一度つなぎに行くループに戻る）。
+  it("取り直しが成功して終端状態なら、購読は張り直されず案内も出ない", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
+
+    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await resolveRun(2, makeRunDetail({ status: "completed" }));
+
+    await waitFor(() => expect(screen.getByText("状態: 完了")).toBeInTheDocument());
+    expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1);
+    expect(stream.live().length).toBe(0);
+    // 決着して取り直しも成功しているので、自動更新について言うことは何も無い。
+    expect(autoUpdateNotices()).toEqual([]);
+  });
+});
+
+// レビュー I-1：2 段反映は「状態だけ先に進む」窓を開ける。指摘 0 件の実行が `completed` に
+// 変わった瞬間、まだ `getFindings` が返っていないのに「指摘はありません」と描いてしまう
+// （`getFindings` は 3N+1 で中央値 110〜130 ms あり、目に見える）。失敗したときはそれが
+// 残り続ける。「取得の失敗を空として見せない」という規律に反するので、一覧が実行の状態に
+// 追いついているかを持ち、追いついていない間は 0 件の断定をしない。
+describe("ResultsPage: Task 8 指摘 0 件の断定は一覧が追いついてから（レビュー I-1）", () => {
+  /** `getFindings` を 1 回ごとに保留できる形にする（1 回目＝初回読み込みだけ即座に解決）。 */
+  function deferredGetFindings(first: readonly FindingDto[]) {
+    const queue: Deferred<FindingDto[]>[] = [];
+    const getFindings = vi.fn(() => {
+      const entry = deferred<FindingDto[]>();
+      queue.push(entry);
+      if (queue.length === 1) entry.resolve([...first]);
+      return entry.promise;
+    });
+    const settle = async (n: number, apply: (entry: Deferred<FindingDto[]>) => void) => {
+      const entry = queue[n - 1];
+      if (entry === undefined) throw new Error(`${n} 回目の getFindings はまだ呼ばれていない`);
+      await act(async () => {
+        apply(entry);
+      });
+    };
+    return {
+      getFindings,
+      resolveFindings: (n: number, findings: FindingDto[]) =>
+        settle(n, (entry) => entry.resolve(findings)),
+      rejectFindings: (n: number, cause: unknown) => settle(n, (entry) => entry.reject(cause)),
+    };
+  }
+
+  it("重い取り直しの getFindings が保留のうちは「指摘はありません」を出さない", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const { getFindings, resolveFindings } = deferredGetFindings([]);
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
+    // 1 段目だけが先に届く：状態は completed になるが、一覧はまだ追いついていない。
+    await resolveRun(2, makeRunDetail({ status: "completed" }));
+
+    await waitFor(() => expect(screen.getByText("状態: 完了")).toBeInTheDocument());
+    expect(screen.queryByText("指摘はありません")).not.toBeInTheDocument();
+    expect(screen.getByText("指摘を読み込んでいます…")).toBeInTheDocument();
+
+    await resolveFindings(2, []);
+    await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
+  });
+
+  it("重い取り直しの getFindings が失敗したら「指摘はありません」ではなく失敗を出す", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const { getFindings, rejectFindings } = deferredGetFindings([]);
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
+    await resolveRun(2, makeRunDetail({ status: "completed" }));
+    await rejectFindings(2, new Error("指摘の再取得に失敗しました"));
+
+    await waitFor(() => expect(screen.getByText("指摘の取得に失敗しました")).toBeInTheDocument());
+    expect(screen.queryByText("指摘はありません")).not.toBeInTheDocument();
+  });
 });
 
 describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
@@ -2059,6 +2168,101 @@ describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
     await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
 
     await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+  });
+});
+
+// レビュー M-1：`fetchDetail` が毎回 `setFindingDetail(null)` すると、実行中に
+// `check-finished` / `target-merged` が届くたびに元候補・位置診断の欄が点滅する。
+// 手動更新だけだった頃は目立たなかったが、自動更新では高頻度で起きる。
+describe("ResultsPage: Task 8 取り直しで詳細を点滅させない（レビュー M-1）", () => {
+  const CANDIDATE_MARK = "候補の理由（1 回目）";
+
+  /** 本文の強調（`data-findings`）をクリックして選ぶ。引用は一覧にも出るので要素で特定する。 */
+  function clickHighlight(findingId: string) {
+    const element = document.querySelector(`[data-findings="${findingId}"]`);
+    if (element === null) throw new Error(`${findingId} の強調が本文に無い`);
+    return element as HTMLElement;
+  }
+
+  function setup() {
+    const stream = fakeStream();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const finding2 = makeFinding({
+      id: "finding-2",
+      quote: "二",
+      range: { start: 5, end: 6 },
+      paragraphId: 1,
+      judgment: {
+        findingId: "finding-2",
+        status: "undecided",
+        note: null,
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    });
+    const detailQueue: Deferred<FindingDetailDto>[] = [];
+    const getFinding = vi.fn((findingId: string) => {
+      const entry = deferred<FindingDetailDto>();
+      detailQueue.push(entry);
+      if (detailQueue.length === 1) {
+        entry.resolve(
+          makeFindingDetail({
+            ...finding1,
+            candidates: [
+              makeCandidate({ llm: { ...makeCandidate().llm, reason: CANDIDATE_MARK } }),
+            ],
+          }),
+        );
+      }
+      void findingId;
+      return entry.promise;
+    });
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([finding1, finding2]),
+      getFinding,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+    return { stream, client, getFinding, detailQueue };
+  }
+
+  it("重い取り直しでは、詳細が届くまで前の値を出し続ける", async () => {
+    const user = userEvent.setup();
+    const { stream, client, getFinding } = setup();
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-1"));
+    await waitFor(() => expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument());
+    expect(getFinding).toHaveBeenCalledTimes(1);
+
+    // 重い合図 → 取り直し。詳細の 2 回目はまだ返さない。
+    await act(async () => {
+      stream.handlers().onEvent(CHECK_FINISHED);
+    });
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+
+    // 前の値が出たまま（「読み込み中…」に戻らない）。
+    expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument();
+    expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
+  });
+
+  it("選択を変えたときは前の指摘の詳細を出さない（読み込み中に戻す）", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup();
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-1"));
+    await waitFor(() => expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-2"));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+
+    expect(screen.queryByText(CANDIDATE_MARK)).not.toBeInTheDocument();
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
   });
 });
 
