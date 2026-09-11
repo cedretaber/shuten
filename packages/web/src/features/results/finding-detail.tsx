@@ -8,6 +8,20 @@
  * 引用や理由が出る（決定 3 と同じ、部分描画を厭わない方の作法。一覧全体の取得とは別に、詳細だけが
  * 遅れて埋まる）。
  *
+ * `detail` と `detailError` の組み合わせは 3 通りある（PR12b Task 8 の再レビュー）。
+ *
+ * | `detail` | `detailError` | 出すもの |
+ * | --- | --- | --- |
+ * | `null` | `null` | 「読み込み中…」（選択直後の初回取得） |
+ * | `null` | あり | その欄にエラー（初回取得の失敗） |
+ * | あり | あり | **前の値＋「更新できませんでした」の 1 行**（背景の取り直しの失敗） |
+ *
+ * 3 行目は Task 8 で生まれた組み合わせである。自動更新のたびに欄を「読み込み中…」へ戻すと
+ * 点滅するので前の値を残すようにしたが、そのままだと失敗が画面に一度も出ず、古い元候補・位置診断が
+ * 最新の正しい値であるかのように出続ける。この PR は `autoRefreshError` / `refreshError` /
+ * `controlFailure` / `findingsFreshness` と一貫して「失敗を黙って消さない」方針なので、
+ * 詳細パネルもそれに合わせる。
+ *
  * `paragraphId` は表示しない（決定 9。位置未確定時は LLM の申告値で、本文の段落と対応する保証が
  * ない）。
  *
@@ -31,25 +45,17 @@ import type {
   FindingDetailDto,
   FindingDto,
   JudgmentStatus,
-  Perspective,
 } from "@shuten/shared";
 import { describeRecheck } from "./finding-detail.ts";
 import { JudgmentControl } from "./judgment-control.tsx";
 import {
   FINDING_CATEGORY_LABELS,
   INITIAL_VERDICT_LABELS,
+  PERSPECTIVE_LABELS,
+  PERSPECTIVE_ORDER,
   RECHECK_VERDICT_LABELS,
 } from "./labels.ts";
 import styles from "./results-page.module.css";
-
-/**
- * 検査の観点（`Perspective`）の日本語ラベル。`labels.ts`（変更禁止）には無いので、
- * `run-settings-form.tsx` の `PERSPECTIVE_LABELS` と同じ形でここに置く（`satisfies` で網羅性を担保）。
- */
-const PERSPECTIVE_LABELS = {
-  typo: "誤字・脱字",
-  naturalness: "日本語の自然さ",
-} as const satisfies Record<Perspective, string>;
 
 /**
  * 候補・診断候補の位置特定状態（`CandidateLocateStatus`。`FindingLocateStatus` と違い
@@ -69,8 +75,12 @@ const DIAGNOSTIC_TRANSFORM_LABELS = {
   "newline+nfc": "改行形式の統一＋NFC 正規化",
 } as const;
 
-/** 観点の表示順（`PERSPECTIVE_LABELS` の定義順）。理由（`reasons`）を観点ごとに並べるために使う。 */
-const PERSPECTIVE_ORDER: readonly Perspective[] = ["typo", "naturalness"];
+/**
+ * 背景の取り直し（`fetchDetail` の `"refresh"`）に失敗したときの 1 行。前の値は残すので、
+ * それが古いかもしれないことだけを伝える。
+ */
+const STALE_DETAIL_NOTICE =
+  "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。";
 
 export interface FindingDetailProps {
   readonly finding: FindingDto;
@@ -226,6 +236,14 @@ export function FindingDetail(props: FindingDetailProps) {
         <button type="button" className={styles.detailNavigateButton} onClick={onNavigate}>
           本文の該当箇所へ移動
         </button>
+      )}
+
+      {/* 背景の取り直しが失敗したとき（`detail !== null` かつ `detailError !== null`）。
+          `<details>` は閉じていることがあるので、その外側に出して必ず見えるようにする。
+          サーバー由来の文面（`detailError`）は転記しない——`refreshError` と違い、ここは
+          「表示中の値が古いかもしれない」ことだけを伝えれば足りる。 */}
+      {detail !== null && detailError !== null && (
+        <p className={styles.error}>{STALE_DETAIL_NOTICE}</p>
       )}
 
       <details className={styles.detailRaw}>

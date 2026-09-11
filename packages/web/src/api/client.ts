@@ -1,8 +1,8 @@
 /**
  * `fetch` を注入できる薄い API クライアント（決定 14）。
  *
- * PR11・PR12a が呼ぶ口を持つ（実行の一覧・開始・詳細、原稿、接続設定、指摘の一覧・詳細・採否）。
- * 停止・再開・再試行・復旧確認・SSE は PR12b が担当。
+ * PR11・PR12a が呼ぶ口（実行の一覧・開始・詳細、原稿、接続設定、指摘の一覧・詳細・採否）に加え、
+ * PR12b が足した停止・再開・再試行・復旧確認・SSE 購読の口を持つ。
  * 応答は `@shuten/shared` の zod スキーマで検証し、型注釈と実際の JSON のずれを実行時に検知する。
  */
 
@@ -24,12 +24,16 @@ import {
   manuscriptVersionDtoSchema,
   type PutConnectionRequest,
   type PutJudgmentRequest,
+  type RecoveryDto,
   type RunDetailDto,
   type RunDto,
   type RunSummaryDto,
+  type RunUnitsDto,
+  recoveryDtoSchema,
   runDetailDtoSchema,
   runDtoSchema,
   runSummaryDtoSchema,
+  runUnitsDtoSchema,
   type StartRunRequest,
 } from "@shuten/shared";
 import { z } from "zod";
@@ -40,6 +44,11 @@ import {
   ApiTransportError,
   GENERIC_REQUEST_ERROR,
 } from "./errors.ts";
+import {
+  type EventSourceConstructor,
+  type RunEventHandlers,
+  subscribeRunEvents as subscribeRunEventsImpl,
+} from "./events.ts";
 
 export interface ApiClient {
   getConnection(): Promise<ConnectionSettingsDto>;
@@ -54,9 +63,17 @@ export interface ApiClient {
   startRun(body: StartRunRequest): Promise<RunDto>;
   getRun(id: string, options?: { signal?: AbortSignal }): Promise<RunDetailDto>;
   getRuns(options?: { signal?: AbortSignal }): Promise<RunSummaryDto[]>;
+  getRunUnits(runId: string, options?: { signal?: AbortSignal }): Promise<RunUnitsDto>;
+  stopRun(runId: string): Promise<RunDto>;
+  resumeRun(runId: string): Promise<RunDto>;
+  retryFailedUnits(runId: string, body?: { unitIds: readonly string[] }): Promise<RunDto>;
+  getRecovery(options?: { signal?: AbortSignal }): Promise<RecoveryDto>;
+  confirmRecovery(runId: string): Promise<RecoveryDto>;
   getFindings(runId: string, options?: { signal?: AbortSignal }): Promise<FindingDto[]>;
   getFinding(findingId: string, options?: { signal?: AbortSignal }): Promise<FindingDetailDto>;
   putJudgment(findingId: string, body: PutJudgmentRequest): Promise<JudgmentDto>;
+  /** `events.ts` の `subscribeRunEvents` をそのまま呼ぶだけの薄い委譲（決定 16）。 */
+  subscribeRunEvents(runId: string, handlers: RunEventHandlers): () => void;
 }
 
 /** zod スキーマの構造的な最小形。スキーマの実装（バージョンや具体の型）に縛られずに受け取るための型。 */
@@ -132,13 +149,33 @@ const runSummaryListSchema = z.array(runSummaryDtoSchema);
 /** `GET /api/runs/:id/findings` の応答。 */
 const findingListSchema = z.array(findingDtoSchema);
 
+/**
+ * `stop` / `resume` / `retry-failed` の 202 の応答。`@shuten/shared` に同じ形は無いので、
+ * サーバー側 `runs.ts` の `runActionDtoSchema` と同じ形をここに持つ。`run` だけを返す。
+ */
+const runActionDtoSchema = z.object({ run: runDtoSchema }).strict();
+
 /** `options?.signal` が指定されたときだけ `init` に足す（`exactOptionalPropertyTypes` 対策）。 */
 function withSignal(init: RequestInit, signal: AbortSignal | undefined): RequestInit {
   return signal === undefined ? init : { ...init, signal };
 }
 
-export function createApiClient(deps?: { fetch?: typeof globalThis.fetch }): ApiClient {
+/** `stop` / `resume` / `retry-failed` の 202 応答から `run` だけを取り出す。 */
+async function requestRunAction(
+  fetchImpl: typeof globalThis.fetch,
+  input: string,
+  init: RequestInit,
+): Promise<RunDto> {
+  const { run } = await request(fetchImpl, input, init, runActionDtoSchema);
+  return run;
+}
+
+export function createApiClient(deps?: {
+  fetch?: typeof globalThis.fetch;
+  EventSource?: EventSourceConstructor;
+}): ApiClient {
   const fetchImpl = deps?.fetch ?? globalThis.fetch.bind(globalThis);
+  const eventSourceCtor = deps?.EventSource;
 
   return {
     getConnection() {
@@ -230,6 +267,59 @@ export function createApiClient(deps?: { fetch?: typeof globalThis.fetch }): Api
       );
     },
 
+    getRunUnits(runId, options) {
+      return request(
+        fetchImpl,
+        `/api/runs/${encodeURIComponent(runId)}/units`,
+        withSignal({ method: "GET" }, options?.signal),
+        runUnitsDtoSchema,
+      );
+    },
+
+    stopRun(runId) {
+      return requestRunAction(fetchImpl, `/api/runs/${encodeURIComponent(runId)}/stop`, {
+        method: "POST",
+      });
+    },
+
+    resumeRun(runId) {
+      return requestRunAction(fetchImpl, `/api/runs/${encodeURIComponent(runId)}/resume`, {
+        method: "POST",
+      });
+    },
+
+    retryFailedUnits(runId, body) {
+      // `body` 省略は本文なしの POST（サーバーは「全件」と読む）。`{ unitIds: [] }` は送らない
+      // （空配列はサーバー側で 400 になる）。
+      const init: RequestInit =
+        body === undefined
+          ? { method: "POST" }
+          : { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) };
+      return requestRunAction(
+        fetchImpl,
+        `/api/runs/${encodeURIComponent(runId)}/retry-failed`,
+        init,
+      );
+    },
+
+    getRecovery(options) {
+      return request(
+        fetchImpl,
+        "/api/recovery",
+        withSignal({ method: "GET" }, options?.signal),
+        recoveryDtoSchema,
+      );
+    },
+
+    confirmRecovery(runId) {
+      return request(
+        fetchImpl,
+        "/api/recovery/confirm",
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ runId }) },
+        recoveryDtoSchema,
+      );
+    },
+
     getFindings(runId, options) {
       return request(
         fetchImpl,
@@ -254,6 +344,14 @@ export function createApiClient(deps?: { fetch?: typeof globalThis.fetch }): Api
         `/api/findings/${encodeURIComponent(findingId)}/judgment`,
         { method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(body) },
         judgmentDtoSchema,
+      );
+    },
+
+    subscribeRunEvents(runId, handlers) {
+      return subscribeRunEventsImpl(
+        runId,
+        handlers,
+        eventSourceCtor === undefined ? undefined : { EventSource: eventSourceCtor },
       );
     },
   };

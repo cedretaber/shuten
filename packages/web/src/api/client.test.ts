@@ -5,9 +5,11 @@ import type {
   FindingDto,
   JudgmentDto,
   ManuscriptVersionDto,
+  RecoveryDto,
   RunDetailDto,
   RunDto,
   RunSummaryDto,
+  RunUnitsDto,
   StartRunRequest,
 } from "@shuten/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +20,8 @@ import {
   ApiTransportError,
   GENERIC_REQUEST_ERROR,
 } from "./errors.ts";
+import type { RunEventHandlers } from "./events.ts";
+import * as eventsModule from "./events.ts";
 
 /**
  * このファイルは計画書（`docs/plans/2026-09-10-pr11-web-shell.md`）の W1 節（API クライアント）を
@@ -188,6 +192,14 @@ function makeFindingDetailDto(overrides: Partial<FindingDetailDto> = {}): Findin
     diagnostics: [],
     ...overrides,
   };
+}
+
+function makeRunUnitsDto(): RunUnitsDto {
+  return { checkUnits: [], recheckUnits: [] };
+}
+
+function makeRecoveryDto(overrides: Partial<RecoveryDto> = {}): RecoveryDto {
+  return { blocked: false, runIds: [], ...overrides };
 }
 
 function fetchMock(response: Response): ReturnType<typeof vi.fn> {
@@ -561,5 +573,167 @@ describe("createApiClient", () => {
 
     const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(String(init.body)).toBe('{"status":"held"}');
+  });
+
+  it("PR12b-1: getRunUnits / stopRun / resumeRun / retryFailedUnits / getRecovery / confirmRecovery それぞれについて、fetch に渡るメソッド・パス・本文と戻り値が正しい", async () => {
+    {
+      const dto = makeRunUnitsDto();
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      const controller = new AbortController();
+      await expect(client.getRunUnits("run-1", { signal: controller.signal })).resolves.toEqual(
+        dto,
+      );
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/runs/run-1/units");
+      expect(init.method).toBe("GET");
+      expect(init.signal).toBe(controller.signal);
+    }
+
+    {
+      const run = makeRunDto({ status: "stopped" });
+      const fetchImpl = fetchMock(jsonResponse(202, { run }));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(client.stopRun("run-1")).resolves.toEqual(run);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/runs/run-1/stop");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeUndefined();
+    }
+
+    {
+      const run = makeRunDto({ status: "running" });
+      const fetchImpl = fetchMock(jsonResponse(202, { run }));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(client.resumeRun("run-1")).resolves.toEqual(run);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/runs/run-1/resume");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeUndefined();
+    }
+
+    {
+      const run = makeRunDto({ status: "running" });
+      const fetchImpl = fetchMock(jsonResponse(202, { run }));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(
+        client.retryFailedUnits("run-1", { unitIds: ["unit-1", "unit-2"] }),
+      ).resolves.toEqual(run);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/runs/run-1/retry-failed");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({ unitIds: ["unit-1", "unit-2"] });
+    }
+
+    {
+      const dto = makeRecoveryDto({ blocked: true, runIds: ["run-1"] });
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      const controller = new AbortController();
+      await expect(client.getRecovery({ signal: controller.signal })).resolves.toEqual(dto);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/recovery");
+      expect(init.method).toBe("GET");
+      expect(init.signal).toBe(controller.signal);
+    }
+
+    {
+      const dto = makeRecoveryDto();
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(client.confirmRecovery("run-1")).resolves.toEqual(dto);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/recovery/confirm");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({ runId: "run-1" });
+    }
+  });
+
+  it("PR12b-2: retryFailedUnits は body 省略で本文なしの POST（{ unitIds: [] } を送らない）", async () => {
+    const run = makeRunDto({ status: "running" });
+    const fetchImpl = fetchMock(jsonResponse(202, { run }));
+    const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+
+    await expect(client.retryFailedUnits("run-1")).resolves.toEqual(run);
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBeUndefined();
+  });
+
+  it("PR12b-3: 202 応答に余分なキーがあると ApiResponseError（{ run } の .strict() が拒む）", async () => {
+    const run = makeRunDto({ status: "stopped" });
+    const client = createApiClient({
+      fetch: fetchMock(jsonResponse(202, { run, extra: "余分な値" })) as unknown as typeof fetch,
+    });
+
+    await expect(client.stopRun("run-1")).rejects.toBeInstanceOf(ApiResponseError);
+  });
+
+  it("PR12b-4: getRunUnits / stopRun / resumeRun / retryFailedUnits / getRecovery / confirmRecovery それぞれで非 2xx は ApiRequestError になる", async () => {
+    const errorResponse = () => errorJsonResponse(409, "run-not-active", "実行中ではありません");
+
+    const getRunUnitsClient = createApiClient({
+      fetch: fetchMock(errorResponse()) as unknown as typeof fetch,
+    });
+    await expect(getRunUnitsClient.getRunUnits("run-1")).rejects.toBeInstanceOf(ApiRequestError);
+
+    const stopRunClient = createApiClient({
+      fetch: fetchMock(errorResponse()) as unknown as typeof fetch,
+    });
+    await expect(stopRunClient.stopRun("run-1")).rejects.toBeInstanceOf(ApiRequestError);
+
+    const resumeRunClient = createApiClient({
+      fetch: fetchMock(errorResponse()) as unknown as typeof fetch,
+    });
+    await expect(resumeRunClient.resumeRun("run-1")).rejects.toBeInstanceOf(ApiRequestError);
+
+    const retryFailedUnitsClient = createApiClient({
+      fetch: fetchMock(errorResponse()) as unknown as typeof fetch,
+    });
+    await expect(retryFailedUnitsClient.retryFailedUnits("run-1")).rejects.toBeInstanceOf(
+      ApiRequestError,
+    );
+
+    const getRecoveryClient = createApiClient({
+      fetch: fetchMock(errorResponse()) as unknown as typeof fetch,
+    });
+    await expect(getRecoveryClient.getRecovery()).rejects.toBeInstanceOf(ApiRequestError);
+
+    const confirmRecoveryClient = createApiClient({
+      fetch: fetchMock(errorResponse()) as unknown as typeof fetch,
+    });
+    await expect(confirmRecoveryClient.confirmRecovery("run-1")).rejects.toBeInstanceOf(
+      ApiRequestError,
+    );
+  });
+
+  it("PR12b-5: subscribeRunEvents は runId・handlers・EventSource を events.ts の実装にそのまま委譲する", () => {
+    const handlers: RunEventHandlers = {
+      onOpen: () => {},
+      onEvent: () => {},
+      onUnknownEvent: () => {},
+      onError: () => {},
+    };
+    const unsubscribe = () => {};
+    const spy = vi.spyOn(eventsModule, "subscribeRunEvents").mockReturnValue(unsubscribe);
+    class FakeEventSource {
+      addEventListener(): void {}
+      close(): void {}
+      onopen = null;
+      onerror = null;
+      // 最終レビュー Important 1：`EventSourceLike` は `readyState` を要求する（0: CONNECTING）。
+      readyState = 0;
+    }
+
+    const client = createApiClient({
+      fetch: vi.fn() as unknown as typeof fetch,
+      EventSource: FakeEventSource,
+    });
+    const result = client.subscribeRunEvents("run-1", handlers);
+
+    expect(spy).toHaveBeenCalledWith("run-1", handlers, { EventSource: FakeEventSource });
+    expect(result).toBe(unsubscribe);
+
+    spy.mockRestore();
   });
 });

@@ -27,9 +27,10 @@ function HistoryControls() {
 /**
  * `App` に注入する fake クライアント。`ConnectionProvider` はマウント時に必ず
  * `checkConnection` を呼び、`/settings` は `getConnection` を、`/runs` は `getRuns` を、
- * `/runs/:id` は `getRun` と `getFindings` を呼ぶ（決定 3。並行に投げる）。このテストは
- * いずれの応答内容も読まないので、解決しない Promise を返して実 `fetch` を呼ばせないことと、
- * `getManuscript`（`getRun` の応答待ちで呼ばれない）が呼ばれないことだけを担保する。
+ * `/runs/:id` は `getRun`・`getFindings`・`getRunUnits` を呼ぶ（決定 3・5。並行に投げる。
+ * `getRunUnits` は PR12b Task 5 で追加）。このテストはいずれの応答内容も読まないので、
+ * 解決しない Promise を返して実 `fetch` を呼ばせないことと、`getManuscript`（`getRun` の
+ * 応答待ちで呼ばれない）が呼ばれないことだけを担保する。
  */
 function makeClient(): ApiClient {
   const notImplemented = (name: string) => () => {
@@ -46,9 +47,19 @@ function makeClient(): ApiClient {
     startRun: notImplemented("startRun"),
     getRun: vi.fn(pending),
     getRuns: vi.fn(pending),
+    // `ResultsPage`（PR12b Task 5）は `getRun`・`getFindings` と並行に `getRunUnits` も呼ぶ
+    // （決定 3・5）。このテストはいずれの応答内容も読まないので、他の並行取得と同じく
+    // 解決しない Promise を返す。
+    getRunUnits: vi.fn(pending),
+    stopRun: notImplemented("stopRun"),
+    resumeRun: notImplemented("resumeRun"),
+    retryFailedUnits: notImplemented("retryFailedUnits"),
+    getRecovery: notImplemented("getRecovery"),
+    confirmRecovery: notImplemented("confirmRecovery"),
     getFindings: vi.fn(pending),
     getFinding: notImplemented("getFinding"),
     putJudgment: notImplemented("putJudgment"),
+    subscribeRunEvents: notImplemented("subscribeRunEvents"),
   };
 }
 

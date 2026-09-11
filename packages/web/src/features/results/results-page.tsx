@@ -5,9 +5,10 @@
  * を吸収し、本文と指摘を読む結果画面に置き換える。上部の表示（原稿名・状態・停止理由・停止メッセージ・
  * モデル・時刻・「最新の状態を取得」ボタン）は `run-header.tsx` の 1 か所に閉じ込める。
  *
- * 取得は決定 3 のとおり：`getRun` と `getFindings` を並行に投げ、`getManuscript` は
- * `run.manuscriptVersionId` が要るため `getRun` の後に呼ぶ。3 つがそろうまで本文も右側も描かない
- * （部分描画をしない）。世代番号（`useRef` の連番）で古い応答を捨てる。`id` が変わったときと
+ * 取得は決定 3 のとおり：`getRun`・`getFindings`・`getRunUnits`（決定 5。PR12b Task 5 で追加）を
+ * 並行に投げ、`getManuscript` は `run.manuscriptVersionId` が要るため `getRun` の後に呼ぶ。
+ * 4 つがそろうまで本文も右側も描かない（部分描画をしない）。世代番号（`useRef` の連番）で
+ * 古い応答を捨てる。`id` が変わったときと
  * 「最新の状態を取得」のたびに世代を進める。
  *
  * 404 の写し方は発生源で分ける（レビュー対応）：**`getRun` の 404 だけ**が「その実行はありません」
@@ -28,17 +29,26 @@
  * 起こりうるため、個別の経路ごとに解除処理を持たず `[visible, selectedFindingId]` を見る 1 つの
  * `useEffect` に一本化する（最終レビュー Important 2）。
  *
- * 更新（再取得）の失敗（最終レビュー Important 1）：`fetchAll("refresh")` が失敗しても、
+ * 更新（再取得）の失敗（最終レビュー Important 1）：取り直し（`performRefresh`）が失敗しても、
  * 表示中の `loaded` の内容（本文・一覧・詳細・選択）はそのまま残し、`refreshError` にエラーを
  * 入れて添えて見せる（`state` を `"error"` に倒さない）。`state` が `"error"` に倒れるのは
- * 初回取得（`fetchAll("initial")`）の失敗のときだけで、その場合は再試行の操作子
+ * 初回取得（`fetchInitial`）の失敗のときだけで、その場合は再試行の操作子
  * （「最新の状態を取得」ボタン）を出す。
  *
- * `progress`（PR12b の担当）と `targets`（Task 9 が使う）は本タスクでも読み捨てるだけで描画しない。
+ * 進捗と実行制御（PR12b Task 5、決定 5・6・7・8・9・10・11）：初回取得に `getRunUnits` を足し
+ * （`getFindings` と同じく `getRun` と並行に投げる。決定 5）、`run.progress` とあわせて
+ * `RunHeader`（実体は `run-progress.tsx`・`run-control.tsx`）へ渡す。停止・再開・失敗単位の
+ * 再試行・復旧確認の 4 操作は `runControlAction` に集約する：API を呼び、成功・失敗を問わず
+ * 取り直し（`requestRefresh("heavy", ...)`）の完了を待ってから `pending` を `null` に戻す（202 の応答の `RunDto` を
+ * 画面の状態へ継ぎ当てない——`RunDetailDto` ではなく進捗も対象も持たないため。かつ、先に
+ * `pending` を戻すと取り直し前の古い `run.status` のままボタンが再度押せてしまい、二重送信の
+ * 窓が開く）。操作の失敗は `controlFailureOf` で `ControlFailure` に写して保持する
+ * （`error.message` は画面に出さない）。`slowUnitIds`（決定 10）を実際に埋めるのは
+ * Task 8 の `generation-slow`（下記「自動更新」節）。
  *
  * 指摘詳細（Task 7、決定 3・9・12）：選択中の指摘 ID が変わるたびに `getFinding` を 1 回呼ぶ
  * （キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。専用の世代番号
- * （`detailGenerationRef`）で古い応答を捨てる——`requestGenerationRef`（3 つの取得）とは別の
+ * （`detailGenerationRef`）で古い応答を捨てる——`requestGenerationRef`（4 つの取得）とは別の
  * カウンタにする。選択を解除しても・別の指摘を選び直しても本編の再取得は要らないため。
  * 取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲（引用・理由・判定など）は
  * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
@@ -48,8 +58,8 @@
  * 自体は変化しないため、選択変更だけを見る仕組みでは再取得されない。失敗単位の再試行で同じ指摘に
  * 元候補が増える経路があるため、実際に古びる）。取得処理そのものは `fetchDetail` に切り出し、
  * 「選択が変わったとき」と「更新が成功し、選択中の指摘があるとき」の両方から呼ぶ。`fetchDetail`
- * 自身が `detailGenerationRef` を進めるので、古い応答の破棄は従来どおり効く。`fetchAll` から
- * `selectedFindingId` を直接読まない（`filter` と同じ理由で `fetchAll` の deps に含めていないため、
+ * 自身が `detailGenerationRef` を進めるので、古い応答の破棄は従来どおり効く。`performRefresh` から
+ * `selectedFindingId` を直接読まない（`filter` と同じ理由で deps に含めていないため、
  * 古い値を読んでしまう）。代わりに毎レンダーで同期するだけの `selectedFindingIdRef` を介す。
  *
  * 本文への移動（Task 9、決定 9、仕様 4 の手順 5・5.3）：本文の容器（`.bodyColumn`）に
@@ -82,6 +92,45 @@
  * 変えても消えない表示は、ここでしか持てないため）。表示する引用（`quote`）は呼び出し側
  * （`finding-detail.tsx`）から渡してもらう——ここで `state.findings` を検索すると、`state` を
  * deps に含めない `handleSaveJudgment` から古い値を読むおそれがあるため。
+ *
+ * ---
+ *
+ * 自動更新（PR12b Task 8、決定 1・2・3・4・10）。取得の経路が「初回読み込み」と「取り直し」の
+ * 2 本に分かれる。
+ *
+ * - **初回読み込み**（`fetchInitial`）は従来どおり 4 つ（`getRun`・`getManuscript`・`getFindings`・
+ *   `getRunUnits`）がそろうまで何も描かない。`id` が変わったとき・初回取得の失敗からの再試行でも
+ *   ここを通り、画面の状態（絞り込み・選択・操作の送信中・案内・遅延通知・SSE の印）を既定に戻す。
+ * - **取り直し**（`performRefresh`）は 2 種類（決定 2）。`light` = `getRun` + `getRunUnits`、
+ *   `heavy` = `light` + `getFindings` + 選択中の詳細。`getManuscript` は取り直さない——原稿の版は
+ *   不変（`run.manuscriptVersionId` は実行中に変わらない）で、取り直す理由が無いため。
+ *
+ * 取り直しには 4 つの規律がある。どれも静かに壊れるので、テストで判別できる形にしてある。
+ *
+ * 1. **合流**（決定 3）：取り直しは同時に 1 本だけ（`inFlightRef`）。走っている最中に来た合図は
+ *    `dirtyRef` に強い方だけを残して畳む。1 本が終わったら `dirtyRef` を取り出して空にし、値が
+ *    あれば次を走らせる。これを **`dirtyRef` が空になるまで繰り返す**——「追い 1 本だけ」にすると、
+ *    1 本目の追い取得の最中に届いたイベントぶんの更新が画面に永久に出ない。固定時間のデバウンスは
+ *    入れない（測っていない待ち時間を足さない）。手動の「最新の状態を取得」も同じ門を通し、
+ *    追い取得が終わるまで `refreshing` を立て続ける。
+ * 2. **2 段反映**（決定 3）：`getRun` + `getRunUnits` の成功をその時点で反映し、`getFindings` と
+ *    詳細は別に反映する。後者の失敗で前者を巻き戻さない——3N+1 の `getFindings` がこけただけで、
+ *    停止・再開の後の新しい状態がボタンにも進捗にも出なくなるのを避ける。
+ * 3. **静かな更新**（決定 4）：`refreshing`（「更新中…」と `disabled`）は手動のときだけ。自動の
+ *    状態は `autoUpdateNotice` の 1 行で表し、同時に 2 行出さない。
+ * 4. **実行 ID で鎖を守る**（前タスクの申し送り 1）：取り直しの鎖・`pending`・`controlFailure`・
+ *    `slowUnitIds` は `runScopeRef`（`id` が変わるたびに進む世代）で守る。`recovery-blocked` の
+ *    案内が別の実行へのリンクを出すので、**同じコンポーネントのまま実行 ID が変わる**経路が実在する。
+ *    守らないと、旧実行の取り直しが新しい実行の画面を上書きし（世代番号を進めてしまうため、
+ *    新実行の初回読み込みの応答まで捨てられて「読み込み中…」から戻らなくなる）、`pending` も
+ *    旧い鎖の完了まで戻らずに新実行のボタンが disabled のままになる。
+ *
+ * SSE の購読そのものは `use-run-stream.ts`（決定 1）。`streamEnded` / `streamConnection` を
+ * 持つのはこちらで、`enabled = run.status === "running" && !streamEnded` を計算して渡す。
+ * `streamEnded` を下ろすのは**軽い取得が成功して `status` が `running` だったとき**だけ
+ * （決定 1 の規則 4）——取り直しに失敗している間は実行が終端かどうか分からず、そこで張り直すと
+ * 「購読 → 合成 `run-settled` → 張り直し」の無限ループが復活する。失敗している間は張らず、
+ * 「自動更新は停止しています。」と出して手動の復旧に委ねる。
  */
 
 import type {
@@ -89,9 +138,11 @@ import type {
   FindingDto,
   JudgmentStatus,
   ManuscriptVersionDto,
+  ProgressDto,
   PutJudgmentRequest,
   RunDto,
   RunTargetDto,
+  RunUnitsDto,
 } from "@shuten/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
@@ -100,6 +151,7 @@ import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES } from "../../app/routes.ts";
 import { buildBodyView } from "./body-view.ts";
 import { BodyView } from "./body-view.tsx";
+import { FailedUnits } from "./failed-units.tsx";
 import { relatedFindings } from "./finding-detail.ts";
 import { FindingDetail } from "./finding-detail.tsx";
 import type { FindingFilter } from "./finding-filter.ts";
@@ -110,7 +162,11 @@ import { RUN_STATUS_LABELS } from "./labels.ts";
 import type { NavigationTarget } from "./navigate.ts";
 import { findTargetElement, navigationTargetOf, scrollIntoViewIfPossible } from "./navigate.ts";
 import styles from "./results-page.module.css";
+import { type ControlFailure, controlFailureOf, type PendingControlAction } from "./run-control.ts";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
+import { pruneSlowUnitIds } from "./run-progress.ts";
+import type { RefreshKind, StreamConnectionState } from "./use-run-stream.ts";
+import { useRunStream } from "./use-run-stream.ts";
 
 type ResultsState =
   | { kind: "loading" }
@@ -118,11 +174,23 @@ type ResultsState =
       kind: "loaded";
       run: RunDto;
       targets: readonly RunTargetDto[];
+      progress: ProgressDto;
+      units: RunUnitsDto;
       manuscript: ManuscriptVersionDto;
       findings: readonly FindingDto[];
     }
   | { kind: "not-found" }
   | { kind: "error"; message: string };
+
+/**
+ * 指摘の一覧が、いま画面に出ている実行の状態に追いついているか（レビュー I-1）。
+ *
+ * 取り直しの 2 段反映（決定 3）は「状態だけ先に進む」窓を開ける：重い取り直しの 1 段目で
+ * `status` が `completed` になった後、2 段目（`getFindings`）が届く前に 0 件を「指摘はありません」
+ * と断定してしまう。`getFindings` は 3N+1 で中央値 110〜130 ms あり、失敗すればその表示が
+ * 残り続ける。取得の失敗を「空」として見せないため、断定はこれが `current` のときだけにする。
+ */
+type FindingsFreshness = "current" | "pending" | "failed";
 
 function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "実行の取得に失敗しました";
@@ -130,6 +198,69 @@ function errorMessageFrom(cause: unknown): string {
 
 /** `state.kind !== "loaded"` の間、`findings` の代わりに使う空配列。毎回同じ参照にする。 */
 const EMPTY_FINDINGS: readonly FindingDto[] = [];
+
+/** 遅延通知（決定 10）の初期値・リセット値。参照を固定して無駄な再描画を作らない。 */
+const EMPTY_SLOW_UNIT_IDS: ReadonlySet<string> = new Set();
+
+/** 取り直しの合図の発生源。手動（「最新の状態を取得」）だけが「うるさい」（決定 4）。 */
+type RefreshSource = "auto" | "manual";
+
+/** 決定 3：畳むときは強い方を残す（軽い合図で重い合図を潰さない）。 */
+function strongerKind(current: RefreshKind | null, next: RefreshKind): RefreshKind {
+  return current === "heavy" || next === "heavy" ? "heavy" : "light";
+}
+
+/** 決定 4：自動更新が止まっていることと、手動の取り直しへの導線を伝える 1 行。 */
+const AUTO_UPDATE_STOPPED_NOTICE =
+  "自動更新は停止しています。「最新の状態を取得」を押してください。";
+
+/**
+ * 決定 4：自動更新の状態を表す 1 行。同時に 2 行出さない（上から優先）。
+ *
+ * 「再接続を試みています」と書けるのは、**SSE が切れていて `EventSource` が実際に再接続を試みて
+ * いるとき**（`streamConnection === "reconnecting"`）だけである。
+ *
+ * - REST の取得が失敗しても `EventSource` を張り直すとは限らず、終端イベントの後なら接続は
+ *   こちらが意図して閉じている。だから 1 行目・4 行目には「再接続」を持ち出さない。
+ * - `streamConnection === "closed"`（`readyState` が CLOSED）は、WHATWG の規定で **以後 `EventSource`
+ *   が再接続しない**状態なので、「再接続を試みています」は嘘になる。自動更新はもう戻らないため、
+ *   1 行目と同じ「自動更新は停止しています。」に倒して手動の取り直しへ導く
+ *   （最終レビュー Important 1）。
+ */
+function autoUpdateNotice(input: {
+  readonly runStatus: RunDto["status"];
+  readonly streamEnded: boolean;
+  readonly streamConnection: StreamConnectionState;
+  readonly autoRefreshError: boolean;
+}): string | null {
+  if (input.streamEnded && input.runStatus === "running") {
+    return AUTO_UPDATE_STOPPED_NOTICE;
+  }
+  if (input.streamConnection === "closed") {
+    return AUTO_UPDATE_STOPPED_NOTICE;
+  }
+  if (input.streamConnection === "reconnecting") {
+    return "サーバーとの接続が切れました。再接続を試みています。";
+  }
+  if (input.autoRefreshError) {
+    return "最新情報の取得に失敗しました。「最新の状態を取得」を押してください。";
+  }
+  return null;
+}
+
+/**
+ * `apiClient.*` が同期例外を投げても、拒否した Promise にそろえる。
+ *
+ * 同期 throw のままだと、`.then(...).finally(...)` で閉じた鎖が未処理の拒否
+ * （unhandled rejection）になる（前タスクの申し送り 2）。
+ */
+function invoke<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return call();
+  } catch (cause) {
+    return Promise.reject(cause);
+  }
+}
 
 /** 採否の保存に失敗した指摘 1 件ぶんの表示情報（PR21 レビュー指摘 2）。 */
 interface JudgmentSaveError {
@@ -159,13 +290,13 @@ export function ResultsPage() {
 
   // 絞り込みと選択（Task 6、決定 7・8・10）。どちらもこの画面のセッションだけのローカル状態
   // （URL にも localStorage にも保存しない）。id が変わったら（別の実行への直リンク遷移）
-  // 両方とも既定に戻す（`fetchAll` の "initial" 分岐でリセットする。理由は下記）。
+  // 両方とも既定に戻す（`fetchInitial` でリセットする。理由は下記）。
   const [filter, setFilter] = useState<FindingFilter>(DEFAULT_FINDING_FILTER);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
 
-  // `fetchAll` の更新成功コールバックから「今選ばれている指摘」を読むための ref
-  // （PR21 レビュー指摘 1）。`fetchAll` の deps に `selectedFindingId` を含めたくない（`filter` と
-  // 同じ理由——選択のたびに `fetchAll` を作り直したくない）ため、レンダーのたびに素直に同期する
+  // 取り直し（`performRefresh`）の成功コールバックから「今選ばれている指摘」を読むための ref
+  // （PR21 レビュー指摘 1）。`performRefresh` の deps に `selectedFindingId` を含めたくない
+  // （`filter` と同じ理由——選択のたびに作り直したくない）ため、レンダーのたびに素直に同期する
   // だけの ref で渡す（`useEffect` を挟まない。値を読むのは非同期コールバックの中だけなので、
   // コミット前のタイミングでも実害は無い）。
   const selectedFindingIdRef = useRef<string | null>(selectedFindingId);
@@ -175,29 +306,73 @@ export function ResultsPage() {
   // 古い要求の応答が後から届いて新しい要求の結果を上書きしないよう、要求ごとに世代を数える。
   const requestGenerationRef = useRef(0);
 
+  // 自動更新（Task 8、決定 1・4）。`streamEnded` / `streamConnection` の持ち主はこの画面
+  // （`useRunStream` ではない。決定 1）。`autoRefreshError` は自動の取り直しの失敗を 1 行に畳んだもの。
+  const [streamEnded, setStreamEnded] = useState(false);
+  const [streamConnection, setStreamConnection] = useState<StreamConnectionState>("open");
+  const [autoRefreshError, setAutoRefreshError] = useState(false);
+  // 決定 10：遅延通知（`generation-slow`）の対象単位 ID。単位が `running` でなくなったら消える。
+  const [slowUnitIds, setSlowUnitIds] = useState<ReadonlySet<string>>(EMPTY_SLOW_UNIT_IDS);
+  // レビュー I-1：指摘の一覧が実行の状態に追いついているか。
+  const [findingsFreshness, setFindingsFreshness] = useState<FindingsFreshness>("current");
+
+  // 取り直しの合流（決定 3）。`inFlightRef` は「今 1 本走っている」、`dirtyRef` は「走り終わったら
+  // もう 1 本走らせる」合図（強い方だけを残す）。`loudRef` は手動の取り直しが混ざっているか
+  // （＝ `refreshing` を立て続けるか）、`clearControlFailureRef` は「最新の状態を取得」由来かどうか
+  // （成功したら実行制御の失敗案内を消す。前タスクの申し送り 3）。
+  const inFlightRef = useRef(false);
+  const dirtyRef = useRef<RefreshKind | null>(null);
+  const loudRef = useRef(false);
+  const clearControlFailureRef = useRef(false);
+  // 門が空になるのを待っている呼び出し元（手動の取り直し・実行制御の鎖）。世代ごとに解決する。
+  const idleWaitersRef = useRef<{ readonly scope: number; readonly resolve: () => void }[]>([]);
+
+  // 実行 ID ごとの世代（前タスクの申し送り 1）。`requestGenerationRef`（要求ごと）とは別物で、
+  // 「どの実行に紐づく鎖か」を表す。レンダー中に同期で進める——非同期の続きより先に進んで
+  // いなければ守りにならないため（同じ値なら何もしないので、StrictMode の二重呼び出しでも安全）。
+  const runScopeRef = useRef(0);
+  const scopedIdRef = useRef<string | undefined>(id);
+  if (scopedIdRef.current !== id) {
+    scopedIdRef.current = id;
+    runScopeRef.current += 1;
+    // 門は新しい実行のために空にする。旧い鎖は自分の世代を見て、門に触らず終わる。
+    inFlightRef.current = false;
+    dirtyRef.current = null;
+    loudRef.current = false;
+    clearControlFailureRef.current = false;
+  }
+
   // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに、または更新が成功した
   // ときに `getFinding` を 1 回呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」の
   // とおり）。`requestGenerationRef`（本編の取得）とは別の世代カウンタで、呼び直すたびに世代を
-  // 進めて古い応答を捨てる。`fetchAll` から呼ぶため、`fetchAll` より前に定義する。
+  // 進めて古い応答を捨てる。`performRefresh` から呼ぶため、それより前に定義する。
   const [findingDetail, setFindingDetail] = useState<FindingDetailDto | null>(null);
   const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
   const detailGenerationRef = useRef(0);
 
   const fetchDetail = useCallback(
-    (findingId: string) => {
+    (findingId: string, mode: "select" | "refresh") => {
       const generation = ++detailGenerationRef.current;
-      // 呼び直した直後は前の詳細を出さない（取得中は「一覧が持つ情報だけで描く」状態にする。
-      // `FindingDetail` 側が `detail === null` を「読み込み中」として扱う）。
-      setFindingDetail(null);
-      setFindingDetailError(null);
-      apiClient.getFinding(findingId).then(
+      if (mode === "select") {
+        // 別の指摘を選び直したときは、前の指摘の詳細を出したままにしない（取得中は
+        // 「一覧が持つ情報だけで描く」状態にする。`FindingDetail` 側が `detail === null` を
+        // 「読み込み中」として扱う）。
+        setFindingDetail(null);
+        setFindingDetailError(null);
+      }
+      // レビュー M-1：取り直し（`mode === "refresh"`）では前の値を残す。同じ指摘の詳細を
+      // 取り直しているだけなので、`null` に戻すと実行中は `check-finished` / `target-merged` が
+      // 届くたびに元候補・位置診断の欄が点滅する（自動更新では高頻度で起きる）。
+      invoke(() => apiClient.getFinding(findingId)).then(
         (detail) => {
           if (detailGenerationRef.current !== generation) return; // 古い応答
           setFindingDetail(detail);
+          setFindingDetailError(null);
         },
         (cause: unknown) => {
           if (detailGenerationRef.current !== generation) return;
           // 詳細の取得失敗は詳細パネルの当該欄にだけエラーを出す（詳細全体を消さない）。
+          // 取り直しの失敗では前の値が残っているので、`FindingDetail` は引き続きそれを描く。
           setFindingDetailError(errorMessageFrom(cause));
         },
       );
@@ -205,116 +380,426 @@ export function ResultsPage() {
     [apiClient],
   );
 
-  const fetchAll = useCallback(
-    (mode: "initial" | "refresh") => {
-      if (id === undefined) return;
-      const generation = ++requestGenerationRef.current;
-      if (mode === "initial") {
-        setState({ kind: "loading" });
-        // 初回・id 変更（別の実行への直リンク遷移）のときだけ絞り込み・選択を既定に戻す。
-        // 更新ボタン（"refresh"）では戻さない——絞り込みは操作中の状態として保つ。
-        setFilter(DEFAULT_FINDING_FILTER);
-        setSelectedFindingId(null);
-        setRefreshError(null);
-      } else {
-        setRefreshing(true);
-        // 前回の更新失敗の表示を、新しい試みの結果が出るまで一旦消す。
-        setRefreshError(null);
-      }
+  // 初回読み込み（決定 3）。4 つそろうまで何も描かない（部分描画をしない）。`id` が変わったとき・
+  // 初回取得の失敗からの再試行でもここを通り、画面の状態を既定に戻す。
+  const fetchInitial = useCallback((): void => {
+    if (id === undefined) return;
+    const generation = ++requestGenerationRef.current;
+    setState({ kind: "loading" });
+    // 初回・id 変更（別の実行への直リンク遷移）のときだけ絞り込み・選択を既定に戻す。
+    // 取り直し（`performRefresh`）では戻さない——絞り込みは操作中の状態として保つ。
+    setFilter(DEFAULT_FINDING_FILTER);
+    setSelectedFindingId(null);
+    setRefreshError(null);
+    setRefreshing(false);
+    // 実行制御の失敗案内（決定 8）も id 変更のたびに戻す。戻さないと、別の実行（run A）で
+    // 出ていた 409 の案内（「この検査はすでに動いていません」等）が、直リンクで移った
+    // 別の実行（run B）の画面にそのまま残ってしまう。
+    setControlFailure(null);
+    // 送信中の操作も実行 ID に紐づく（前タスクの申し送り 1(b)）。戻さないと、操作の送信中に
+    // 別の実行へ移ったとき、旧い鎖が終わるまで新しい実行のボタンが disabled のままになる。
+    setPending(null);
+    setSlowUnitIds(EMPTY_SLOW_UNIT_IDS);
+    setFindingsFreshness("current");
+    setStreamEnded(false);
+    setStreamConnection("open");
+    setAutoRefreshError(false);
 
-      // `getRun` と `getFindings` は並行に投げる（決定 3）。`findingsPromise` の拒否は
-      // 下の then/catch のどちらかで必ず読むが、`getRun` が先に失敗した経路では読まれないまま
-      // 終わることがあるため、ここで空の catch を挟んで未処理拒否（unhandled rejection）を防ぐ
-      // （実際のエラー処理は下の分岐で行うので、ここでは何もしない）。
-      const findingsPromise = apiClient.getFindings(id);
-      findingsPromise.catch(() => {});
+    // `getRun`・`getFindings`・`getRunUnits`（決定 5。PR12b Task 5）は並行に投げる（決定 3）。
+    // `findingsPromise`・`unitsPromise` の拒否は下の then/catch のどちらかで必ず読むが、
+    // `getRun` が先に失敗した経路では読まれないまま終わることがあるため、ここで空の catch を
+    // 挟んで未処理拒否（unhandled rejection）を防ぐ（実際のエラー処理は下の分岐で行うので、
+    // ここでは何もしない）。
+    const findingsPromise = invoke(() => apiClient.getFindings(id));
+    findingsPromise.catch(() => {});
+    const unitsPromise = invoke(() => apiClient.getRunUnits(id));
+    unitsPromise.catch(() => {});
 
-      apiClient.getRun(id).then(
+    invoke(() => apiClient.getRun(id))
+      .then(
         (detail) => {
-          if (requestGenerationRef.current !== generation) return; // 古い応答
+          if (requestGenerationRef.current !== generation) return undefined; // 古い応答
 
           // `getManuscript` は `run.manuscriptVersionId` が要るため `getRun` の応答が届いてから
-          // 呼ぶ（決定 3）。3 つそろうまで setState しない（部分描画をしない）。
-          Promise.all([apiClient.getManuscript(detail.run.manuscriptVersionId), findingsPromise])
-            .then(([manuscript, findings]) => {
+          // 呼ぶ（決定 3）。4 つそろうまで setState しない（部分描画をしない）。
+          return Promise.all([
+            invoke(() => apiClient.getManuscript(detail.run.manuscriptVersionId)),
+            findingsPromise,
+            unitsPromise,
+          ])
+            .then(([manuscript, findings, units]) => {
               if (requestGenerationRef.current !== generation) return;
               setState({
                 kind: "loaded",
                 run: detail.run,
                 targets: detail.targets,
+                progress: detail.progress,
+                units,
                 manuscript,
                 findings,
               });
-              setRefreshing(false);
               // 選択中の指摘が消えたかどうかの判定は、可視集合（`visible`）を監視する
-              // `useEffect`（下）に一本化する。ここでは選択を触らない（最終レビュー Important 2。
-              // ここで `filter` を見て判定しようとしないこと——`fetchAll` の deps に `filter` が
-              // 無く、古い値を読んでしまう）。
-              //
-              // PR21 レビュー指摘 1：更新が成功し、かつ選択中の指摘があれば詳細も取り直す。
-              // 同じ指摘が選ばれたままだと `selectedFindingId` 自体は変化しないため、選択変更
-              // だけを見る useEffect では再取得が走らない（失敗単位の再試行で同じ指摘に元候補が
-              // 増える経路があり、実際に古くなる）。`fetchDetail` 自身が `detailGenerationRef` を
-              // 進めるので、古い応答の破棄は従来どおり効く。
-              if (mode === "refresh" && selectedFindingIdRef.current !== null) {
-                fetchDetail(selectedFindingIdRef.current);
-              }
+              // `useEffect`（下）に一本化する。ここでは選択を触らない（最終レビュー Important 2）。
             })
             .catch((cause: unknown) => {
               if (requestGenerationRef.current !== generation) return;
-              setRefreshing(false);
-              if (mode === "refresh") {
-                // 再取得の失敗では `loaded` の内容を保ったまま、エラーを添えて見せる
-                // （本文・一覧・詳細・選択を消さない。最終レビュー Important 1）。
-                setRefreshError(errorMessageFrom(cause));
-                return;
-              }
-              // 初回取得の失敗（`getManuscript`・`getFindings`）は 404 でも「その実行はありません」
-              // にしない（実行自体は取得できているため）。取得の失敗はエラーとして見せる
-              // （空として見せない。本文だけ描いて黙らない）。
+              // 初回取得の失敗（`getManuscript`・`getFindings`・`getRunUnits`）は 404 でも
+              // 「その実行はありません」にしない（実行自体は取得できているため）。取得の失敗は
+              // エラーとして見せる（空として見せない。本文だけ描いて黙らない）。
               setState({ kind: "error", message: errorMessageFrom(cause) });
             });
         },
         (cause: unknown) => {
           if (requestGenerationRef.current !== generation) return;
-          setRefreshing(false);
-          if (mode === "refresh") {
-            // 再取得の失敗では `loaded` の内容を保ったまま、エラーを添えて見せる
-            // （本文・一覧・詳細・選択を消さない。最終レビュー Important 1）。
-            setRefreshError(errorMessageFrom(cause));
-            return;
-          }
           // `getRun` の 404 だけが「その実行はありません」になる（発生源で写し方を分ける）。
-          // これは初回取得（`mode === "initial"`）のときだけの分岐——再取得時に実行が消えている
-          // 場合も上の分岐でエラー表示にする（「その実行はありません」に倒すと本文・一覧が消える
-          // ため）。
+          // これは初回取得のときだけの分岐——取り直しで実行が消えている場合は
+          // `performRefresh` 側が失敗として扱う（「その実行はありません」に倒すと本文・一覧が
+          // 消えるため）。
           if (cause instanceof ApiRequestError && cause.status === 404) {
             setState({ kind: "not-found" });
             return;
           }
           setState({ kind: "error", message: errorMessageFrom(cause) });
         },
-      );
+      )
+      .catch(() => {});
+  }, [apiClient, id]);
+
+  // 初回・再読み込み・直リンクのいずれでも、表示時に 1 回だけ取得する。id が変わったときも
+  // （`fetchInitial` の参照が変わるので）ここが再実行される。
+  useEffect(() => {
+    fetchInitial();
+  }, [fetchInitial]);
+
+  /**
+   * 取り直し 1 本ぶん（決定 2・3）。必ず解決する（拒否を外へ漏らさない）。
+   *
+   * 反映は 2 段。1 段目（`getRun` + `getRunUnits`）の成功はその場で状態・進捗・操作の可否へ
+   * 反映し、決定 1 の規則 4（`streamEnded` を下ろす）もここで判定する——2 段目
+   * （`getFindings`）の成否を待たない。2 段目の失敗で 1 段目を巻き戻さない。
+   */
+  const performRefresh = useCallback(
+    (kind: RefreshKind): Promise<void> => {
+      if (id === undefined) return Promise.resolve();
+      const runId = id;
+      const generation = ++requestGenerationRef.current;
+
+      // 重い取り直しの `getFindings` は軽い取得と並行に投げる（決定 3）。拒否は下の
+      // `allSettled` で読むが、先に読まれない経路があるので空の catch を挟む。
+      const findingsPromise = kind === "heavy" ? invoke(() => apiClient.getFindings(runId)) : null;
+      findingsPromise?.catch(() => {});
+      if (findingsPromise !== null) {
+        // 一覧はこの瞬間から「追いついていない」（レビュー I-1）。
+        setFindingsFreshness("pending");
+      }
+
+      const lightPromise = Promise.all([
+        invoke(() => apiClient.getRun(runId)),
+        invoke(() => apiClient.getRunUnits(runId)),
+      ]).then(([detail, units]) => {
+        if (requestGenerationRef.current !== generation) return;
+        // `getManuscript` は取り直さない（原稿の版は不変）。`loaded` でなければ何もしない
+        // ——初回読み込みの途中に割り込んで部分描画を作らないため。
+        setState((current) =>
+          current.kind !== "loaded"
+            ? current
+            : {
+                ...current,
+                run: detail.run,
+                targets: detail.targets,
+                progress: detail.progress,
+                units,
+              },
+        );
+        // 決定 10：もう `running` でない単位の遅延通知は消える。
+        setSlowUnitIds((previous) => pruneSlowUnitIds(previous, units));
+        // 決定 1 の規則 4：軽い取得の成功だけで判定する。終端状態なら立てたままにする。
+        if (detail.run.status === "running") {
+          setStreamEnded(false);
+          // 決定 1 の規則 5（PR #22 レビュー）：恒久切断からの復旧は**手動の取り直しの成功**
+          // （`loudRef` が立っている鎖）だけを契機にし、1 本だけ張り直す。自動の取り直しでは
+          // 戻さない——恒久切断の原因が続いている間、接続を作り続けることになるため
+          // （そもそも `"closed"` の間は購読自体が無く、SSE 由来の取り直しは走らない）。
+          // 戻す先は `"open"` ではなく `"reconnecting"`：`onOpen` が来るまでは接続できたと
+          // 偽らない（これから張りに行くので「再接続を試みています」は嘘ではない）。
+          if (loudRef.current) {
+            setStreamConnection((current) => (current === "closed" ? "reconnecting" : current));
+          }
+        }
+      });
+
+      const heavyPromise =
+        findingsPromise === null
+          ? Promise.resolve()
+          : findingsPromise.then(
+              (findings) => {
+                if (requestGenerationRef.current !== generation) return;
+                setState((current) =>
+                  current.kind !== "loaded" ? current : { ...current, findings },
+                );
+                setFindingsFreshness("current");
+                // PR21 レビュー指摘 1：選択中の指摘があれば詳細も取り直す（同じ指摘が選ばれた
+                // ままだと `selectedFindingId` は変化せず、選択変更だけを見る useEffect では
+                // 再取得されない）。`fetchDetail` 自身が世代を進めるので古い応答は捨てられる。
+                if (selectedFindingIdRef.current !== null) {
+                  fetchDetail(selectedFindingIdRef.current, "refresh");
+                }
+              },
+              (cause: unknown) => {
+                if (requestGenerationRef.current !== generation) {
+                  throw cause;
+                }
+                // 一覧は古いまま。0 件を「指摘はありません」と断定させない（レビュー I-1）。
+                setFindingsFreshness("failed");
+                throw cause;
+              },
+            );
+
+      return Promise.allSettled([lightPromise, heavyPromise]).then((results) => {
+        if (requestGenerationRef.current !== generation) return;
+        // 先に軽い側の失敗を見る（並びは `allSettled` の引数どおり）。
+        const rejected = results.filter(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        const first = rejected[0];
+        if (first !== undefined) {
+          if (loudRef.current) {
+            // 手動が混ざっている間の失敗は、これまでどおりエラー帯に出す（決定 4）。あわせて
+            // 自動の案内は消す——同じ失敗を 2 か所に出さないため。しかも自動の 3 行目は
+            // 「「最新の状態を取得」を押してください。」であり、押した直後に出すと堂々巡りになる。
+            setRefreshError(errorMessageFrom(first.reason));
+            setAutoRefreshError(false);
+          } else {
+            setAutoRefreshError(true);
+          }
+          return;
+        }
+        // 1 回でも成功したら自動更新の失敗案内は消す（連続して失敗しても行は増えない）。
+        setAutoRefreshError(false);
+        if (loudRef.current) {
+          setRefreshError(null);
+        }
+        // 前タスクの申し送り 3：409 の「…最新の状態を取得しました。」は、その後の手動の
+        // 取り直しが成功したら消す（文面と状態がずれるため）。操作直後の自動の取り直しでは
+        // 消さない——消すと、案内が出た瞬間に自分で消してしまう。
+        if (clearControlFailureRef.current) {
+          setControlFailure(null);
+        }
+      });
     },
     [apiClient, id, fetchDetail],
   );
 
-  // 初回・再読み込み・直リンクのいずれでも、表示時に 1 回だけ取得する。id が変わったときも
-  // （`fetchAll` の参照が変わるので）ここが再実行される。
-  useEffect(() => {
-    fetchAll("initial");
-  }, [fetchAll]);
+  /** 門が空になるのを待っている呼び出し元を、その世代ぶんだけ解決する。 */
+  const settleIdle = useCallback((scope: number) => {
+    const waiters = idleWaitersRef.current;
+    idleWaitersRef.current = waiters.filter((waiter) => waiter.scope !== scope);
+    for (const waiter of waiters) {
+      if (waiter.scope === scope) waiter.resolve();
+    }
+  }, []);
+
+  // 合流の本体（決定 3）。自分自身を呼び直すので ref を経由する。
+  const startPassRef = useRef<(kind: RefreshKind) => void>(() => {});
+
+  const startPass = useCallback(
+    (kind: RefreshKind) => {
+      const scope = runScopeRef.current;
+      inFlightRef.current = true;
+      const finish = () => {
+        if (runScopeRef.current !== scope) {
+          // 別の実行へ移った。ここで次を走らせると旧実行の ID で取りに行き、世代番号を進めて
+          // 新実行の初回読み込みの応答まで捨ててしまう（前タスクの申し送り 1）。門はレンダー時に
+          // 初期化済みなので触らず、待っている旧い鎖だけ解放して終わる。
+          settleIdle(scope);
+          return;
+        }
+        const next = dirtyRef.current;
+        dirtyRef.current = null;
+        if (next !== null) {
+          // 取り出して空にし、値があれば次を走らせる。これを空になるまで繰り返す
+          // （「追い 1 本だけ」にしない）。
+          startPassRef.current(next);
+          return;
+        }
+        inFlightRef.current = false;
+        if (loudRef.current) {
+          loudRef.current = false;
+          setRefreshing(false);
+        }
+        clearControlFailureRef.current = false;
+        settleIdle(scope);
+      };
+      performRefresh(kind).then(finish, finish);
+    },
+    [performRefresh, settleIdle],
+  );
+  startPassRef.current = startPass;
+
+  /**
+   * 取り直しの入口（決定 3）。自動も手動も必ずここを通す。戻り値は門が空になったときに
+   * 解決する `Promise`——実行制御の鎖がこれを待ってから `pending` を戻す（操作の直後にすぐ
+   * 戻すと、取り直し前の古い `run.status` のままボタンが再度押せて二重送信の窓が開く）。
+   */
+  const requestRefresh = useCallback(
+    (kind: RefreshKind, source: RefreshSource): Promise<void> => {
+      if (id === undefined) return Promise.resolve();
+      if (source === "manual") {
+        // 決定 4：`refreshing` は手動のときだけ。追い取得が終わるまで立て続ける。
+        loudRef.current = true;
+        clearControlFailureRef.current = true;
+        setRefreshing(true);
+        setRefreshError(null);
+      }
+      const scope = runScopeRef.current;
+      const idle = new Promise<void>((resolve) => {
+        idleWaitersRef.current.push({ scope, resolve });
+      });
+      if (inFlightRef.current) {
+        dirtyRef.current = strongerKind(dirtyRef.current, kind);
+      } else {
+        startPassRef.current(kind);
+      }
+      return idle;
+    },
+    [id],
+  );
 
   const handleRefresh = useCallback(() => {
-    fetchAll("refresh");
-  }, [fetchAll]);
+    void requestRefresh("heavy", "manual");
+  }, [requestRefresh]);
+
+  // 実行制御（決定 6・7・8。PR12b Task 5）。停止・再開・失敗単位の再試行・復旧確認の 4 操作は
+  // すべてこの 1 つに集約する：API を呼び、成功・失敗にかかわらず重い取り直しの完了を
+  // 待ってから `pending` を戻す（202 の応答の `RunDto` を画面の状態へ直接継ぎ当てない——
+  // `RunDetailDto` と違って進捗も対象も持たないため）。`pending !== null` の間に別の操作を
+  // 呼ばれても無視する（`RunControl` 側もすべてのボタンを disabled にするが、二重の防御として
+  // ここでも防ぐ）。
+  const [pending, setPending] = useState<PendingControlAction>(null);
+  const [controlFailure, setControlFailure] = useState<ControlFailure | null>(null);
+
+  const runControlAction = useCallback(
+    (kind: Exclude<PendingControlAction, null>, action: (runId: string) => Promise<unknown>) => {
+      if (id === undefined || pending !== null) return;
+      const runId = id;
+      // 鎖のすべての続きを実行 ID の世代で守る（前タスクの申し送り 1）。
+      const scope = runScopeRef.current;
+      setPending(kind);
+      setControlFailure(null);
+      invoke(() => action(runId))
+        .then(
+          () => {},
+          (cause: unknown) => {
+            if (runScopeRef.current !== scope) return;
+            setControlFailure(controlFailureOf(cause));
+          },
+        )
+        .then(() => {
+          // 別の実行へ移っていたら取り直さない（新しい実行の画面を旧実行の値で上書きしない）。
+          if (runScopeRef.current !== scope) return undefined;
+          // 決定 8：成功・失敗を問わず重い取り直し。門を通すので自動の取り直しと合流する。
+          return requestRefresh("heavy", "auto");
+        })
+        .then(() => {
+          if (runScopeRef.current !== scope) return;
+          setPending(null);
+        })
+        // 申し送り 2：`.finally()` で閉じると、`apiClient.*` の同期例外がここまで拒否として
+        // 流れてきたときに未処理の拒否になる。末尾で必ず握る。
+        .catch(() => {});
+    },
+    [id, pending, requestRefresh],
+  );
+
+  const handleStop = useCallback(() => {
+    runControlAction("stop", (runId) => apiClient.stopRun(runId));
+  }, [runControlAction, apiClient]);
+
+  const handleResume = useCallback(() => {
+    runControlAction("resume", (runId) => apiClient.resumeRun(runId));
+  }, [runControlAction, apiClient]);
+
+  const handleRetryFailed = useCallback(() => {
+    runControlAction("retry", (runId) => apiClient.retryFailedUnits(runId));
+  }, [runControlAction, apiClient]);
+
+  // Task 6：失敗単位の個別再試行（`failed-units.tsx`）。`runControlAction` の仕組みにそのまま乗せる
+  // （送信中は `pending`、成否によらず取り直し、失敗は `controlFailureOf` で案内。決定 6・36）。
+  const handleRetryUnit = useCallback(
+    (unitId: string) => {
+      runControlAction("retry", (runId) =>
+        apiClient.retryFailedUnits(runId, { unitIds: [unitId] }),
+      );
+    },
+    [runControlAction, apiClient],
+  );
+
+  const handleConfirmRecovery = useCallback(() => {
+    runControlAction("confirm", (runId) => apiClient.confirmRecovery(runId));
+  }, [runControlAction, apiClient]);
+
+  // SSE の購読（決定 1・2・4・10）。実体は `use-run-stream.ts`。この画面は「張るかどうか」を
+  // 決めて渡し、hook からの合図を状態に写すだけにする。
+  const handleStreamRefresh = useCallback(
+    (kind: RefreshKind) => {
+      void requestRefresh(kind, "auto");
+    },
+    [requestRefresh],
+  );
+  const handleStreamSettled = useCallback(() => {
+    // 決定 1 の規則 3：購読は `subscribeRunEvents` が既に閉じている。張り直さない印を立てる。
+    setStreamEnded(true);
+  }, []);
+  const handleConnectionStateChange = useCallback((connection: StreamConnectionState) => {
+    setStreamConnection(connection);
+  }, []);
+  const handleGenerationSlow = useCallback((unitId: string) => {
+    setSlowUnitIds((previous) => {
+      if (previous.has(unitId)) return previous;
+      const next = new Set(previous);
+      next.add(unitId);
+      return next;
+    });
+  }, []);
+
+  // 決定 1 の規則 2：`running` かつ `streamEnded === false` のときだけ張る。
+  const streamSupported =
+    id !== undefined && state.kind === "loaded" && state.run.status === "running" && !streamEnded;
+  // 決定 1 の規則 5（PR #22 レビュー）：恒久切断（`readyState === CLOSED`）の間は張らない。
+  // `streamConnection` を条件に入れることで `useRunStream` の依存値が変わり、`useEffect` の
+  // cleanup が走って死んだ `EventSource` が確実に閉じる。ここを見ないと、閉じた購読が
+  // 張りっぱなしのまま「自動更新は停止しています」とだけ出る（案内どおりに手動で取り直しても
+  // 自動更新が戻らない）。
+  const streamEnabled = streamSupported && streamConnection !== "closed";
+  useRunStream({
+    runId: id ?? "",
+    enabled: streamEnabled,
+    onRefresh: handleStreamRefresh,
+    onSettled: handleStreamSettled,
+    onConnectionStateChange: handleConnectionStateChange,
+    onGenerationSlow: handleGenerationSlow,
+  });
+
+  // 購読していない間に切断の案内を出したままにしない（決定 4。実行が終端になった・`run-settled` で
+  // 閉じた後は、切れているのではなく張っていない）。
+  //
+  // 見るのは `streamEnabled` ではなく `streamSupported` である（PR #22 レビュー）。`streamEnabled`
+  // で判定すると、恒久切断で `"closed"` になった瞬間に `streamEnabled` が偽になり、この effect が
+  // `"open"` へ戻して再び購読を張る——「閉じる → 即座に張り直す」の無限ループになる。
+  // `"closed"` を下ろすのは手動の取り直しの成功（`performRefresh`）か、実行が `running` でなくなって
+  // `streamSupported` が偽になったときだけにする。
+  useEffect(() => {
+    if (!streamSupported) {
+      setStreamConnection("open");
+    }
+  }, [streamSupported]);
 
   // 初回取得の失敗（`state.kind === "error"`）からの再試行（最終レビュー Important 1）。
-  // "refresh" ではなく "initial" を使う——まだ何も `loaded` になっていないので、絞り込み・選択を
-  // 戻す通常の初回取得と同じ扱いでよい（`fetchAll` の "loading" 分岐で state も戻る）。
+  // 取り直しではなく初回読み込みを使う——まだ何も `loaded` になっていないので、絞り込み・選択を
+  // 戻す通常の初回取得と同じ扱いでよい。
   const handleRetryInitial = useCallback(() => {
-    fetchAll("initial");
-  }, [fetchAll]);
+    fetchInitial();
+  }, [fetchInitial]);
 
   // 本文の強調（クリック）と一覧の行（クリック）の両方から同じ状態を更新する。参照を安定させ、
   // `BodyView` 側の `React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
@@ -368,7 +853,7 @@ export function ResultsPage() {
       setFindingDetailError(null);
       return;
     }
-    fetchDetail(selectedFindingId);
+    fetchDetail(selectedFindingId, "select");
   }, [selectedFindingId, fetchDetail]);
 
   // 採否の保存に失敗した指摘の一覧（PR21 レビュー指摘 2）。`findingId` をキーにする——同じ指摘で
@@ -433,7 +918,7 @@ export function ResultsPage() {
   // 選択中の指摘が可視集合（`visible`）に無ければ選択を外す（最終レビュー Important 2）。
   // 絞り込みの変更・採否の保存で条件から外れる・再取得で再確認が確定し既定の絞り込みから
   // 外れる、の 3 経路すべてがここを通る唯一の解除処理（経路ごとに個別の解除処理を持たない）。
-  // `fetchAll` の成功時にここで潰そうとしないこと——`fetchAll` の deps に `filter` が無く、
+  // 取得の成功時にここで潰そうとしないこと——`fetchInitial` / `performRefresh` の deps に `filter` が無く、
   // 古い値を読んでしまう。この `useEffect` はレンダー後の `visible`（常に最新の `filter` で
   // 計算済み）を見るので、その問題が起きない。
   useEffect(() => {
@@ -481,6 +966,17 @@ export function ResultsPage() {
     [manuscriptBody, highlights],
   );
 
+  // 決定 4：自動更新の状態を表す 1 行（出さないときは null）。
+  const autoNotice =
+    state.kind === "loaded"
+      ? autoUpdateNotice({
+          runStatus: state.run.status,
+          streamEnded,
+          streamConnection,
+          autoRefreshError,
+        })
+      : null;
+
   return (
     <div className={styles.page}>
       {state.kind === "loading" && <p>読み込み中…</p>}
@@ -510,9 +1006,22 @@ export function ResultsPage() {
           <RunHeader
             run={state.run}
             manuscriptName={state.manuscript.name}
+            progress={state.progress}
+            units={state.units}
+            slowUnitCount={slowUnitIds.size}
             onRefresh={handleRefresh}
             refreshing={refreshing}
+            onStop={handleStop}
+            onResume={handleResume}
+            onRetryFailed={handleRetryFailed}
+            onConfirmRecovery={handleConfirmRecovery}
+            pending={pending}
+            failure={controlFailure}
           />
+
+          {/* 自動更新の状態（決定 4）。3 つのうち 1 行だけを出す（同時に 2 行出さない）。
+              手動の `refreshError`（下）とは別の帯で、こちらはエラーの文面を転記しない。 */}
+          {autoNotice !== null && <p className={styles.statusNotice}>{autoNotice}</p>}
 
           {/* 更新（再取得）の失敗（最終レビュー Important 1）：`loaded` の内容は残したまま、
               エラーだけを添えて見せる。本文・一覧・詳細・選択は消えない。 */}
@@ -534,6 +1043,17 @@ export function ResultsPage() {
             </ul>
           )}
 
+          {/* 失敗単位の一覧と個別再試行（Task 6、決定 6・12。裁定 R3）。`isSettingsStop` の外に
+              置く——`settings` 停止でも、それとは無関係な `failed` が残っている形が実在するため
+              （決定 14。`orchestrator.ts` の `retryFailedUnits` のコメント）。出すかどうかの
+              判定自体は `FailedUnits` 内部が `run.status`／失敗単位の有無で行う。 */}
+          <FailedUnits
+            run={state.run}
+            units={state.units}
+            onRetryUnit={handleRetryUnit}
+            pending={pending}
+          />
+
           {!isSettingsStop(state.run) && (
             <div className={styles.layout}>
               <div className={styles.bodyColumn} ref={bodyContainerRef}>
@@ -547,6 +1067,7 @@ export function ResultsPage() {
                 <FindingsPanel
                   run={state.run}
                   findings={state.findings}
+                  freshness={findingsFreshness}
                   visible={visible}
                   filter={filter}
                   onFilterChange={handleFilterChange}
@@ -590,16 +1111,35 @@ export function ResultsPage() {
 function FindingsPanel(props: {
   readonly run: RunDto;
   readonly findings: readonly FindingDto[];
+  /** レビュー I-1：一覧が実行の状態に追いついているか。0 件の文言の分岐にだけ効く。 */
+  readonly freshness: FindingsFreshness;
   readonly visible: readonly FindingDto[];
   readonly filter: FindingFilter;
   readonly onFilterChange: (next: FindingFilter) => void;
   readonly selectedFindingId: string | null;
   readonly onSelectFinding: (findingId: string) => void;
 }) {
-  const { run, findings, visible, filter, onFilterChange, selectedFindingId, onSelectFinding } =
-    props;
+  const {
+    run,
+    findings,
+    freshness,
+    visible,
+    filter,
+    onFilterChange,
+    selectedFindingId,
+    onSelectFinding,
+  } = props;
 
   if (findings.length === 0) {
+    // レビュー I-1：一覧が追いついていない間は 0 件を断定しない。取得中と取得失敗を
+    // 実行の状態の文言より先に見る——どちらも「いま画面にある 0 件は当てにならない」ことを
+    // 意味し、そちらのほうが利用者に必要な情報なので。
+    if (freshness === "pending") {
+      return <p>指摘を読み込んでいます…</p>;
+    }
+    if (freshness === "failed") {
+      return <p className={styles.error}>指摘の取得に失敗しました</p>;
+    }
     if (run.status === "completed") {
       return <p>指摘はありません</p>;
     }

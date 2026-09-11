@@ -18,13 +18,21 @@ import type {
   FindingLocateStatus,
   InitialVerdict,
   JudgmentStatus,
+  Perspective,
   RecheckNotApplicableReason,
   RecheckReasonKind,
   RecheckVerdict,
   RunStatus,
   RunStopReason,
+  UnitFailureDto,
   UnitStatus,
 } from "@shuten/shared";
+
+/**
+ * 生成要求の失敗元区分。`@shuten/shared` に独立した型が無いため `UnitFailureDto["origin"]`
+ * から導く（`unitFailureDtoSchema` の `origin` と同じ列挙に自動で追随する）。
+ */
+type FailureOrigin = UnitFailureDto["origin"];
 
 export const RUN_STATUS_LABELS = {
   running: "実行中",
@@ -126,3 +134,29 @@ export const FAILURE_REASON_LABELS = {
   malformed: "形式不正",
   aborted: "中断",
 } as const satisfies Record<FailureReason, string>;
+
+/** 検査の観点（`Perspective`）。 */
+export const PERSPECTIVE_LABELS = {
+  typo: "誤字・脱字",
+  naturalness: "日本語の自然さ",
+} as const satisfies Record<Perspective, string>;
+
+/**
+ * 観点の表示順。`PERSPECTIVE_LABELS` のキーから導出する（レビュー I-2）。
+ * `PERSPECTIVE_LABELS` は `satisfies Record<Perspective, string>` で `Perspective` の全キーを
+ * 過不足なく持つことが型で保証されているので、独立した配列リテラルを別に持たず、ここから
+ * 派生させることで shared 側に観点が増減したときの更新漏れを防ぐ（更新を忘れると、
+ * 反復元として使う箇所（`perspectiveTallies` など）からその観点が丸ごと消える）。
+ * `Object.keys` は文字列キー（整数インデックスに見えないキー）を定義順のまま返すため、
+ * 定義順（typo → naturalness）がそのまま表示順になる。
+ */
+export const PERSPECTIVE_ORDER: readonly Perspective[] = Object.keys(
+  PERSPECTIVE_LABELS,
+) as Perspective[];
+
+/** 生成要求が失敗した箇所（`UnitFailureDto["origin"]`。仕様書 7 節）。 */
+export const FAILURE_ORIGIN_LABELS = {
+  "ensure-loaded": "モデルの準備",
+  chat: "生成",
+  local: "アプリ内",
+} as const satisfies Record<FailureOrigin, string>;

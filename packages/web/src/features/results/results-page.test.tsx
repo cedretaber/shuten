@@ -1,9 +1,10 @@
 /**
  * `/runs/:id` — 結果画面の骨組み（Task 5、決定 1・2・3。R7）。
  *
- * 3 つの取得（`getRun`・`getManuscript`・`getFindings`）がそろうまで部分描画をしないこと、
- * 世代番号による古い応答の破棄、404・取得失敗・`settings` 停止の扱い、指摘 0 件の文言分岐
- * （決定 2）、「最新の状態を取得」での再取得を確認する。
+ * 4 つの取得（`getRun`・`getManuscript`・`getFindings`・`getRunUnits`。`getRunUnits` は
+ * PR12b Task 5 で追加）がそろうまで部分描画をしないこと、世代番号による古い応答の破棄、
+ * 404・取得失敗・`settings` 停止の扱い、指摘 0 件の文言分岐（決定 2）、
+ * 「最新の状態を取得」での再取得を確認する。
  *
  * 採否の操作は Task 8 が作る。ここでは `BodyView` が正しい段落数で描けること、右側の
  * 指摘一覧と絞り込み（決定 7・8・10。`finding-filter.ts`・`finding-filter.tsx`・
@@ -14,25 +15,34 @@
  * 決定 9 の `paragraphId` 非表示など）は `finding-detail.test.ts`・`finding-detail.test.tsx` の役割。
  * ここでは選択と `getFinding` の配線（1 回だけ呼ばれること、取得前でも一覧が持つ情報から
  * 引用・理由が出ること、関連する他の指摘のリンクで選択が移ること）だけを見る。
+ *
+ * 実行制御（停止・再開・失敗単位の再試行・復旧確認。PR12b Task 5、決定 6・7・8）の配線
+ * （操作後に必ず取り直すこと、`pending` の間ボタンが disabled になること、409 の `code` ごとに
+ * 案内が変わり `error.message` が画面に出ないこと）は末尾の `describe` ブロックで見る。
  */
 
 import type {
   CandidateDto,
+  CheckUnitDto,
   FindingDetailDto,
   FindingDto,
   JudgmentDto,
   ManuscriptVersionDto,
   RunDetailDto,
   RunDto,
+  RunEventDto,
+  RunUnitsDto,
 } from "@shuten/shared";
 import { splitParagraphs } from "@shuten/shared";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
+import type { EventSourceLike, RunEventHandlers } from "../../api/events.ts";
+import { subscribeRunEvents as subscribeRunEventsImpl } from "../../api/events.ts";
 import { ROUTES, runPath } from "../../app/routes.ts";
 import findingListStyles from "./results-page.module.css";
 import { ResultsPage } from "./results-page.tsx";
@@ -82,6 +92,28 @@ function makeRunDetail(overrides: Partial<RunDto> = {}): RunDetailDto {
     progress: { checkUnits: { ...counts }, recheckUnits: { ...counts } },
     targets: [],
   };
+}
+
+function makeCheckUnit(overrides: Partial<CheckUnitDto> = {}): CheckUnitDto {
+  return {
+    id: "check-1",
+    targetId: "target-1",
+    targetIndex: 0,
+    perspective: "typo",
+    status: "pending",
+    attempts: 0,
+    failure: null,
+    pendingNote: null,
+    elapsedMs: null,
+    startedAt: null,
+    finishedAt: null,
+    ...overrides,
+  };
+}
+
+/** `GET /api/runs/:id/units` の応答（PR12b Task 5 で追加）。既定は空（失敗単位なし）。 */
+function makeUnits(overrides: Partial<RunUnitsDto> = {}): RunUnitsDto {
+  return { checkUnits: [], recheckUnits: [], ...overrides };
 }
 
 function makeManuscript(overrides: Partial<ManuscriptVersionDto> = {}): ManuscriptVersionDto {
@@ -146,11 +178,76 @@ function makeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     startRun: notImplemented("startRun"),
     getRun: notImplemented("getRun"),
     getRuns: notImplemented("getRuns"),
+    // 既定は空の units を即座に返す（PR12b Task 5 で `fetchAll` に足した第 4 の取得）。
+    // 呼ばれ方そのものを検査するテストは明示的に上書きする。
+    getRunUnits: () => Promise.resolve(makeUnits()),
+    stopRun: notImplemented("stopRun"),
+    resumeRun: notImplemented("resumeRun"),
+    retryFailedUnits: notImplemented("retryFailedUnits"),
+    getRecovery: notImplemented("getRecovery"),
+    confirmRecovery: notImplemented("confirmRecovery"),
     getFindings: notImplemented("getFindings"),
     getFinding: notImplemented("getFinding"),
     putJudgment: notImplemented("putJudgment"),
+    // 既定は「張れるが何も鳴らない」購読（Task 8）。`status === "running"` の実行を描く検査は
+    // 多く、そのすべてが購読を張るため、ここを例外にすると無関係な検査が落ちる。
+    // 購読そのものを検査するときは `fakeStream()` を明示的に渡す。
+    subscribeRunEvents: () => () => {},
     ...overrides,
   };
+}
+
+interface FakeSubscription {
+  readonly runId: string;
+  readonly handlers: RunEventHandlers;
+  closed: boolean;
+}
+
+/**
+ * 偽の SSE 購読（Task 8）。jsdom に `EventSource` は無いので、`ApiClient` の口ごと差し替える。
+ * イベントは `RunEventDto` をそのまま渡す——テストに JSON の `data` 文字列を一切登場させない
+ * （受信した値を画面にもログにも出さない、という規律をテスト側でも守る）。
+ */
+function fakeStream() {
+  const subscriptions: FakeSubscription[] = [];
+  const subscribeRunEvents = vi.fn((runId: string, handlers: RunEventHandlers) => {
+    const entry: FakeSubscription = { runId, handlers, closed: false };
+    subscriptions.push(entry);
+    return () => {
+      entry.closed = true;
+    };
+  });
+  return {
+    subscribeRunEvents,
+    subscriptions,
+    live: () => subscriptions.filter((s) => !s.closed),
+    handlers: () => {
+      const last = subscriptions.at(-1);
+      if (last === undefined) throw new Error("購読がまだ 1 本も張られていない");
+      return last.handlers;
+    },
+  };
+}
+
+/**
+ * 購読が張られるのを待ってからハンドラーを取り出す。購読は `useEffect` なので、画面の描画を
+ * `waitFor` で待てた時点ではまだ張られていないことがある（そのまま `handlers()` を呼ぶと
+ * ごく稀に「購読がまだ 1 本も張られていない」で落ちる）。
+ */
+async function streamHandlers(stream: ReturnType<typeof fakeStream>): Promise<RunEventHandlers> {
+  await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalled());
+  return stream.handlers();
+}
+
+/** 購読を待ってからイベントを 1 件鳴らし、反映まで流す。 */
+async function fireStream(
+  stream: ReturnType<typeof fakeStream>,
+  fire: (handlers: RunEventHandlers) => void,
+): Promise<void> {
+  const handlers = await streamHandlers(stream);
+  await act(async () => {
+    fire(handlers);
+  });
 }
 
 interface Deferred<T> {
@@ -326,8 +423,12 @@ describe("ResultsPage: R7 指摘 0 件の文言（決定 2）", () => {
 // 実装が誤って progress / targets の値をどこかに埋め込んだら検出できるよう、
 // 現実にはありえない値（進捗件数・対象 ID）を仕込んでおく。`progress` は PR12b の担当、
 // `targets` は Task 9 が使うため、本タスクではどちらも読み捨てるだけで画面に出さない。
-describe("ResultsPage: RunDetailDto の progress と targets を画面に出さない", () => {
-  it("進捗件数・対象 ID が document.body.textContent に出ない", async () => {
+// PR12b Task 5 より前は `progress`・`targets` をどちらも読み捨てるだけだったため、このテストは
+// 「どちらも画面に出ない」ことを検査していた。Task 5 で `progress` は `RunHeader`（実体は
+// `RunProgress`）へ渡して意図的に表示するようになったため、`targets`（`RunTargetDto.id` などの
+// 内部 ID）だけが「出ない」対象として残る——進捗件数はむしろ「出ること」を検査する。
+describe("ResultsPage: RunDetailDto の progress を表示し、targets の内部 ID は出さない", () => {
+  it("進捗件数（run.progress）は表示され、対象 ID（targets）は document.body.textContent に出ない", async () => {
     const detail: RunDetailDto = {
       run: makeRun({ status: "completed" }),
       progress: {
@@ -354,18 +455,24 @@ describe("ResultsPage: RunDetailDto の progress と targets を画面に出さ�
     renderPage(client);
 
     await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
-    expect(document.body.textContent ?? "").not.toContain("12345");
+    // 進捗件数は `RunHeader`（`RunProgress`）が意図して表示する（Task 5）。
+    expect(screen.getByText(/完了 12345 \/ 全 12345 件/)).toBeInTheDocument();
+    // `targets`（`RunTargetDto.id` などの内部 ID）はどこにも出さない。
     expect(document.body.textContent ?? "").not.toContain("target-6789");
   });
 });
 
 describe("ResultsPage: R7 最新の状態を取得", () => {
-  it("クリックで 3 つとも再取得される", async () => {
+  // PR12b Task 8：取り直し（手動・自動とも）は `getManuscript` を呼ばない。原稿の版は不変で
+  // （`run.manuscriptVersionId` は実行中に変わらない）、取り直す理由が無いため（決定 2 の
+  // `light` / `heavy` の定義にも `getManuscript` は含まれない）。
+  it("クリックで状態・単位・指摘が再取得される（原稿は取り直さない）", async () => {
     const user = userEvent.setup();
     const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
     const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
     const getFindings = vi.fn(() => Promise.resolve([]));
-    const client = makeClient({ getRun, getManuscript, getFindings });
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits });
 
     renderPage(client);
 
@@ -373,12 +480,14 @@ describe("ResultsPage: R7 最新の状態を取得", () => {
     expect(getRun).toHaveBeenCalledTimes(1);
     expect(getManuscript).toHaveBeenCalledTimes(1);
     expect(getFindings).toHaveBeenCalledTimes(1);
+    expect(getRunUnits).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
 
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
-    expect(getManuscript).toHaveBeenCalledTimes(2);
     expect(getFindings).toHaveBeenCalledTimes(2);
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
+    expect(getManuscript).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1186,5 +1295,1358 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
 
     expect(screen.queryByRole("button", { name: "本文の該当箇所へ移動" })).not.toBeInTheDocument();
+  });
+});
+
+// 実行制御（PR12b Task 5、決定 6・7・8）：停止・再開・失敗単位の再試行の配線。ボタンの出し分け
+// そのもの（`controlAvailability`）は `run-control.test.ts`・`run-control.test.tsx` が単体で
+// 検査済み。ここでは「操作後に必ず状態を取り直すこと」「202 の応答をそのまま画面の状態へ
+// 継ぎ当てないこと」「409 の `code` ごとの案内と `error.message` を画面に出さないこと」
+// 「取り直しが終わるまでボタンが disabled のままであること（二重送信の窓を開けない）」を見る。
+describe("ResultsPage: 実行制御（決定 6・7・8）", () => {
+  it("停止を押すと stopRun を呼び、202 の応答を継ぎ当てず必ず状態を取り直す", async () => {
+    const user = userEvent.setup();
+    const getRun = vi
+      .fn<() => Promise<RunDetailDto>>()
+      .mockResolvedValueOnce(makeRunDetail({ status: "running" }))
+      .mockResolvedValueOnce(makeRunDetail({ status: "stopped", stopReason: "aborted" }));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    // stopRun の 202 応答はわざと "running" のまま返す——画面がこれを直接状態へ継ぎ当てていたら
+    // 誤って「実行中」のまま表示されてしまう（`RunDto` であって `RunDetailDto` ではないため、
+    // そもそも進捗も持たない）。
+    const stopRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, stopRun });
+
+    renderPage(client);
+
+    const stopButton = await screen.findByRole("button", { name: "停止" });
+    await waitFor(() => expect(stopButton).toBeEnabled());
+    await user.click(stopButton);
+
+    await waitFor(() => expect(screen.getByText("状態: 停止中")).toBeInTheDocument());
+    expect(stopRun).toHaveBeenCalledTimes(1);
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
+    expect(getFindings).toHaveBeenCalledTimes(2);
+  });
+
+  it("B10: 409 で拒否されても、code ごとの案内が出て必ず状態を取り直す。error.message は出ない", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn(() =>
+      Promise.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" })),
+    );
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const resumeRun = vi.fn(() =>
+      Promise.reject(
+        new ApiRequestError(
+          409,
+          "run-rejected-running",
+          "実行中のため受け付けられません: secret-run-id",
+        ),
+      ),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, resumeRun });
+
+    renderPage(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await waitFor(() => expect(resumeButton).toBeEnabled());
+    await user.click(resumeButton);
+
+    await waitFor(() =>
+      expect(screen.getByText("すでに実行中です。最新の状態を取得しました。")).toBeInTheDocument(),
+    );
+    expect(resumeRun).toHaveBeenCalledTimes(1);
+    // 失敗でも必ず状態を取り直す（決定 8）。
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
+    expect(getFindings).toHaveBeenCalledTimes(2);
+    // サーバーの `error.message`（実行 ID を含む）は画面に出さない。
+    expect(document.body.textContent ?? "").not.toContain("secret-run-id");
+  });
+
+  it("操作が終わっても、状態の取り直しが終わるまでボタンは disabled のまま（二重送信の窓を開けない）", async () => {
+    const user = userEvent.setup();
+    let getRunCalls = 0;
+    const refetchDeferred = deferred<RunDetailDto>();
+    const getRun = vi.fn(() => {
+      getRunCalls += 1;
+      if (getRunCalls === 1) {
+        return Promise.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" }));
+      }
+      return refetchDeferred.promise;
+    });
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const resumeRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, resumeRun });
+
+    renderPage(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await waitFor(() => expect(resumeButton).toBeEnabled());
+    await user.click(resumeButton);
+
+    // resumeRun はすぐ解決するが、取り直し（2 回目の getRun）はまだ終わっていない。
+    // ここで `pending` を戻してしまうと、古い（"stopped" のままの）状態に対して再開ボタンが
+    // 再び押せてしまい、二重送信の窓が開く。
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    expect(resumeButton).toBeDisabled();
+
+    refetchDeferred.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" }));
+
+    await waitFor(() => expect(resumeButton).toBeEnabled());
+  });
+
+  it("『失敗単位を再試行』を押すと retryFailedUnits を本文なし（全件対象）で呼ぶ", async () => {
+    const user = userEvent.setup();
+    const failedUnits = makeUnits({
+      checkUnits: [
+        makeCheckUnit({
+          status: "failed",
+          failure: { reason: "timeout", message: "", finishReason: null, origin: "chat" },
+        }),
+      ],
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "partially-failed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(failedUnits));
+    const retryFailedUnits = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript,
+      getFindings,
+      getRunUnits,
+      retryFailedUnits,
+    });
+
+    renderPage(client);
+
+    const retryButton = await screen.findByRole("button", { name: "失敗単位を再試行" });
+    await user.click(retryButton);
+
+    await waitFor(() => expect(retryFailedUnits).toHaveBeenCalledTimes(1));
+    expect(retryFailedUnits).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  // Task 6：失敗単位の一覧（`failed-units.tsx`）からの個別再試行。出し分けそのものは
+  // `failed-units.test.tsx` が検査済み。ここでは `results-page.tsx` の配線
+  // （`{ unitIds: [id] }` を付けて呼ぶこと、全件用の口を本文なしで呼ばないこと）だけを見る。
+  it("失敗単位の一覧の『この単位を再試行』を押すと retryFailedUnits を unitIds 1 件で呼ぶ", async () => {
+    const user = userEvent.setup();
+    const failedUnits = makeUnits({
+      checkUnits: [
+        makeCheckUnit({
+          id: "check-1",
+          status: "failed",
+          failure: { reason: "timeout", message: "", finishReason: null, origin: "chat" },
+        }),
+      ],
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "partially-failed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(failedUnits));
+    const retryFailedUnits = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript,
+      getFindings,
+      getRunUnits,
+      retryFailedUnits,
+    });
+
+    renderPage(client);
+
+    const retryButton = await screen.findByRole("button", { name: "この単位を再試行" });
+    await user.click(retryButton);
+
+    await waitFor(() => expect(retryFailedUnits).toHaveBeenCalledTimes(1));
+    expect(retryFailedUnits).toHaveBeenCalledWith(RUN_ID, { unitIds: ["check-1"] });
+    // 空振り防止：全件用（本文なし）の呼び出しと混同していないこと。
+    expect(retryFailedUnits).not.toHaveBeenCalledWith(RUN_ID);
+  });
+});
+
+describe("ResultsPage: 実行制御（決定 6・7・8）別の実行への遷移", () => {
+  const OTHER_RUN_ID = "run-2";
+
+  /** `RUN_ID` から `OTHER_RUN_ID` へ直リンク遷移するボタンを持つ、`ResultsPage` を包む木。 */
+  function NavigationProbe() {
+    const navigate = useNavigate();
+    return (
+      <button type="button" onClick={() => navigate(runPath(OTHER_RUN_ID))}>
+        検査用ナビゲーション：別の実行へ
+      </button>
+    );
+  }
+
+  function renderPageWithNavigation(client: ApiClient) {
+    return render(
+      <MemoryRouter initialEntries={[runPath(RUN_ID)]}>
+        <ApiClientProvider client={client}>
+          <NavigationProbe />
+          <Routes>
+            <Route path={ROUTES.run} element={<ResultsPage />} />
+          </Routes>
+        </ApiClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("『確認だけ記録する』ボタンを押すと confirmRecovery を呼ぶ（resumeRun は呼ばない。Task 7）", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn(() =>
+      Promise.resolve(makeRunDetail({ status: "recovery-waiting", recoveryConfirmedAt: null })),
+    );
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const confirmRecovery = vi.fn(() => Promise.resolve({ blocked: false, runIds: [] }));
+    const resumeRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript,
+      getFindings,
+      getRunUnits,
+      confirmRecovery,
+      resumeRun,
+    });
+
+    renderPage(client);
+
+    const confirmButton = await screen.findByRole("button", {
+      name: "確認だけ記録する（この検査は再開しない）",
+    });
+    await user.click(confirmButton);
+
+    await waitFor(() => expect(confirmRecovery).toHaveBeenCalledTimes(1));
+    expect(confirmRecovery).toHaveBeenCalledWith(RUN_ID);
+    expect(resumeRun).not.toHaveBeenCalled();
+    // 操作後は必ず状態を取り直す（決定 8）。
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+  });
+
+  it("別の実行へ直リンクで移ると、前の実行の実行制御の失敗案内は残らない", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn((id: string) =>
+      Promise.resolve(
+        id === RUN_ID
+          ? makeRunDetail({ status: "stopped", stopReason: "connection-lost" })
+          : makeRunDetail({ id: OTHER_RUN_ID, status: "running" }),
+      ),
+    );
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const resumeRun = vi.fn(() =>
+      Promise.reject(
+        new ApiRequestError(409, "run-rejected-running", "実行中のため受け付けられません"),
+      ),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, resumeRun });
+
+    renderPageWithNavigation(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await user.click(resumeButton);
+    await waitFor(() =>
+      expect(screen.getByText("すでに実行中です。最新の状態を取得しました。")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：別の実行へ" }));
+
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    expect(
+      screen.queryByText("すでに実行中です。最新の状態を取得しました。"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 8：自動更新の結線（決定 1・2・3・4。B5・B6・B7・B13・B14・B15・B16）
+//
+// どの検査がどの壊れ方を判別するかを、各 `it` の直前に日本語で書く。静かに壊れる部分
+// （無限再接続・イベントの取りこぼし・更新が永久に止まる）は、素朴な実装でも緑になって
+// しまわないよう、必ず「壊したら赤くなる」形にしてある。
+// ---------------------------------------------------------------------------
+
+/** 決定 4 の 3 行。同時に 2 つ出さない（上から優先）。 */
+const STREAM_ENDED_NOTICE = "自動更新は停止しています。「最新の状態を取得」を押してください。";
+const DISCONNECTED_NOTICE = "サーバーとの接続が切れました。再接続を試みています。";
+const AUTO_REFRESH_ERROR_NOTICE =
+  "最新情報の取得に失敗しました。「最新の状態を取得」を押してください。";
+
+/** 今どの案内が出ているか。決定 4 の「行は同時に 2 つ出ない」を数で見る。 */
+function autoUpdateNotices(): string[] {
+  return [STREAM_ENDED_NOTICE, DISCONNECTED_NOTICE, AUTO_REFRESH_ERROR_NOTICE].filter(
+    (text) => screen.queryByText(text) !== null,
+  );
+}
+
+const CHECK_STARTED: RunEventDto = { type: "check-started", targetIndex: 0, perspective: "typo" };
+const CHECK_FINISHED: RunEventDto = {
+  type: "check-finished",
+  targetIndex: 0,
+  perspective: "typo",
+  status: "done",
+};
+const RUN_SETTLED: RunEventDto = { type: "run-settled", status: "completed", stopReason: null };
+
+/**
+ * `getRun` を 1 回ごとに保留できる形にする。1 回目（初回読み込み）だけ即座に解決し、
+ * 2 回目以降は `resolveRun(n, ...)` で明示的に解決する——取り直しの「最中」を作るため。
+ */
+function deferredGetRun(first: RunDetailDto) {
+  const queue: Deferred<RunDetailDto>[] = [];
+  const getRun = vi.fn(() => {
+    const entry = deferred<RunDetailDto>();
+    queue.push(entry);
+    if (queue.length === 1) entry.resolve(first);
+    return entry.promise;
+  });
+  /** n 回目（1 始まり）の `getRun` を解決する。 */
+  const resolveRun = async (n: number, detail: RunDetailDto) => {
+    const entry = queue[n - 1];
+    if (entry === undefined) throw new Error(`${n} 回目の getRun はまだ呼ばれていない`);
+    await act(async () => {
+      entry.resolve(detail);
+    });
+  };
+  const rejectRun = async (n: number, cause: unknown) => {
+    const entry = queue[n - 1];
+    if (entry === undefined) throw new Error(`${n} 回目の getRun はまだ呼ばれていない`);
+    await act(async () => {
+      entry.reject(cause);
+    });
+  };
+  return { getRun, resolveRun, rejectRun };
+}
+
+describe("ResultsPage: Task 8 購読を張る条件（決定 1。B13）", () => {
+  // 終端状態の実行で購読を張ると、サーバーが合成 `run-settled` を返して接続を閉じ、
+  // `EventSource` が自動再接続する——「接続 → run-settled → 切断 → 再接続」の無限ループ。
+  // ここを壊す（`status` を見ずに常に購読する）と赤になる。
+  it("終端状態の実行では 1 本も購読しない", async () => {
+    const stream = fakeStream();
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "completed" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
+    expect(stream.subscribeRunEvents).not.toHaveBeenCalled();
+  });
+
+  it("実行中なら 1 本だけ購読し、実行 ID を渡す", async () => {
+    const stream = fakeStream();
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+
+    await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
+    expect(stream.subscribeRunEvents).toHaveBeenCalledWith(RUN_ID, expect.anything());
+    expect(stream.live().length).toBe(1);
+  });
+});
+
+describe("ResultsPage: Task 8 取り直しの合流（決定 3。B5）", () => {
+  // 「追い 1 本だけ」の実装を赤にする検査。追い取得の最中に届いたイベントを黙って捨てる
+  // 実装では `getRun` が 3 回で止まり、この検査が落ちる。
+  it("最中の合図は 1 本に畳まれ、その追い取得の最中の合図でもう 1 本走る", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    expect(getRun).toHaveBeenCalledTimes(1);
+    expect(getFindings).toHaveBeenCalledTimes(1);
+
+    // 開通 → 1 本目（重い）。まだ終わらせない。
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+
+    // 1 本目の最中に 2 件。強い方（ここでは軽い同士）に畳まれて 1 本になるはず。
+    act(() => handlers.onEvent(CHECK_STARTED));
+    act(() => handlers.onEvent(CHECK_STARTED));
+    expect(getRun).toHaveBeenCalledTimes(2);
+
+    await resolveRun(2, makeRunDetail({ status: "running" }));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(3));
+
+    // 2 本目（追い取得）の最中にもう 1 件。ここを捨てる実装だと 3 本目が走らない。
+    act(() => handlers.onEvent(CHECK_STARTED));
+    await resolveRun(3, makeRunDetail({ status: "running" }));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(4));
+
+    await resolveRun(4, makeRunDetail({ status: "running" }));
+    // 門が空になったので 5 本目は走らない（合図が無いのに回り続ける実装なら赤くなる）。
+    expect(getRun).toHaveBeenCalledTimes(4);
+    // 畳んだぶんは軽い取り直しなので、指摘の取得は初回と開通時の 2 回だけ。
+    expect(getFindings).toHaveBeenCalledTimes(2);
+  });
+
+  // 畳むときに「後勝ち」「先勝ち」にした実装を赤にする（軽い合図で重い合図を潰さない）。
+  it("畳むときは強い方が残る（軽い + 重い → 重い）", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+
+    // 重い → 軽いの順に届く。後勝ちだと軽いに落ちてしまう。
+    act(() => handlers.onEvent(CHECK_FINISHED));
+    act(() => handlers.onEvent(CHECK_STARTED));
+
+    await resolveRun(2, makeRunDetail({ status: "running" }));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(3));
+    await resolveRun(3, makeRunDetail({ status: "running" }));
+
+    // 初回 + 開通 + 畳んだ 1 本（重い）＝ 3 回。
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(3));
+  });
+
+  // 手動の取り直しを門の外に置くと、3N+1 の `getFindings` が 2 本同時に走るか、
+  // 「更新中…」と出たまま何も走っていない状態になる。
+  it("手動の取り直しも同じ門を通り、追い取得が終わるまで「更新中…」が続く", async () => {
+    const user = userEvent.setup();
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+    // 門に積まれただけで、2 本目は走っていない。
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "更新中…" })).toBeDisabled();
+
+    await resolveRun(2, makeRunDetail({ status: "running" }));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(3));
+    // 追い取得の最中はまだ「更新中…」のまま。
+    expect(screen.getByRole("button", { name: "更新中…" })).toBeDisabled();
+
+    await resolveRun(3, makeRunDetail({ status: "running" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "最新の状態を取得" })).toBeEnabled(),
+    );
+  });
+});
+
+describe("ResultsPage: Task 8 合図の割り付け（決定 2。B6）", () => {
+  // 何でも重い取り直しにする実装（3N+1 の `getFindings` を毎イベント叩く）を赤にする。
+  it("軽い合図では getFindings を呼ばず、重い合図では呼ぶ", async () => {
+    const stream = fakeStream();
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "running" })));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      getRunUnits,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    expect(getFindings).toHaveBeenCalledTimes(1);
+
+    const handlers = await streamHandlers(stream);
+    await act(async () => {
+      handlers.onEvent(CHECK_STARTED);
+    });
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
+    expect(getFindings).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      handlers.onEvent(CHECK_FINISHED);
+    });
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
+    expect(getRun).toHaveBeenCalledTimes(3);
+  });
+
+  // 決定 10：遅延通知は取り直さない。取り直す実装だと `getRun` が増えて赤になる。
+  it("generation-slow は取り直さず、遅延の件数だけを出す", async () => {
+    const stream = fakeStream();
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      getRunUnits: () =>
+        Promise.resolve(makeUnits({ checkUnits: [makeCheckUnit({ status: "running" })] })),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    await act(async () => {
+      handlers.onEvent({ type: "generation-slow", unitId: "check-1", elapsedMs: 120_000 });
+    });
+
+    await waitFor(() => expect(screen.getByText(/生成が遅延しています/)).toBeInTheDocument());
+    expect(getRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ResultsPage: Task 8 自動更新は静かに（決定 4。B7）", () => {
+  // `refreshing` を自動更新でも立てる実装を赤にする（ボタンが点滅し続ける回帰）。
+  it("自動の取り直しの最中でもボタンは「最新の状態を取得」のまま押せる", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    await fireStream(stream, (h) => h.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole("button", { name: "最新の状態を取得" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "更新中…" })).not.toBeInTheDocument();
+
+    await resolveRun(2, makeRunDetail({ status: "running" }));
+    expect(autoUpdateNotices()).toEqual([]);
+  });
+
+  // 自動の失敗で内容を消す／手動用のエラー帯を出す実装を赤にする。
+  it("自動の取り直しが失敗しても内容は残り、1 行の案内だけが出る", async () => {
+    const stream = fakeStream();
+    const { getRun, rejectRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([makeFinding()]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const expectedParagraphs = splitParagraphs(BODY).length;
+
+    await fireStream(stream, (h) => h.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await rejectRun(2, new Error("自動更新の失敗（テスト用）"));
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([AUTO_REFRESH_ERROR_NOTICE]));
+    // 内容は消えない。サーバー由来の文言も画面に出さない（静かに 1 行だけ）。
+    expect(paragraphElements().length).toBe(expectedParagraphs);
+    expect(screen.getByText("1 / 1 件")).toBeInTheDocument();
+    expect(screen.queryByText("自動更新の失敗（テスト用）")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "最新の状態を取得" })).toBeEnabled();
+  });
+
+  it("自動の取り直しが成功したら案内は消える", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun, rejectRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await rejectRun(2, new Error("自動更新の失敗（テスト用）"));
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([AUTO_REFRESH_ERROR_NOTICE]));
+
+    act(() => handlers.onEvent(CHECK_STARTED));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(3));
+    await resolveRun(3, makeRunDetail({ status: "running" }));
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([]));
+  });
+});
+
+describe("ResultsPage: Task 8 反映は 2 段（決定 3。B15）", () => {
+  // 「1 本でも失敗したら全部捨てる」実装を赤にする。停止・再開の直後に最も知りたい
+  // 「操作が効いたかどうか」が、3N+1 の `getFindings` の失敗に道連れにされる回帰。
+  it("getFindings が失敗しても、状態・進捗・ボタンは新しい値に追従し一覧は消えない", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const getFindings = vi
+      .fn<() => Promise<FindingDto[]>>()
+      .mockResolvedValueOnce([makeFinding()])
+      .mockRejectedValueOnce(new Error("指摘の再取得に失敗しました"));
+    const failedUnits = makeUnits({
+      checkUnits: [
+        makeCheckUnit({
+          status: "failed",
+          failure: { reason: "timeout", message: "", finishReason: null, origin: "chat" },
+        }),
+      ],
+    });
+    const getRunUnits = vi
+      .fn<() => Promise<RunUnitsDto>>()
+      .mockResolvedValueOnce(makeUnits())
+      .mockResolvedValue(failedUnits);
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      getRunUnits,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "失敗単位を再試行" })).not.toBeInTheDocument();
+
+    await fireStream(stream, (h) => h.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await resolveRun(2, makeRunDetail({ status: "partially-failed" }));
+
+    // 1 段目（getRun + getRunUnits）は反映される：状態も、単位に依存するボタンも。
+    await waitFor(() => expect(screen.getByText("状態: 一部失敗")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "失敗単位を再試行" })).toBeInTheDocument();
+    // 2 段目の失敗で 1 段目を巻き戻さない。既に出ている一覧も消さない。
+    expect(screen.getByText("1 / 1 件")).toBeInTheDocument();
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([AUTO_REFRESH_ERROR_NOTICE]));
+  });
+});
+
+describe("ResultsPage: Task 8 run-settled の後（決定 1 の規則 3・4。B14）", () => {
+  // 自動更新が永久に止まる壊れ方を判別する検査。`run-settled` で購読を閉じた後の取り直しが
+  // 失敗すると `run.status` は running のまま・依存も変わらないので、規則 3・4 が無いと
+  // `useEffect` は二度と走らず、しかも画面は「再接続を試みています」と嘘をつく。
+  it("取り直しが失敗したら購読は張り直されず、自動更新の停止が案内される", async () => {
+    const stream = fakeStream();
+    const { getRun, rejectRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
+
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
+
+    // 張り直さない（張り直すと「購読 → 合成 run-settled → 張り直し」のループが復活する）。
+    expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1);
+    expect(stream.live().length).toBe(0);
+    // 「再接続を試みています」ではなく、手動の復旧を促す 1 行だけ。
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+  });
+
+  // 規則 4 を「重い取得まで成功したら」にした実装を赤にする。指摘が多い実行ほど
+  // `getFindings` は失敗しやすく、そこに引きずられると自動更新が戻らない。
+  it("その後の取り直しで軽い取得が成功すれば、getFindings が失敗しても張り直す", async () => {
+    const user = userEvent.setup();
+    const stream = fakeStream();
+    const { getRun, resolveRun, rejectRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const getFindings = vi
+      .fn<() => Promise<FindingDto[]>>()
+      .mockResolvedValueOnce([])
+      .mockRejectedValue(new Error("指摘の再取得に失敗しました"));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
+
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(3));
+    // 軽い取得は成功、重い取得（getFindings）は失敗する。
+    await resolveRun(3, makeRunDetail({ status: "running" }));
+
+    await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(2));
+    expect(stream.live().length).toBe(1);
+    // 手動の失敗はこれまでどおりエラー帯に出す。自動の 3 行は出さない。
+    await waitFor(() => expect(screen.getByText("指摘の再取得に失敗しました")).toBeInTheDocument());
+    expect(autoUpdateNotices()).toEqual([]);
+  });
+
+  // 規則 4 の成功側。取り直しが成功して `status` が終端なら `streamEnded` は立てたままにする
+  // （下ろすと、サーバーが合成 `run-settled` を返す実行にもう一度つなぎに行くループに戻る）。
+  it("取り直しが成功して終端状態なら、購読は張り直されず案内も出ない", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
+
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await resolveRun(2, makeRunDetail({ status: "completed" }));
+
+    await waitFor(() => expect(screen.getByText("状態: 完了")).toBeInTheDocument());
+    expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1);
+    expect(stream.live().length).toBe(0);
+    // 決着して取り直しも成功しているので、自動更新について言うことは何も無い。
+    expect(autoUpdateNotices()).toEqual([]);
+  });
+});
+
+// レビュー I-1：2 段反映は「状態だけ先に進む」窓を開ける。指摘 0 件の実行が `completed` に
+// 変わった瞬間、まだ `getFindings` が返っていないのに「指摘はありません」と描いてしまう
+// （`getFindings` は 3N+1 で中央値 110〜130 ms あり、目に見える）。失敗したときはそれが
+// 残り続ける。「取得の失敗を空として見せない」という規律に反するので、一覧が実行の状態に
+// 追いついているかを持ち、追いついていない間は 0 件の断定をしない。
+describe("ResultsPage: Task 8 指摘 0 件の断定は一覧が追いついてから（レビュー I-1）", () => {
+  /** `getFindings` を 1 回ごとに保留できる形にする（1 回目＝初回読み込みだけ即座に解決）。 */
+  function deferredGetFindings(first: readonly FindingDto[]) {
+    const queue: Deferred<FindingDto[]>[] = [];
+    const getFindings = vi.fn(() => {
+      const entry = deferred<FindingDto[]>();
+      queue.push(entry);
+      if (queue.length === 1) entry.resolve([...first]);
+      return entry.promise;
+    });
+    const settle = async (n: number, apply: (entry: Deferred<FindingDto[]>) => void) => {
+      const entry = queue[n - 1];
+      if (entry === undefined) throw new Error(`${n} 回目の getFindings はまだ呼ばれていない`);
+      await act(async () => {
+        apply(entry);
+      });
+    };
+    return {
+      getFindings,
+      resolveFindings: (n: number, findings: FindingDto[]) =>
+        settle(n, (entry) => entry.resolve(findings)),
+      rejectFindings: (n: number, cause: unknown) => settle(n, (entry) => entry.reject(cause)),
+    };
+  }
+
+  it("重い取り直しの getFindings が保留のうちは「指摘はありません」を出さない", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const { getFindings, resolveFindings } = deferredGetFindings([]);
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
+    // 1 段目だけが先に届く：状態は completed になるが、一覧はまだ追いついていない。
+    await resolveRun(2, makeRunDetail({ status: "completed" }));
+
+    await waitFor(() => expect(screen.getByText("状態: 完了")).toBeInTheDocument());
+    expect(screen.queryByText("指摘はありません")).not.toBeInTheDocument();
+    expect(screen.getByText("指摘を読み込んでいます…")).toBeInTheDocument();
+
+    await resolveFindings(2, []);
+    await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
+  });
+
+  it("重い取り直しの getFindings が失敗したら「指摘はありません」ではなく失敗を出す", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const { getFindings, rejectFindings } = deferredGetFindings([]);
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
+    await resolveRun(2, makeRunDetail({ status: "completed" }));
+    await rejectFindings(2, new Error("指摘の再取得に失敗しました"));
+
+    await waitFor(() => expect(screen.getByText("指摘の取得に失敗しました")).toBeInTheDocument());
+    expect(screen.queryByText("指摘はありません")).not.toBeInTheDocument();
+  });
+});
+
+describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
+  // `onError` で取り直しを走らせる実装、切断の行を取り直しの成功で消す実装、
+  // 2 行同時に出す実装のいずれも赤になる。
+  it("onError で切断の行が出て、onOpen の時点で消える（取り直しの完了を待たない）", async () => {
+    const stream = fakeStream();
+    const { getRun, resolveRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onError("reconnecting"));
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
+    // 切れている間に取り直しても意味が無いので、取り直しは走らない。
+    expect(getRun).toHaveBeenCalledTimes(1);
+
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    // 取り直しはまだ終わっていないが、行はもう消えている。
+    expect(autoUpdateNotices()).toEqual([]);
+
+    await resolveRun(2, makeRunDetail({ status: "running" }));
+    expect(autoUpdateNotices()).toEqual([]);
+  });
+
+  // 「自動更新は停止しています」と「接続が切れました」が同時に出る実装を赤にする。
+  it("決着の後に接続断が来ても、出る行は自動更新の停止だけ", async () => {
+    const stream = fakeStream();
+    const { getRun, rejectRun } = deferredGetRun(makeRunDetail({ status: "running" }));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onError("reconnecting"));
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
+
+    act(() => handlers.onEvent(RUN_SETTLED));
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+  });
+});
+
+// 最終レビュー Important 1：`EventSource` が恒久的に閉じたときの案内。
+//
+// ここだけは `ApiClient` の口ごと差し替えず、本物の `subscribeRunEvents`（`api/events.ts`）に
+// fake の `EventSource` を注入する——`readyState` から画面の 1 行までを一続きで見るため
+// （jsdom に `EventSource` は無い）。`readyState` を見ない実装（`onerror` を常に「再接続中」と
+// して扱う実装）に戻すと、下 2 件のうち「恒久的に閉じた」側が赤になる。
+describe("ResultsPage: 最終レビュー Important 1 恒久的な切断の案内（決定 4）", () => {
+  /** テストから `readyState` を書き換えられる fake（0: CONNECTING、2: CLOSED）。 */
+  interface FakeSource extends EventSourceLike {
+    readyState: number;
+    closeCallCount: number;
+  }
+
+  function fakeEventSourceStream() {
+    const instances: FakeSource[] = [];
+    class FakeEventSource implements FakeSource {
+      readyState = 0;
+      closeCallCount = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor() {
+        instances.push(this);
+      }
+
+      addEventListener(): void {}
+
+      close(): void {
+        this.closeCallCount += 1;
+        this.readyState = 2;
+      }
+    }
+
+    const subscribeRunEvents = (runId: string, handlers: RunEventHandlers) =>
+      subscribeRunEventsImpl(runId, handlers, { EventSource: FakeEventSource });
+    return { subscribeRunEvents, instances };
+  }
+
+  async function renderRunningPage() {
+    const stream = fakeEventSourceStream();
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    await waitFor(() => expect(stream.instances).toHaveLength(1));
+    const source = stream.instances[0];
+    if (source === undefined) throw new Error("購読がまだ張られていない");
+    return source;
+  }
+
+  it("readyState が CLOSED の onerror では「再接続を試みています」を出さず、自動更新の停止を出す", async () => {
+    const source = await renderRunningPage();
+
+    act(() => {
+      source.readyState = 2;
+      source.onerror?.(new Event("error"));
+    });
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+    expect(screen.queryByText(DISCONNECTED_NOTICE)).not.toBeInTheDocument();
+  });
+
+  it("readyState が CONNECTING の onerror では従来どおり「再接続を試みています」を出す", async () => {
+    const source = await renderRunningPage();
+
+    act(() => {
+      source.readyState = 0;
+      source.onerror?.(new Event("error"));
+    });
+
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
+  });
+
+  // PR #22 レビュー（Important）：案内どおりに「最新の状態を取得」を押しても購読が復旧しない、
+  // という不具合の回帰検査。文言だけを見る上 2 件はこれを検出できない（`streamEnabled` が
+  // `streamConnection` を見ていないと依存値が変わらず、死んだ購読が張り替えられないまま
+  // 文言だけ正しい、という状態が緑になってしまう）。ここでは**購読が張り直されること**を見る。
+  it("B17: 恒久切断の後、「最新の状態を取得」が running で成功したら購読が 1 本張り直される", async () => {
+    const stream = fakeEventSourceStream();
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    await waitFor(() => expect(stream.instances).toHaveLength(1));
+    const first = stream.instances[0];
+    if (first === undefined) throw new Error("購読がまだ張られていない");
+
+    // 1・2：恒久切断 → 「自動更新は停止しています。」
+    act(() => {
+      first.readyState = 2;
+      first.onerror?.(new Event("error"));
+    });
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
+    // 死んだ購読は cleanup で閉じる（張りっぱなしにしない）。
+    await waitFor(() => expect(first.closeCallCount).toBe(1));
+    expect(stream.instances).toHaveLength(1);
+
+    // 3・4：案内どおりに手動で取り直す（応答は running）。
+    await userEvent.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    // 5：2 本目の EventSource が作られる。6：停止案内は消える。
+    await waitFor(() => expect(stream.instances).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByText(STREAM_ENDED_NOTICE)).not.toBeInTheDocument());
+    // `onOpen` が来るまでは「接続できている」と偽らない（決定 4：行は同時に 2 つ出ない）。
+    expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]);
+
+    const second = stream.instances[1];
+    if (second === undefined) throw new Error("2 本目の購読が作られていない");
+    act(() => second.onopen?.(new Event("open")));
+    await waitFor(() => expect(autoUpdateNotices()).toEqual([]));
+  });
+});
+
+// レビュー M-1：`fetchDetail` が毎回 `setFindingDetail(null)` すると、実行中に
+// `check-finished` / `target-merged` が届くたびに元候補・位置診断の欄が点滅する。
+// 手動更新だけだった頃は目立たなかったが、自動更新では高頻度で起きる。
+describe("ResultsPage: Task 8 取り直しで詳細を点滅させない（レビュー M-1）", () => {
+  const CANDIDATE_MARK = "候補の理由（1 回目）";
+
+  /** 本文の強調（`data-findings`）をクリックして選ぶ。引用は一覧にも出るので要素で特定する。 */
+  function clickHighlight(findingId: string) {
+    const element = document.querySelector(`[data-findings="${findingId}"]`);
+    if (element === null) throw new Error(`${findingId} の強調が本文に無い`);
+    return element as HTMLElement;
+  }
+
+  function setup() {
+    const stream = fakeStream();
+    const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
+    const finding2 = makeFinding({
+      id: "finding-2",
+      quote: "二",
+      range: { start: 5, end: 6 },
+      paragraphId: 1,
+      judgment: {
+        findingId: "finding-2",
+        status: "undecided",
+        note: null,
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    });
+    const detailQueue: Deferred<FindingDetailDto>[] = [];
+    const getFinding = vi.fn((findingId: string) => {
+      const entry = deferred<FindingDetailDto>();
+      detailQueue.push(entry);
+      if (detailQueue.length === 1) {
+        entry.resolve(
+          makeFindingDetail({
+            ...finding1,
+            candidates: [
+              makeCandidate({ llm: { ...makeCandidate().llm, reason: CANDIDATE_MARK } }),
+            ],
+          }),
+        );
+      }
+      void findingId;
+      return entry.promise;
+    });
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([finding1, finding2]),
+      getFinding,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+    return { stream, client, getFinding, detailQueue };
+  }
+
+  it("重い取り直しでは、詳細が届くまで前の値を出し続ける", async () => {
+    const user = userEvent.setup();
+    const { stream, client, getFinding } = setup();
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-1"));
+    await waitFor(() => expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument());
+    expect(getFinding).toHaveBeenCalledTimes(1);
+
+    // 重い合図 → 取り直し。詳細の 2 回目はまだ返さない。
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+
+    // 前の値が出たまま（「読み込み中…」に戻らない）。
+    expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument();
+    expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
+  });
+
+  // 再レビューの Important：前の値を残す直し方は「更新に失敗したことが画面に一切出ない」穴を
+  // 開けた（`finding-detail.tsx` は `detail === null` のときだけ `detailError` を見るため）。
+  // 前の値は残したまま、更新に失敗した旨の行を添える。
+  it("重い取り直しの詳細が失敗したら、前の値を残したまま更新の失敗を伝える", async () => {
+    const user = userEvent.setup();
+    const { stream, client, getFinding, detailQueue } = setup();
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-1"));
+    await waitFor(() => expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument());
+
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+
+    const second = detailQueue[1];
+    if (second === undefined) throw new Error("2 回目の getFinding がまだ呼ばれていない");
+    await act(async () => {
+      second.reject(new Error("詳細の再取得に失敗しました"));
+    });
+
+    // 前の値は残る。
+    expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument();
+    // かつ、それが古いかもしれないことが分かる。
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。",
+        ),
+      ).toBeInTheDocument(),
+    );
+
+    // 次の取り直しが成功したら消える。
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(3));
+    const third = detailQueue[2];
+    if (third === undefined) throw new Error("3 回目の getFinding がまだ呼ばれていない");
+    await act(async () => {
+      third.resolve(
+        makeFindingDetail({
+          ...makeFinding({ id: "finding-1", quote: "あ" }),
+          candidates: [
+            makeCandidate({ llm: { ...makeCandidate().llm, reason: "候補の理由（3 回目）" } }),
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText("候補の理由（3 回目）")).toBeInTheDocument());
+    expect(
+      screen.queryByText(
+        "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("選択を変えたときは前の指摘の詳細を出さない（読み込み中に戻す）", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup();
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-1"));
+    await waitFor(() => expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-2"));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+
+    expect(screen.queryByText(CANDIDATE_MARK)).not.toBeInTheDocument();
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+  });
+});
+
+describe("ResultsPage: Task 8 取り直しの鎖を実行 ID で守る（前タスクの申し送り 1）", () => {
+  const OTHER_RUN_ID = "run-2";
+
+  function NavigationProbe() {
+    const navigate = useNavigate();
+    return (
+      <button type="button" onClick={() => navigate(runPath(OTHER_RUN_ID))}>
+        検査用ナビゲーション：別の実行へ
+      </button>
+    );
+  }
+
+  function renderPageWithNavigation(client: ApiClient) {
+    return render(
+      <MemoryRouter initialEntries={[runPath(RUN_ID)]}>
+        <ApiClientProvider client={client}>
+          <NavigationProbe />
+          <Routes>
+            <Route path={ROUTES.run} element={<ResultsPage />} />
+          </Routes>
+        </ApiClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  // 鎖を実行 ID（世代）で守らないと、(a) 旧実行の取り直しの応答が新しい実行の画面を上書きし、
+  // (b) 合流の追い取得が旧実行の鎖から走って世代番号を進め、**まだ終わっていない新実行の
+  // 初回読み込みの応答が捨てられて「読み込み中…」から戻らなくなる**。両方をこの 1 本で判別する。
+  // (b) を判別するには、新実行の初回読み込みが保留のうちに旧い鎖を終わらせる必要がある
+  // （新実行が読み終わった後だと、余分な追い取得が走っても画面は壊れない）。
+  it("別の実行の読み込み中に旧実行の鎖が終わっても、追い取得が割り込まない", async () => {
+    const user = userEvent.setup();
+    const stream = fakeStream();
+    const oldRun = deferredGetRun(makeRunDetail({ status: "running" }));
+    const newRunQueue: Deferred<RunDetailDto>[] = [];
+    const getRun = vi.fn((id: string) => {
+      if (id === RUN_ID) return oldRun.getRun();
+      const entry = deferred<RunDetailDto>();
+      newRunQueue.push(entry);
+      return entry.promise;
+    });
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPageWithNavigation(client);
+    await waitFor(() => expect(screen.getByText("モデル: model-a")).toBeInTheDocument());
+
+    const handlers = await streamHandlers(stream);
+    act(() => handlers.onOpen());
+    await waitFor(() => expect(oldRun.getRun).toHaveBeenCalledTimes(2));
+    // 合流の門に 1 件積んでおく（旧い鎖から追い取得が走るかどうかを見るため）。
+    act(() => handlers.onEvent(CHECK_STARTED));
+
+    // 新しい実行へ移る。初回読み込みはまだ返さない。
+    await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：別の実行へ" }));
+    await waitFor(() => expect(newRunQueue.length).toBe(1));
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+
+    // 旧実行の取り直しが今ごろ返ってくる。終端状態を返すので、上書きされれば一目で分かる。
+    await oldRun.resolveRun(2, makeRunDetail({ status: "stopped", stopReason: "aborted" }));
+    // 旧い鎖からの追い取得が走っていないこと（走ると世代番号が進み、下の応答が捨てられる）。
+    expect(getRun).toHaveBeenCalledTimes(3);
+
+    const pendingNewRun = newRunQueue[0];
+    if (pendingNewRun === undefined) throw new Error("新しい実行の getRun がまだ呼ばれていない");
+    await act(async () => {
+      pendingNewRun.resolve(
+        makeRunDetail({ id: OTHER_RUN_ID, status: "running", modelId: "model-b" }),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText("モデル: model-b")).toBeInTheDocument());
+    expect(screen.getByText("状態: 実行中")).toBeInTheDocument();
+    expect(screen.queryByText("状態: 停止中")).not.toBeInTheDocument();
+    expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
+  });
+
+  // (b) の片割れ：操作の送信中に別の実行へ移ると、旧い鎖の完了を待つあいだ新しい実行の
+  // ボタンが disabled のままになる（`pending` が実行 ID に紐づいていない）。
+  it("操作の送信中に別の実行へ移っても、新しい実行のボタンは押せる", async () => {
+    const user = userEvent.setup();
+    const stream = fakeStream();
+    const oldRun = deferredGetRun(makeRunDetail({ status: "running" }));
+    const getRun = vi.fn((id: string) => {
+      if (id === RUN_ID) return oldRun.getRun();
+      return Promise.resolve(
+        makeRunDetail({ id: OTHER_RUN_ID, status: "running", modelId: "model-b" }),
+      );
+    });
+    const stopRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      stopRun,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+
+    renderPageWithNavigation(client);
+    await waitFor(() => expect(screen.getByText("モデル: model-a")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "停止" }));
+    // 操作後の取り直し（旧実行の 2 回目の getRun）は保留のまま。
+    await waitFor(() => expect(oldRun.getRun).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：別の実行へ" }));
+    await waitFor(() => expect(screen.getByText("モデル: model-b")).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: "停止" })).toBeEnabled();
+
+    // 旧い鎖が今ごろ終わっても、新しい実行の操作を巻き込まない。
+    await oldRun.resolveRun(2, makeRunDetail({ status: "stopped", stopReason: "aborted" }));
+    expect(screen.getByRole("button", { name: "停止" })).toBeEnabled();
+  });
+});
+
+describe("ResultsPage: Task 8 前タスクの申し送り 2・3", () => {
+  // 申し送り 2：`.finally()` で閉じた鎖は、`apiClient.*` が同期 throw したときに
+  // 未処理の拒否（unhandled rejection）になる。vitest は未処理の拒否を失敗として拾う。
+  it("取り直しの口が同期例外を投げても未処理の拒否にならず、送信中の表示が解ける", async () => {
+    const user = userEvent.setup();
+    let getRunCalls = 0;
+    const getRun = vi.fn(() => {
+      getRunCalls += 1;
+      if (getRunCalls === 1) return Promise.resolve(makeRunDetail({ status: "running" }));
+      throw new Error("取り直しの同期例外（テスト用）");
+    });
+    const stopRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      stopRun,
+    });
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "停止" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "停止" })).toBeEnabled());
+    expect(getRun).toHaveBeenCalledTimes(2);
+  });
+
+  // 申し送り 3：409 の「…最新の状態を取得しました。」が、その後の手動更新をまたいで残ると
+  // 文面と状態がずれる。取り直しの成功で消す。
+  it("操作失敗の案内は、手動の取り直しが成功したら消える", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn(() =>
+      Promise.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" })),
+    );
+    const resumeRun = vi.fn(() =>
+      Promise.reject(
+        new ApiRequestError(409, "run-rejected-running", "実行中のため受け付けられません"),
+      ),
+    );
+    const client = makeClient({
+      getRun,
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([]),
+      resumeRun,
+    });
+
+    renderPage(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await user.click(resumeButton);
+    await waitFor(() =>
+      expect(screen.getByText("すでに実行中です。最新の状態を取得しました。")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("すでに実行中です。最新の状態を取得しました。"),
+      ).not.toBeInTheDocument(),
+    );
   });
 });
