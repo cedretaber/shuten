@@ -132,6 +132,8 @@ function unlocated(id: string, quote: string): UnlocatedInput {
 }
 
 interface ResultOptions {
+  readonly status?: EvaluationResultInput["status"];
+  readonly stop?: EvaluationResultInput["stop"];
   readonly unlocated?: readonly UnlocatedInput[];
   readonly unlocatedTotals?: {
     readonly notFound: number;
@@ -147,8 +149,8 @@ function makeResult(
   options: ResultOptions = {},
 ): EvaluationResultInput {
   return {
-    status: "completed",
-    stop: null,
+    status: options.status ?? "completed",
+    stop: options.stop ?? null,
     conditions: {
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:10:00.000Z",
@@ -559,6 +561,8 @@ describe("T9 位置特定失敗", () => {
     // 変異：checkUnits の failed と pending を取り違える → 落ちる。
     const metrics = scoreRun([], makeResult([]));
     expect(metrics.performance).toEqual({
+      status: "completed",
+      stopReason: null,
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:10:00.000Z",
       requests: 7,
@@ -566,6 +570,26 @@ describe("T9 位置特定失敗", () => {
       checkUnitsPending: 3,
       elapsedMs: 12_345,
     });
+  });
+
+  it("止まった実行では status と stopReason が載る", () => {
+    // 止まった実行の指標が完走と同じ見た目で出ると、Task 7 が黙って混ぜて中央値を出す。
+    // 変異：status / stopReason を運ばない（"completed" / null に固定する）→ 落ちる。
+    // 変異：stop.message を stopReason に入れる → 落ちる（接続先の断片を運ばない）。
+    const metrics = scoreRun(
+      [],
+      makeResult([], {
+        status: "stopped",
+        stop: {
+          reason: "connection-lost",
+          message: "接続が切れた",
+          failure: null,
+          generationUnconfirmed: true,
+        },
+      }),
+    );
+    expect(metrics.performance.status).toBe("stopped");
+    expect(metrics.performance.stopReason).toBe("connection-lost");
   });
 });
 
@@ -748,6 +772,27 @@ describe("T18 対応付け", () => {
       { entryId: "b1", findingId: "f1", overlapKind: "exact" },
       { entryId: "a1", findingId: "f2", overlapKind: "exact" },
     ]);
+  });
+
+  it("duplicateFindings は未マッチの項目に重なった指摘も数える", () => {
+    // e1・e2・e3 が密集し、f1 と f2 が 3 つすべてに重なる。指摘は 2 件しかないので最大マッチは
+    // 2 件で、1 項目が必ず未マッチになる。重なりは各項目 2 件なので、項目単位の余剰は 3。
+    // マッチした項目だけに絞ると 2 になり、どの項目が未マッチになるかは辺の並べ替え次第なので、
+    // この指標が同点の割り方に依存してしまう（決定 20 の保証の外に出る）。
+    // 変異：duplicateFindings をマッチした項目だけで数える → 2 になって落ちる。
+    const entries = [
+      errorEntry("e1", "typo", 10, 14),
+      errorEntry("e2", "typo", 20, 24),
+      errorEntry("e3", "typo", 30, 34),
+    ];
+    const metrics = scoreRun(entries, makeResult([finding("f1", 5, 40), finding("f2", 8, 38)]));
+
+    expect(metrics.beforeRecheck.detection).toEqual({
+      detected: { numerator: 2, denominator: 3, rate: 2 / 3 },
+      detectedLoose: { numerator: 3, denominator: 3, rate: 1 },
+      duplicateFindings: 3,
+    });
+    expect(metrics.beforeRecheck.missedEntryIds).toEqual(["e3"]);
   });
 
   it("overlapKinds は 1 対 1 で対応した組だけを数え、合計は detected.numerator と等しい", () => {

@@ -34,7 +34,7 @@ export interface DetectionMetrics {
   readonly detected: Rate;
   /** 1 対 1 を課さない参考値。重なりが 1 件でもあれば検出とみなす。 */
   readonly detectedLoose: Rate;
-  /** 検出された項目に 2 件以上が重なったときの余剰件数（決定 5）。 */
+  /** 1 つの error 項目に 2 件以上が重なったときの余剰件数（決定 5）。マッチの成否では絞らない。 */
   readonly duplicateFindings: number;
 }
 
@@ -58,6 +58,10 @@ export interface FindingSetMetrics {
    * 観点ごと。観点が一致する辺だけの部分グラフで解き直したもの（決定 6・20）。
    * `detectedLoose` と `duplicateFindings` も部分グラフの中で数える
    * （その観点を持つ指摘だけを見る）。
+   *
+   * **観点ごとの `detected.numerator` を足し上げないこと。** `sources[]` に 2 観点を持つ指摘は
+   * 両方の部分グラフに入り、それぞれで別の項目にマッチしうるので、**合計は全体の
+   * `detection.detected.numerator` を超えうる**（解き直すことの当然の帰結で、誤りではない）。
    */
   readonly detectionByPerspective: Readonly<Record<Perspective, DetectionMetrics>>;
   readonly falsePositive: FalsePositiveMetrics;
@@ -124,6 +128,10 @@ export interface UnlocatedMetrics {
 }
 
 export interface PerformanceMetrics {
+  /** 実行の状態。止まった実行の数字を完走と同じものとして読ませないために運ぶ。 */
+  readonly status: EvaluationResultInput["status"];
+  /** 止まった理由。`stop === null` なら null。`stop.message` は運ばない（接続先の断片が入りうる）。 */
+  readonly stopReason: string | null;
   readonly startedAt: string;
   readonly finishedAt: string;
   readonly requests: number;
@@ -266,10 +274,13 @@ function solveDetection(
   }
 
   const looseDetected = overlappingFindings.filter((list) => list.length > 0).length;
-  // 重複指摘：1 対 1 でマッチした項目に、ほかにも重なっている指摘がある場合の余剰件数（決定 5）。
+  // 重複指摘：1 つの error 項目に 2 件以上が重なったときの余剰件数（決定 5）。**マッチの成否では
+  // 絞らない。** 絞ると、どの項目が未マッチになるかは辺の並べ替え次第なので、この指標だけが
+  // 同点の割り方に依存してしまう（決定 20 は「同点の割り方で変わるのは対応表の見え方だけ」と
+  // 保証している）。
   let duplicateFindings = 0;
-  for (const entryIndex of matched.keys()) {
-    duplicateFindings += Math.max((overlappingFindings[entryIndex]?.length ?? 0) - 1, 0);
+  for (const list of overlappingFindings) {
+    duplicateFindings += Math.max(list.length - 1, 0);
   }
 
   return {
@@ -482,8 +493,9 @@ export function scoreRun(
     unlocatedTotals.notFound + unlocatedTotals.ambiguous + unlocatedTotals.outsideTarget;
 
   // 参考値（近似一致）。位置が確定しない指摘は利用者に位置として提示されないので、
-  // **検出率には一切算入しない**（決定 8）。引用が空文字のときは判定しない
-  // （`"".includes(x)` の縁で何にでも一致してしまうため）。
+  // **検出率には一切算入しない**（決定 8）。引用が空文字のときは判定しない。空の候補引用は
+  // `truthQuote.includes("")` がつねに true になるため、全 error 項目に一致して参考値が
+  // 膨らむ（決定 8 に空文字の規定が無いので「照合しない」と解釈した）。
   const unlocatedQuotingTruth = result.unlocated.filter((item) => {
     const quote = item.candidate.llm.quote;
     if (quote === "") return false;
@@ -522,6 +534,8 @@ export function scoreRun(
       unlocatedQuotingTruth,
     },
     performance: {
+      status: result.status,
+      stopReason: result.stop === null ? null : result.stop.reason,
       startedAt: result.conditions.startedAt,
       finishedAt: result.conditions.finishedAt,
       requests: result.totals.requests,
