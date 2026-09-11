@@ -26,9 +26,10 @@ function HistoryControls() {
 
 /**
  * `App` に注入する fake クライアント。`ConnectionProvider` はマウント時に必ず
- * `checkConnection` を呼び、`/settings` は `getConnection` を、
- * `/runs/:id` は `getRun` を呼ぶ。このテストはいずれの応答内容も読まないので、
- * 解決しない Promise を返して実 `fetch` を呼ばせないことだけを担保する。
+ * `checkConnection` を呼び、`/settings` は `getConnection` を、`/runs` は `getRuns` を、
+ * `/runs/:id` は `getRun` と `getFindings` を呼ぶ（決定 3。並行に投げる）。このテストは
+ * いずれの応答内容も読まないので、解決しない Promise を返して実 `fetch` を呼ばせないことと、
+ * `getManuscript`（`getRun` の応答待ちで呼ばれない）が呼ばれないことだけを担保する。
  */
 function makeClient(): ApiClient {
   const notImplemented = (name: string) => () => {
@@ -44,6 +45,10 @@ function makeClient(): ApiClient {
     getManuscript: notImplemented("getManuscript"),
     startRun: notImplemented("startRun"),
     getRun: vi.fn(pending),
+    getRuns: vi.fn(pending),
+    getFindings: vi.fn(pending),
+    getFinding: notImplemented("getFinding"),
+    putJudgment: notImplemented("putJudgment"),
   };
 }
 
@@ -102,15 +107,30 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "原稿と検査設定" })).toBeInTheDocument();
   });
 
-  it("W9-1: '/runs/:id' で受付表示画面が描画される", () => {
+  it("W9-1: '/runs/:id' で結果画面が描画される（応答が届くまでは読み込み中）", () => {
     render(
       <MemoryRouter initialEntries={["/runs/abc"]}>
         <App client={makeClient()} />
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("heading", { name: "検査実行" })).toBeInTheDocument();
-    expect(screen.getByText(/abc/)).toBeInTheDocument();
+    // fake クライアントは `getRun`・`getFindings` とも解決しない Promise を返すので、
+    // `ResultsPage`（Task 5）は 3 つの取得がそろうまで「読み込み中…」のまま部分描画しない
+    // （決定 3）。見出しが「検査結果」等に変わっても壊れないよう、読み込み中の表示で
+    // `ResultsPage` が描画されたことだけを確認する。
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+  });
+
+  it("R10: '/runs' で実行一覧画面が描画される（応答が届くまでは読み込み中）", () => {
+    render(
+      <MemoryRouter initialEntries={[ROUTES.runs]}>
+        <App client={makeClient()} />
+      </MemoryRouter>,
+    );
+
+    // fake クライアントは `getRuns` が解決しない Promise を返すので、`RunListPage`（Task 10）は
+    // 応答が届くまで「読み込み中…」のまま（`ResultsPage` と同じ考え方）。
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
   });
 
   it("W9-2: 未知のパスで画面内 404 が出る", () => {

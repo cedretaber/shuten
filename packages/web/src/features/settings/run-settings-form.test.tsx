@@ -343,6 +343,10 @@ function makeFakeClient(startRun: ApiClient["startRun"]): ApiClient {
     getManuscript: notImplemented("getManuscript"),
     startRun,
     getRun: notImplemented("getRun"),
+    getRuns: notImplemented("getRuns"),
+    getFindings: notImplemented("getFindings"),
+    getFinding: notImplemented("getFinding"),
+    putJudgment: notImplemented("putJudgment"),
   };
 }
 

@@ -1,0 +1,411 @@
+/**
+ * `results-page.tsx` と `run-header.tsx` が使うレイアウト用スタイル。
+ * 本文自体の見た目（段落・強調）は `results.module.css`（`body-view.tsx` 専用）の役割で、
+ * ここでは上部（ヘッダー）と左右 2 カラムの骨組みだけを持つ。
+ */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.error {
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.statusLine {
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+.stopMessage {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.refreshButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.refreshButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/*
+ * 採否の保存の失敗（PR21 レビュー指摘 2）。選択を変えても消えない場所（ヘッダー直下）に出す。
+ * `.error`（更新失敗のエラーと同じ配色）をベースに、複数件を積める一覧にする。
+ */
+.judgmentErrorList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.judgmentErrorItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+/* どの指摘の保存が失敗したかを示す引用。文字列自体は切り詰めず、はみ出しだけ CSS で省略する
+   （`.findingQuote` と同じ理由）。 */
+.judgmentErrorQuote {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.judgmentErrorMessage {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.layout {
+  display: flex;
+  gap: var(--space-lg);
+  align-items: flex-start;
+}
+
+.bodyColumn {
+  flex: 1 1 60%;
+  min-width: 0;
+}
+
+.sideColumn {
+  flex: 1 1 40%;
+  min-width: 0;
+}
+
+/*
+ * 指摘一覧と絞り込み（Task 6、決定 7・8・10）。`.sideColumn` の中身。
+ */
+
+.findingsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.findingCount {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.filterFieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+/* チェックボックス 1 個ぶんの label（分類・採否・再確認・位置特定の選択肢、抑制・撤回の
+   トグルの両方で使う。見た目に違いは無いので 1 つのクラスにまとめる。Minor 2 対応）。 */
+.filterOption {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+.findingList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.findingRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.findingRowSelected {
+  border-color: var(--color-accent);
+  background-color: var(--color-highlight-selected-bg);
+}
+
+.findingMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  min-width: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.findingLocateFailure {
+  color: var(--color-danger);
+}
+
+/*
+ * 引用は全文を DOM に置き、はみ出しを CSS で省略表示する（JS 側で書記素境界を無視した
+ * 文字列の切り詰めをしないため。ブリーフの指示）。
+ */
+.findingQuote {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+/*
+ * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.sideColumn` の中、`.findingsPanel` の下に置く。
+ * 引用・修正案・理由・判断メモは `.findingQuote` と違い**折り返して全文を表示する**
+ * （一覧の見出しと違い、詳細では省略しない。ブリーフの指示）。
+ */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-md);
+}
+
+/*
+ * 見出し（仕様 5.4「分類と短い見出し」。裁定：分類ラベル ＋ 原文を 1 行にする）。
+ * `.detailHeadingQuote` だけを縮めて省略記号を出し、分類ラベルと未確認の注記は常に全文を見せる
+ * （はみ出しても切れない）。文字列自体は JS で切り詰めない（一覧の見出しと同じ理由）。
+ */
+.detailHeading {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
+  font-size: var(--font-size-md);
+}
+
+.detailHeadingCategory {
+  flex: 0 0 auto;
+  color: var(--color-fg-muted);
+}
+
+.detailHeadingQuote {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailHeadingUnverified {
+  flex: 0 0 auto;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.suppressionNote {
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+.detailQuote {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.suggestionInvalidNote {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.detailReasonList {
+  margin: 0;
+  padding-left: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detailRelatedList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detailRelatedButton {
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.detailNavigateButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+/* 採否と判断メモの操作子（Task 8、決定 13）。 */
+.judgmentControl {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.judgmentStatusGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.judgmentStatusOption {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+/* 決定 13：「採用予定」を選んでも本文は書き換わらない旨。選んだ状態に関わらず常時表示する。 */
+.judgmentAdoptPlannedNote {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* PR21 レビュー指摘 1：編集中に別の場所で採否が更新されたことを示す注記。エラーではないので
+   `.error` ではなく控えめな配色にする。 */
+.judgmentUpdatedElsewhere {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.judgmentNoteLabel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--font-size-sm);
+}
+
+.judgmentNoteTextarea {
+  resize: vertical;
+  min-height: 4em;
+  font: inherit;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+}
+
+.judgmentSaveButton {
+  align-self: flex-start;
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.judgmentSaveButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 元候補・位置診断（決定 12。詳細の末尾に畳んで置く）。 */
+.detailRaw {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-sm);
+}
+
+.detailRawList {
+  margin: 0;
+  padding-left: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}

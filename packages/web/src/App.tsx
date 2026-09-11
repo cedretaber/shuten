@@ -8,7 +8,8 @@ import { Layout } from "./app/layout.tsx";
 import { NotFound } from "./app/not-found.tsx";
 import { ROUTES } from "./app/routes.ts";
 import { SettingsPage } from "./app/settings-page.tsx";
-import { RunReceiptPage } from "./features/run-receipt/run-receipt-page.tsx";
+import { ResultsPage } from "./features/results/results-page.tsx";
+import { RunListPage } from "./features/run-list/run-list-page.tsx";
 
 export interface AppProps {
   /** 省略時は `createApiClient()`（既定の `globalThis.fetch`）。テストは fake を注入する。 */
@@ -31,7 +32,11 @@ export function App({ client: injectedClient }: AppProps = {}) {
               path={ROUTES.legacyConnectionSettings}
               element={<Navigate to={ROUTES.settings} replace />}
             />
-            <Route path={ROUTES.run} element={<RunReceiptPage />} />
+            {/* react-router 8 系はセグメント数で特異性を判定するため、`/runs` と `/runs/:id` の
+                順序に競合は無い（どちらを先に書いても一致する方へ解決する）。ここでは静的パスを
+                先に書く並びが読みやすいというだけの理由で `/runs` を先に置く。 */}
+            <Route path={ROUTES.runs} element={<RunListPage />} />
+            <Route path={ROUTES.run} element={<ResultsPage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

@@ -9,6 +9,9 @@
   --color-accent: #1d4ed8;
   --color-danger: #b91c1c;
   --color-danger-bg: #fef2f2;
+  --color-highlight-bg: #fef3c7;
+  --color-highlight-border: #f59e0b;
+  --color-highlight-selected-bg: #bfdbfe;
 
   /* 余白 */
   --space-xs: 0.25rem;

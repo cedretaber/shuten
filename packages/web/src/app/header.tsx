@@ -53,6 +53,9 @@ export function Header() {
         >
           再確認
         </button>
+        <Link to={ROUTES.runs} className={styles.settingsLink}>
+          検査結果
+        </Link>
         <Link to={ROUTES.settings} className={styles.settingsLink}>
           設定
         </Link>
