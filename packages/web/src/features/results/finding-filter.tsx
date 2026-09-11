@@ -79,7 +79,7 @@ export function FindingFilterControls(props: FindingFilterControlsProps) {
         }
       />
 
-      <label className={styles.filterToggle}>
+      <label className={styles.filterOption}>
         <input
           type="checkbox"
           checked={filter.showSuppressed}
@@ -87,7 +87,7 @@ export function FindingFilterControls(props: FindingFilterControlsProps) {
         />
         抑制された指摘も表示する
       </label>
-      <label className={styles.filterToggle}>
+      <label className={styles.filterOption}>
         <input
           type="checkbox"
           checked={filter.showWithdrawn}

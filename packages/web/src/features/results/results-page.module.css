@@ -104,14 +104,9 @@
   padding: var(--space-xs) var(--space-sm);
 }
 
+/* チェックボックス 1 個ぶんの label（分類・採否・再確認・位置特定の選択肢、抑制・撤回の
+   トグルの両方で使う。見た目に違いは無いので 1 つのクラスにまとめる。Minor 2 対応）。 */
 .filterOption {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  font-size: var(--font-size-sm);
-}
-
-.filterToggle {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);

@@ -457,3 +457,102 @@ describe("ResultsPage: Task 6 選択中の指摘が消えたら選択が外れ�
     expect(span2Again.className).not.toContain("highlightSelected");
   });
 });
+
+// レビュー対応（Important 1）：`showSuppressed` / `showWithdrawn` は `CheckboxGroup` を通さない
+// 素の <input type="checkbox"> の別実装で、分類の絞り込みテストでは守られない。抑制候補と
+// 撤回候補を別々の指摘として fixture に入れ、片方のチェックボックスが「自分の対象の指摘だけ」を
+// 出し入れすることを検査する（`showSuppressed` と `showWithdrawn` を取り違えていれば赤くなる）。
+describe("ResultsPage: Task 6 抑制候補・撤回候補の表示切替え", () => {
+  function makeSuppressedFinding(): FindingDto {
+    return makeFinding({
+      id: "finding-suppressed",
+      category: "notation",
+      locateStatus: "located",
+      range: { start: 0, end: 1 },
+      paragraphId: 0,
+      suppression: { word: "こと", ruleVersion: "1" },
+    });
+  }
+
+  function makeWithdrawnFinding(): FindingDto {
+    return makeFinding({
+      id: "finding-withdrawn",
+      category: "grammar",
+      locateStatus: "located",
+      range: { start: 5, end: 6 },
+      paragraphId: 1,
+      recheck: {
+        id: "recheck-1",
+        status: "done",
+        notApplicableReason: null,
+        verdict: "withdraw",
+        reasonKind: "intentional-expression",
+        reason: "意図的な表現",
+        suggestionValid: null,
+        failure: null,
+      },
+    });
+  }
+
+  it("抑制候補は既定で隠れ、『抑制された指摘も表示する』で出し入れできる（撤回候補は影響を受けない）", async () => {
+    const user = userEvent.setup();
+    const suppressed = makeSuppressedFinding();
+    const withdrawn = makeWithdrawnFinding();
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([suppressed, withdrawn]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("0 / 2 件")).toBeInTheDocument());
+    expect(document.querySelector('[data-findings~="finding-suppressed"]')).toBeNull();
+    expect(document.querySelector('[data-findings~="finding-withdrawn"]')).toBeNull();
+
+    await user.click(screen.getByRole("checkbox", { name: "抑制された指摘も表示する" }));
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-findings~="finding-suppressed"]')).not.toBeNull(),
+    );
+    // 撤回候補は「抑制された指摘も表示する」の影響を受けない（取り違えていれば出てしまう）。
+    expect(document.querySelector('[data-findings~="finding-withdrawn"]')).toBeNull();
+    expect(screen.getByText("1 / 2 件")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "抑制された指摘も表示する" }));
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-findings~="finding-suppressed"]')).toBeNull(),
+    );
+    expect(screen.getByText("0 / 2 件")).toBeInTheDocument();
+  });
+
+  it("撤回候補は既定で隠れ、『撤回された指摘も表示する』で出し入れできる（抑制候補は影響を受けない）", async () => {
+    const user = userEvent.setup();
+    const suppressed = makeSuppressedFinding();
+    const withdrawn = makeWithdrawnFinding();
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([suppressed, withdrawn]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("0 / 2 件")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: "撤回された指摘も表示する" }));
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-findings~="finding-withdrawn"]')).not.toBeNull(),
+    );
+    // 抑制候補は「撤回された指摘も表示する」の影響を受けない（取り違えていれば出てしまう）。
+    expect(document.querySelector('[data-findings~="finding-suppressed"]')).toBeNull();
+    expect(screen.getByText("1 / 2 件")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "撤回された指摘も表示する" }));
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-findings~="finding-withdrawn"]')).toBeNull(),
+    );
+    expect(screen.getByText("0 / 2 件")).toBeInTheDocument();
+  });
+});
