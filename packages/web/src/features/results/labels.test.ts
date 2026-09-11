@@ -27,6 +27,8 @@ import {
   FINDING_LOCATE_STATUS_LABELS,
   INITIAL_VERDICT_LABELS,
   JUDGMENT_STATUS_LABELS,
+  PERSPECTIVE_LABELS,
+  PERSPECTIVE_ORDER,
   RECHECK_NOT_APPLICABLE_REASON_LABELS,
   RECHECK_REASON_KIND_LABELS,
   RECHECK_VERDICT_LABELS,
@@ -144,5 +146,16 @@ describe("UNIT_STATUS_LABELS", () => {
 describe("FAILURE_REASON_LABELS", () => {
   it("FAILURE_REASONS のすべての値に空でないラベルを持つ", () => {
     expectCoversAllWithNonEmptyLabels(FAILURE_REASONS, FAILURE_REASON_LABELS);
+  });
+});
+
+describe("PERSPECTIVE_ORDER", () => {
+  // I-2：PERSPECTIVE_ORDER を独立した配列リテラルで持つと、shared 側に観点が増えたときに
+  // 更新を忘れると `perspectiveTallies` の反復元から丸ごと漏れる（並び順が乱れるだけで済む
+  // ソートキー用途とは壊れ方が違う）。PERSPECTIVE_LABELS のキーから導出することで、
+  // 型（`satisfies Record<Perspective, string>`）と実体の両方が観点の増減に自動で追随する。
+  it("PERSPECTIVE_LABELS のキーから導出され、定義順（typo → naturalness）を保つ", () => {
+    expect(PERSPECTIVE_ORDER).toEqual(Object.keys(PERSPECTIVE_LABELS));
+    expect(PERSPECTIVE_ORDER).toEqual(["typo", "naturalness"]);
   });
 });

@@ -128,6 +128,25 @@ describe("perspectiveTallies", () => {
     expect(perspectiveTallies(units).map((entry) => entry.perspective)).toEqual(["typo"]);
   });
 
+  it("5 状態すべてを観点ごとに数える（pending・not-applicable を含む。レビュー指摘：addToTally の分岐網羅）", () => {
+    const units: RunUnitsDto = {
+      checkUnits: [
+        makeCheckUnit({ id: "c1", perspective: "typo", status: "done" }),
+        makeCheckUnit({ id: "c2", perspective: "typo", status: "failed" }),
+        makeCheckUnit({ id: "c3", perspective: "typo", status: "running" }),
+        makeCheckUnit({ id: "c4", perspective: "typo", status: "pending" }),
+        makeCheckUnit({ id: "c5", perspective: "typo", status: "not-applicable" }),
+      ],
+      recheckUnits: [],
+    };
+    expect(perspectiveTallies(units)).toEqual([
+      {
+        perspective: "typo",
+        tally: { total: 5, done: 1, failed: 1, running: 1, pending: 1, notApplicable: 1 },
+      },
+    ]);
+  });
+
   it("recheckUnits は観点別の内訳に含めない（決定 5 は checkUnits を対象にする）", () => {
     const units: RunUnitsDto = {
       checkUnits: [],

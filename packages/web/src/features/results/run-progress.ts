@@ -11,9 +11,7 @@
  */
 
 import type { CheckUnitDto, Perspective, RunUnitsDto, UnitStatusCounts } from "@shuten/shared";
-
-/** 観点の表示順（`finding-detail.tsx` の `PERSPECTIVE_ORDER` と同じ順）。 */
-export const PERSPECTIVE_ORDER: readonly Perspective[] = ["typo", "naturalness"];
+import { PERSPECTIVE_ORDER } from "./labels.ts";
 
 export interface UnitTally {
   readonly total: number;

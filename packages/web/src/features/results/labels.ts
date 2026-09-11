@@ -141,6 +141,19 @@ export const PERSPECTIVE_LABELS = {
   naturalness: "日本語の自然さ",
 } as const satisfies Record<Perspective, string>;
 
+/**
+ * 観点の表示順。`PERSPECTIVE_LABELS` のキーから導出する（レビュー I-2）。
+ * `PERSPECTIVE_LABELS` は `satisfies Record<Perspective, string>` で `Perspective` の全キーを
+ * 過不足なく持つことが型で保証されているので、独立した配列リテラルを別に持たず、ここから
+ * 派生させることで shared 側に観点が増減したときの更新漏れを防ぐ（更新を忘れると、
+ * 反復元として使う箇所（`perspectiveTallies` など）からその観点が丸ごと消える）。
+ * `Object.keys` は文字列キー（整数インデックスに見えないキー）を定義順のまま返すため、
+ * 定義順（typo → naturalness）がそのまま表示順になる。
+ */
+export const PERSPECTIVE_ORDER: readonly Perspective[] = Object.keys(
+  PERSPECTIVE_LABELS,
+) as Perspective[];
+
 /** 生成要求が失敗した箇所（`UnitFailureDto["origin"]`。仕様書 7 節）。 */
 export const FAILURE_ORIGIN_LABELS = {
   "ensure-loaded": "モデルの準備",

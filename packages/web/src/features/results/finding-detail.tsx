@@ -31,7 +31,6 @@ import type {
   FindingDetailDto,
   FindingDto,
   JudgmentStatus,
-  Perspective,
 } from "@shuten/shared";
 import { describeRecheck } from "./finding-detail.ts";
 import { JudgmentControl } from "./judgment-control.tsx";
@@ -39,6 +38,7 @@ import {
   FINDING_CATEGORY_LABELS,
   INITIAL_VERDICT_LABELS,
   PERSPECTIVE_LABELS,
+  PERSPECTIVE_ORDER,
   RECHECK_VERDICT_LABELS,
 } from "./labels.ts";
 import styles from "./results-page.module.css";
@@ -60,9 +60,6 @@ const DIAGNOSTIC_TRANSFORM_LABELS = {
   nfc: "NFC 正規化",
   "newline+nfc": "改行形式の統一＋NFC 正規化",
 } as const;
-
-/** 観点の表示順（`PERSPECTIVE_LABELS` の定義順）。理由（`reasons`）を観点ごとに並べるために使う。 */
-const PERSPECTIVE_ORDER: readonly Perspective[] = ["typo", "naturalness"];
 
 export interface FindingDetailProps {
   readonly finding: FindingDto;

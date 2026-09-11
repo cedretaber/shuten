@@ -41,14 +41,24 @@ export function RunProgress(props: RunProgressProps) {
         <p className={styles.progressLine}>再確認なし</p>
       )}
 
+      {/*
+       * I-1（レビュー指摘）：「完了 n / 全 m 件」だけでは残りが「対象外」か「処理中」か
+       * 区別できない。決定 11「観点別：checkUnits を perspective で分け、状態別の件数を出す」
+       * と仕様 11 節 3 項「観点ごとの処理状態」に従い、検査・再確認と同じ `UnitTallySection`
+       * （状態別の内訳つき）を観点ごとに出す。`perspectiveTallies` が返す観点は常に 1 件以上の
+       * 単位を持つ（`units` に現れない観点は含まれない）ので、ここで `total === 0` の
+       * 「準備中」表示になることはない。
+       */}
       {perspectives.length > 0 && (
-        <ul className={styles.progressPerspectiveList}>
+        <div className={styles.progressPerspectiveList}>
           {perspectives.map(({ perspective, tally }) => (
-            <li key={perspective}>
-              {PERSPECTIVE_LABELS[perspective]}: {formatCount(tally)}
-            </li>
+            <UnitTallySection
+              key={perspective}
+              label={PERSPECTIVE_LABELS[perspective]}
+              tally={tally}
+            />
           ))}
-        </ul>
+        </div>
       )}
 
       {slowUnitCount > 0 && (
