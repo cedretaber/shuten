@@ -7,7 +7,8 @@
  *
  * 期待は 5 本（`findRun` 1・`findings` 1・理由（候補）1・再確認 1・採否 1。決定 1・7）。
  * 実装時に実測した値（3 件・30 件とも 5 本）をそのまま上限に固定する（実測より緩い上限にしない）。
- * 内訳は作業報告（`.superpowers/sdd/2026-09-11-pr12c-findings-batch/task-3-report.md`）に残す。
+ * 実測した本数の内訳・巻き戻し検証の実測値は
+ * `docs/plans/2026-09-11-pr12c-findings-batch.md` の決定 7 に残す。
  */
 
 import {
@@ -195,8 +196,15 @@ function seedManyFindings(
   });
 }
 
-/** 実行 1 件ぶんを投入し、`GET /api/runs/:id/findings` を 1 回叩いた際の SQL 文の本数を返す。 */
-async function countStatements(runId: string, findingCount: number): Promise<number> {
+/**
+ * 実行 1 件ぶんを投入し、`GET /api/runs/:id/findings` を 1 回叩いた際に実行された SQL 文を返す。
+ *
+ * 本数だけでなく文そのものも返す。失敗時にどの問い合わせが増えたのかをテストの失敗メッセージ
+ * から追えるようにするため（決定 7）。`runId` は合成の識別子（`run-3` / `run-30`）であり、
+ * ここで記録する SQL は指摘一覧を `run_id` で絞り込む問い合わせだけなので、原稿の断片・
+ * 接続先 URL・API キーなどのデータは混ざらない。
+ */
+async function collectStatements(runId: string, findingCount: number): Promise<readonly string[]> {
   const statements: string[] = [];
   const harness = open({ onStatement: (sql) => statements.push(sql) });
   const { targetId, checkUnitId, manuscriptVersionId } = seedRun(harness, runId);
@@ -216,16 +224,27 @@ async function countStatements(runId: string, findingCount: number): Promise<num
   const body = (await res.json()) as unknown[];
   expect(body).toHaveLength(findingCount);
 
-  return statements.length;
+  return statements;
+}
+
+/** 失敗メッセージに載せる SQL 文の一覧（`[0] ...` のように番号を振って読みやすくする）。 */
+function describeStatements(label: string, statements: readonly string[]): string {
+  const lines = statements.map((sql, index) => `  [${index}] ${sql}`);
+  return `${label}: ${statements.length} 本\n${lines.join("\n")}`;
 }
 
 describe("GET /api/runs/:id/findings の問い合わせ本数（決定 7）", () => {
   it("指摘 3 件と 30 件で本数が等しく、実測した上限以下である", async () => {
-    const countFor3 = await countStatements("run-3", 3);
-    const countFor30 = await countStatements("run-30", 30);
+    const statementsFor3 = await collectStatements("run-3", 3);
+    const statementsFor30 = await collectStatements("run-30", 30);
 
-    expect(countFor3).toBe(countFor30);
-    expect(countFor3).toBeLessThanOrEqual(MAX_STATEMENT_COUNT);
-    expect(countFor30).toBeLessThanOrEqual(MAX_STATEMENT_COUNT);
+    // 失敗したときに実行された SQL の内訳がテストの失敗メッセージから追えるようにする
+    // （Vitest は既定レポーターでも成功時の console.log は畳むが、アサーションのメッセージは
+    // 失敗時に必ず表示される。決定 7・レビュー Minor 5）。
+    const diagnostic = `${describeStatements("3件", statementsFor3)}\n${describeStatements("30件", statementsFor30)}`;
+
+    expect(statementsFor3.length, diagnostic).toBe(statementsFor30.length);
+    expect(statementsFor3.length, diagnostic).toBeLessThanOrEqual(MAX_STATEMENT_COUNT);
+    expect(statementsFor30.length, diagnostic).toBeLessThanOrEqual(MAX_STATEMENT_COUNT);
   });
 });

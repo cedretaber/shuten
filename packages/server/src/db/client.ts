@@ -52,10 +52,9 @@ export interface CreateDatabaseOptions {
  * `Database.Options` を組み立てる。
  */
 export function createDatabase(file: string, options?: CreateDatabaseOptions): AppDatabaseHandle {
+  const onStatement = options?.onStatement;
   const sqliteOptions: Database.Options =
-    options?.onStatement === undefined
-      ? {}
-      : { verbose: (message) => options.onStatement?.(String(message)) };
+    onStatement === undefined ? {} : { verbose: (message) => onStatement(String(message)) };
   const sqlite = new Database(file, sqliteOptions);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");

@@ -171,8 +171,10 @@ select candidates.id, candidates.finding_id, check_units.perspective, candidates
   足す可能性があるので、**実装時に実測した値で上限を固定する**（実測より緩い上限にしない）。
 
 実測は指摘 3 件・30 件のどちらも 5 本（`findRun` 1・`findings` 1・理由（候補）1・再確認 1・採否 1）で、
-期待どおり一致した。上限はこの実測値（5）で固定した。巻き戻した旧実装（3N+1）では 3 件で 11 本・
-30 件で 92 本となり、件数で本数が変わることを確認した。
+期待どおり一致した。上限はこの実測値（5）で固定した。巻き戻した旧実装（指摘 1 件ごとに
+`listReasons`・`findRecheckUnitByFinding`・`findJudgment` を 3 回ずつ呼ぶ）では、
+`findRun` 1 ＋ `findings` 1 ＋ 指摘 1 件あたり 3 ＝ 2 + 3N 本になり、3 件で 2 + 3×3 = 11 本、
+30 件で 2 + 3×30 = 92 本と、件数で本数が変わることを確認した。
 
 ### 決定 8：`findings.perf.test.ts` は残し、役割を書き換える
 
