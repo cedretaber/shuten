@@ -225,6 +225,36 @@ describe("FindingDetail: 取得中・取得失敗の欄の出し分け（元候�
     expect(within(quoteSection("原文")).getByText("これ")).toBeInTheDocument();
   });
 
+  // レビュー（Task 8 の再レビュー）：取り直しでは前の値を残す（点滅させない）ようにしたため、
+  // `detail !== null` かつ `detailError !== null` という組み合わせが新しく生まれた。ここに何も
+  // 出さないと、古い元候補・位置診断が最新の正しい値であるかのように出続ける（この PR の
+  // 「失敗を黙って消さない」方針から詳細パネルだけが外れる）。
+  it("更新に失敗（detail !== null, detailError !== null）は前の値を残したまま古い旨を添える", () => {
+    const detail = makeDetail({ candidates: [makeCandidate()] });
+    render(
+      <FindingDetail {...baseProps({ detail, detailError: "指摘詳細の取得に失敗しました" })} />,
+    );
+
+    expect(
+      screen.getByText(
+        "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。",
+      ),
+    ).toBeInTheDocument();
+    // 前の値は消さない（「読み込み中…」にも戻さない）。
+    expect(screen.getByText("元候補")).toBeInTheDocument();
+    expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
+  });
+
+  it("取得できているあいだは古い旨の行を出さない", () => {
+    render(<FindingDetail {...baseProps({ detail: makeDetail(), detailError: null })} />);
+
+    expect(
+      screen.queryByText(
+        "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   it("取得済みなら候補の locateStatus（outside-target を含む）が出る", () => {
     const detail = makeDetail({
       candidates: [makeCandidate({ locateStatus: "outside-target" })],

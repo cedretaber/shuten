@@ -228,6 +228,27 @@ function fakeStream() {
   };
 }
 
+/**
+ * 購読が張られるのを待ってからハンドラーを取り出す。購読は `useEffect` なので、画面の描画を
+ * `waitFor` で待てた時点ではまだ張られていないことがある（そのまま `handlers()` を呼ぶと
+ * ごく稀に「購読がまだ 1 本も張られていない」で落ちる）。
+ */
+async function streamHandlers(stream: ReturnType<typeof fakeStream>): Promise<RunEventHandlers> {
+  await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalled());
+  return stream.handlers();
+}
+
+/** 購読を待ってからイベントを 1 件鳴らし、反映まで流す。 */
+async function fireStream(
+  stream: ReturnType<typeof fakeStream>,
+  fire: (handlers: RunEventHandlers) => void,
+): Promise<void> {
+  const handlers = await streamHandlers(stream);
+  await act(async () => {
+    fire(handlers);
+  });
+}
+
 interface Deferred<T> {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -1663,7 +1684,7 @@ describe("ResultsPage: Task 8 取り直しの合流（決定 3。B5）", () => {
     expect(getFindings).toHaveBeenCalledTimes(1);
 
     // 開通 → 1 本目（重い）。まだ終わらせない。
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
 
@@ -1702,7 +1723,7 @@ describe("ResultsPage: Task 8 取り直しの合流（決定 3。B5）", () => {
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
 
@@ -1734,7 +1755,7 @@ describe("ResultsPage: Task 8 取り直しの合流（決定 3。B5）", () => {
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
 
@@ -1774,7 +1795,7 @@ describe("ResultsPage: Task 8 合図の割り付け（決定 2。B6）", () => {
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
     expect(getFindings).toHaveBeenCalledTimes(1);
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     await act(async () => {
       handlers.onEvent(CHECK_STARTED);
     });
@@ -1805,7 +1826,7 @@ describe("ResultsPage: Task 8 合図の割り付け（決定 2。B6）", () => {
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     await act(async () => {
       handlers.onEvent({ type: "generation-slow", unitId: "check-1", elapsedMs: 120_000 });
     });
@@ -1830,7 +1851,7 @@ describe("ResultsPage: Task 8 自動更新は静かに（決定 4。B7）", () =
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    act(() => stream.handlers().onOpen());
+    await fireStream(stream, (h) => h.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
 
     expect(screen.getByRole("button", { name: "最新の状態を取得" })).toBeEnabled();
@@ -1855,7 +1876,7 @@ describe("ResultsPage: Task 8 自動更新は静かに（決定 4。B7）", () =
     await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
     const expectedParagraphs = splitParagraphs(BODY).length;
 
-    act(() => stream.handlers().onOpen());
+    await fireStream(stream, (h) => h.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     await rejectRun(2, new Error("自動更新の失敗（テスト用）"));
 
@@ -1880,7 +1901,7 @@ describe("ResultsPage: Task 8 自動更新は静かに（決定 4。B7）", () =
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     await rejectRun(2, new Error("自動更新の失敗（テスト用）"));
@@ -1928,7 +1949,7 @@ describe("ResultsPage: Task 8 反映は 2 段（決定 3。B15）", () => {
     await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "失敗単位を再試行" })).not.toBeInTheDocument();
 
-    act(() => stream.handlers().onOpen());
+    await fireStream(stream, (h) => h.onOpen());
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     await resolveRun(2, makeRunDetail({ status: "partially-failed" }));
 
@@ -1958,7 +1979,7 @@ describe("ResultsPage: Task 8 run-settled の後（決定 1 の規則 3・4。B1
     renderPage(client);
     await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
 
-    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
 
@@ -1989,7 +2010,7 @@ describe("ResultsPage: Task 8 run-settled の後（決定 1 の規則 3・4。B1
     renderPage(client);
     await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
 
-    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     await rejectRun(2, new Error("決着後の取り直しの失敗（テスト用）"));
     await waitFor(() => expect(autoUpdateNotices()).toEqual([STREAM_ENDED_NOTICE]));
@@ -2021,7 +2042,7 @@ describe("ResultsPage: Task 8 run-settled の後（決定 1 の規則 3・4。B1
     renderPage(client);
     await waitFor(() => expect(stream.subscribeRunEvents).toHaveBeenCalledTimes(1));
 
-    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     await resolveRun(2, makeRunDetail({ status: "completed" }));
 
@@ -2077,7 +2098,7 @@ describe("ResultsPage: Task 8 指摘 0 件の断定は一覧が追いついて�
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
     await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
     // 1 段目だけが先に届く：状態は completed になるが、一覧はまだ追いついていない。
     await resolveRun(2, makeRunDetail({ status: "completed" }));
@@ -2104,7 +2125,7 @@ describe("ResultsPage: Task 8 指摘 0 件の断定は一覧が追いついて�
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    act(() => stream.handlers().onEvent(RUN_SETTLED));
+    await fireStream(stream, (h) => h.onEvent(RUN_SETTLED));
     await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
     await resolveRun(2, makeRunDetail({ status: "completed" }));
     await rejectFindings(2, new Error("指摘の再取得に失敗しました"));
@@ -2130,7 +2151,7 @@ describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onError());
     await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
     // 切れている間に取り直しても意味が無いので、取り直しは走らない。
@@ -2159,7 +2180,7 @@ describe("ResultsPage: Task 8 接続断の案内（決定 4。B16）", () => {
     renderPage(client);
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onError());
     await waitFor(() => expect(autoUpdateNotices()).toEqual([DISCONNECTED_NOTICE]));
 
@@ -2238,14 +2259,69 @@ describe("ResultsPage: Task 8 取り直しで詳細を点滅させない（レ�
     expect(getFinding).toHaveBeenCalledTimes(1);
 
     // 重い合図 → 取り直し。詳細の 2 回目はまだ返さない。
-    await act(async () => {
-      stream.handlers().onEvent(CHECK_FINISHED);
-    });
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
     await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
 
     // 前の値が出たまま（「読み込み中…」に戻らない）。
     expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument();
     expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
+  });
+
+  // 再レビューの Important：前の値を残す直し方は「更新に失敗したことが画面に一切出ない」穴を
+  // 開けた（`finding-detail.tsx` は `detail === null` のときだけ `detailError` を見るため）。
+  // 前の値は残したまま、更新に失敗した旨の行を添える。
+  it("重い取り直しの詳細が失敗したら、前の値を残したまま更新の失敗を伝える", async () => {
+    const user = userEvent.setup();
+    const { stream, client, getFinding, detailQueue } = setup();
+
+    renderPage(client);
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+
+    await user.click(clickHighlight("finding-1"));
+    await waitFor(() => expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument());
+
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+
+    const second = detailQueue[1];
+    if (second === undefined) throw new Error("2 回目の getFinding がまだ呼ばれていない");
+    await act(async () => {
+      second.reject(new Error("詳細の再取得に失敗しました"));
+    });
+
+    // 前の値は残る。
+    expect(screen.getByText(CANDIDATE_MARK)).toBeInTheDocument();
+    // かつ、それが古いかもしれないことが分かる。
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。",
+        ),
+      ).toBeInTheDocument(),
+    );
+
+    // 次の取り直しが成功したら消える。
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(3));
+    const third = detailQueue[2];
+    if (third === undefined) throw new Error("3 回目の getFinding がまだ呼ばれていない");
+    await act(async () => {
+      third.resolve(
+        makeFindingDetail({
+          ...makeFinding({ id: "finding-1", quote: "あ" }),
+          candidates: [
+            makeCandidate({ llm: { ...makeCandidate().llm, reason: "候補の理由（3 回目）" } }),
+          ],
+        }),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText("候補の理由（3 回目）")).toBeInTheDocument());
+    expect(
+      screen.queryByText(
+        "この指摘の詳細を更新できませんでした。表示中の内容は古い可能性があります。",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("選択を変えたときは前の指摘の詳細を出さない（読み込み中に戻す）", async () => {
@@ -2317,7 +2393,7 @@ describe("ResultsPage: Task 8 取り直しの鎖を実行 ID で守る（前タ�
     renderPageWithNavigation(client);
     await waitFor(() => expect(screen.getByText("モデル: model-a")).toBeInTheDocument());
 
-    const handlers = stream.handlers();
+    const handlers = await streamHandlers(stream);
     act(() => handlers.onOpen());
     await waitFor(() => expect(oldRun.getRun).toHaveBeenCalledTimes(2));
     // 合流の門に 1 件積んでおく（旧い鎖から追い取得が走るかどうかを見るため）。
