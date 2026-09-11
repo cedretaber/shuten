@@ -34,53 +34,110 @@ export function localFailure(reason: UnitFailure["reason"], message: string): Un
  * executor が返した失敗が「未完了（`pending`）」か「失敗（`failed`）」かを決める。
  * `failure.reason` だけでは決められない（門で止めた単位の理由は停止理由によらず `aborted` になる）。
  *
+ * 規則は「**生成終了が未確認なら `pending`**」の 1 本であり、`timeout` のような個別の理由名では
+ * 判定しない。判別子は `halt?.generationUnconfirmed`（`RunStop.generationUnconfirmed`）で、
+ * これは実行の終端状態を決める `run/state.ts` の `runStatusForStop` と、復旧ゲートを開ける
+ * `run/executor.ts` の `finish` が見ているのと**同じ値**である。個別の理由名（`timeout` /
+ * `connection` 等）で単位側だけ別の判定をすると、実行は `recovery-waiting` なのにその単位だけ
+ * `failed` に残るというズレが起きる。PR11b（2026-09-10）でこのズレを解消し、判別子を
+ * `RunStop.generationUnconfirmed` に統一した（それ以前は接続断の判定に `failure.reason ===
+ * "timeout"` という個別の理由名を使っており、接続断は `pending` にならなかった）。
+ *
  * - `origin` が `chat` 以外：生成要求を送っていない（門で止めた）か、`ensureLoaded` 由来。
  *   決定 5(b) のとおり当該単位は未完了のまま残す。
  * - `chat` 由来でも `model-not-loaded`（実行中のアンロード）と `aborted`（停止操作）は
  *   失敗ではない（仕様書 7 節・8.2 節）。
- * - `chat` 由来の `timeout` は、`treatUnconfirmedAsPending` が true のときだけ `pending` にする
- *   （決定 20）。ハード上限に達しても「生成終了を確認できない」だけで、応答が実際に来ないと
- *   決まったわけではないため、停止からの打ち切り（`aborted`）と同じ扱いにする。
+ * - それ以外の `chat` 由来の失敗（`timeout` / `connection` 等）は、`treatUnconfirmedAsPending`
+ *   が true かつ `halt?.generationUnconfirmed === true` のときだけ `pending` にする（決定 20）。
+ *   ハード上限に達した・接続が切れたというだけでは「生成終了を確認できない」だけで、
+ *   応答が実際に来ないと決まったわけではないため、停止からの打ち切り（`aborted`）と
+ *   同じ扱いにする。
  *
- * `treatUnconfirmedAsPending` は**呼び出し元が経路を明示するフラグ**である（決定 45-3）。
- * オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は渡さない
- * （既定 false で従来どおり `failed`）。待機時間（`recoveryConfirmMs`）を判別子に使ってはならない：
- * 決定 43 は `SHUTEN_RECOVERY_CONFIRM_MS = 0` を正規の設定値として認めており、0 のときに
- * タイムアウトすると実行は `recovery-waiting` になるのに単位は `failed` になって、
+ * `treatUnconfirmedAsPending` の役割は変わらない：**呼び出し元が経路を明示するフラグ**である
+ * （決定 45-3）。オーケストレーター（`run/loop.ts`）は常に true を渡し、CLI（`run/pipeline.ts`）は
+ * 渡さない（既定 false で従来どおり `failed`）。待機時間（`recoveryConfirmMs`）を判別子に
+ * 使ってはならない：決定 43 は `SHUTEN_RECOVERY_CONFIRM_MS = 0` を正規の設定値として認めており、
+ * 0 のときにタイムアウトすると実行は `recovery-waiting` になるのに単位は `failed` になって、
  * 手動再開がその単位を拾えなくなる。
+ *
+ * **この判定が前提にする不変条件**：`origin === "chat"` の失敗と一緒に返る `halt` は、
+ * その失敗自身から導いたものである。根拠は「`halt` を**書く**のは `executor.ts` の `runOne` の
+ * 中だけで、`runOne` は直列化される」「保持済みの `halt` があるときは `runOne` の冒頭で
+ * 生成要求を送らずに返り、その失敗は `origin: "local"` になる」。テストは `executor.test.ts` の
+ * E20・E21・E28。**将来 `halt` を `runOne` の外から書く経路を作るときは、この判定も一緒に
+ * 見直すこと**。
  */
-function isPendingFailure(failure: UnitFailure, treatUnconfirmedAsPending: boolean): boolean {
+function isPendingFailure(
+  failure: UnitFailure,
+  halt: RunStop | null,
+  treatUnconfirmedAsPending: boolean,
+): boolean {
   if (failure.origin !== "chat") {
     return true;
   }
   if (failure.reason === "model-not-loaded" || failure.reason === "aborted") {
     return true;
   }
-  return treatUnconfirmedAsPending && failure.reason === "timeout";
+  return treatUnconfirmedAsPending && halt?.generationUnconfirmed === true;
 }
 
 /**
  * `pending` にする失敗の `note`（DB では `pending_note`）に入れる文言（決定 20・32）。
  *
- * 「生成要求を送った後に打ち切られた」2 つの経路だけは、既存の失敗メッセージ（「生成要求が
- * タイムアウトした」等）ではなく、決定 20 が定める「生成終了は未確認」の趣旨の文言に差し替える。
+ * 規則は `isPendingFailure` と同じく「**生成終了が未確認なら `pending`**」の 1 本であり、
+ * `timeout` のような個別の理由名では判定しない。判別子は `halt?.generationUnconfirmed`
+ * （`RunStop.generationUnconfirmed`）で、実行の終端状態（`run/state.ts` の
+ * `runStatusForStop`）と復旧ゲート（`run/executor.ts` の `finish`）が見ているのと
+ * **同じ値**である。「生成要求を送った後に打ち切られた」3 つの経路だけは、既存の失敗メッセージ
+ * （「生成要求がタイムアウトした」等）ではなく、決定 20 が定める「生成終了は未確認」の趣旨の
+ * 文言に差し替える。
  *
  * - ハード上限超過（`timeout`）→「応答が上限内に届かなかった。生成終了は未確認」
  * - 停止操作による打ち切り（`aborted`）→「停止操作により打ち切った。生成終了は未確認」（決定 32）
+ * - 接続断（`connection`）かつ `halt?.generationUnconfirmed === true` →
+ *   「応答を受け取らずに接続が切れた。生成終了は未確認」
  *
- * どちらも `origin === "chat"`（実際に送った）に限る。送信前に止めた `origin: "local"` の
+ * いずれも `origin === "chat"`（実際に送った）に限る。送信前に止めた `origin: "local"` の
  * `aborted`（キュー待ち・`ensureLoaded` 中の停止、門で止めた単位）は生成終了が未確認では
  * ないので、従来どおり失敗メッセージそのものを使う。`treatUnconfirmedAsPending` を条件に
  * 含めるのは、`runPipeline`（CLI）が `signal` を渡して中断したときの文言を変えないため（E1）。
- * `isPendingFailure` と同じく、判別子は待機時間ではなく呼び出し元が渡すフラグである（決定 45-3）。
+ *
+ * 接続断の枝にだけ `halt?.generationUnconfirmed === true` を条件に含めるのは、HTTP 応答を
+ * 受け取った `connection`（LM Studio が 4xx / 5xx を返した）はこの文言に当たらないため。
+ * この場合は生成終了そのものは確認できている（応答が返ってきている）ので、通常の失敗
+ * メッセージのままにする。この関数が呼ばれるのは `isPendingFailure` が true を返したときだけで、
+ * `origin === "chat"` かつ `reason === "connection"` でそれが成り立つ経路は
+ * `treatUnconfirmedAsPending && halt?.generationUnconfirmed === true` の枝しか無いため、
+ * この枝に入った時点で `halt?.generationUnconfirmed === true` は既に成立している。それでも
+ * 条件式自体は残す：`pendingNote` が将来 `isPendingFailure` を経由しない入口を持ったときの
+ * 多重防御として意味がある。
+ *
+ * `isPendingFailure` と同じく、`treatUnconfirmedAsPending` の役割は変わらない：呼び出し元が
+ * 経路を明示するフラグである（決定 45-3）。オーケストレーター（`run/loop.ts`）は常に true を渡し、
+ * CLI（`run/pipeline.ts`）は渡さない。待機時間（`recoveryConfirmMs`）を判別子に使ってはならない
+ * （決定 45-3）。
+ *
+ * **この判定が前提にする不変条件**：`origin === "chat"` の失敗と一緒に返る `halt` は、
+ * その失敗自身から導いたものである。根拠は「`halt` を**書く**のは `executor.ts` の `runOne` の
+ * 中だけで、`runOne` は直列化される」「保持済みの `halt` があるときは `runOne` の冒頭で
+ * 生成要求を送らずに返り、その失敗は `origin: "local"` になる」。テストは `executor.test.ts` の
+ * E20・E21・E28。**将来 `halt` を `runOne` の外から書く経路を作るときは、この判定も一緒に
+ * 見直すこと**。
  */
-function pendingNote(failure: UnitFailure, treatUnconfirmedAsPending: boolean): string {
+function pendingNote(
+  failure: UnitFailure,
+  halt: RunStop | null,
+  treatUnconfirmedAsPending: boolean,
+): string {
   if (treatUnconfirmedAsPending && failure.origin === "chat") {
     if (failure.reason === "timeout") {
       return "応答が上限内に届かなかった。生成終了は未確認";
     }
     if (failure.reason === "aborted") {
       return "停止操作により打ち切った。生成終了は未確認";
+    }
+    if (failure.reason === "connection" && halt?.generationUnconfirmed === true) {
+      return "応答を受け取らずに接続が切れた。生成終了は未確認";
     }
   }
   return failure.message;
@@ -273,13 +330,19 @@ export async function executeCheckUnit(args: CheckUnitArgs): Promise<CheckUnitOu
       generationUnconfirmed: false,
     };
   }
-  const unit: CheckUnitResult = isPendingFailure(outcome.failure, treatUnconfirmedAsPending)
+  // pending/failed の判別には outcome.halt を使う（上の halt は input-too-long のために
+  // このスコープで合成した値で、その失敗自身から導いたものではないため）。
+  const unit: CheckUnitResult = isPendingFailure(
+    outcome.failure,
+    outcome.halt,
+    treatUnconfirmedAsPending,
+  )
     ? {
         status: "pending",
         targetIndex: args.targetIndex,
         perspective: args.perspective,
         attempts: outcome.attempts,
-        note: pendingNote(outcome.failure, treatUnconfirmedAsPending),
+        note: pendingNote(outcome.failure, outcome.halt, treatUnconfirmedAsPending),
       }
     : {
         status: "failed",
@@ -444,13 +507,15 @@ export async function executeRecheckUnit(args: RecheckUnitArgs): Promise<Recheck
 
   // LM Studio 由来の input-too-long（HTTP 400）も再確認では実行を止めない（決定 5(c)）。
   const halt = outcome.halt;
-  if (isPendingFailure(outcome.failure, treatUnconfirmedAsPending)) {
+  // pending/failed の判別には outcome.halt を使う（その失敗自身から導いたものであるため。
+  // このスコープではローカルの合成をしていないので halt と同じ値だが、根拠を明示する）。
+  if (isPendingFailure(outcome.failure, outcome.halt, treatUnconfirmedAsPending)) {
     return {
       result: {
         status: "pending",
         attempts: outcome.attempts,
         inputRange: input.inputRange,
-        note: pendingNote(outcome.failure, treatUnconfirmedAsPending),
+        note: pendingNote(outcome.failure, outcome.halt, treatUnconfirmedAsPending),
       },
       failure: outcome.failure,
       halt,

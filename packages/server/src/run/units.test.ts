@@ -73,6 +73,18 @@ const ABORTED_CHAT_FAILURE: UnitFailure = {
 };
 
 /**
+ * `chat` 由来の接続断（応答を受け取れないまま接続が切れた）。`isPendingFailure` の判別子は
+ * `failure.reason` ではなく `halt?.generationUnconfirmed` なので、U8〜U10 はこの同じ `failure` を
+ * 使い回し、`halt` 側だけを変えて判別子であることを検査する。
+ */
+const CONNECTION_CHAT_FAILURE: UnitFailure = {
+  reason: "connection",
+  message: "接続が失敗した",
+  finishReason: null,
+  origin: "chat",
+};
+
+/**
  * `executor.execute` を差し替えたフェイク。渡された `timeoutMs` を記録する。
  * キュー待ちなし（`execute` が呼ばれたら即座に送信する）を模して、呼ばれた直後に
  * `hooks.onSend` を、解決したら `hooks.onSettled` を呼ぶ（決定 27）。キュー待ちそのものを
@@ -626,6 +638,91 @@ describe("executeCheckUnit", () => {
     expect(outcome.usage).toBeNull();
   });
 
+  it("U8: 応答を受け取れないまま接続が切れた（halt.generationUnconfirmed === true）ときは pending になる", async () => {
+    const halt: RunStop = {
+      reason: "connection-lost",
+      message: "接続が切れたため実行を停止した",
+      failure: CONNECTION_CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 1,
+        failure: CONNECTION_CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeCheckUnit(
+      baseCheckArgs(executor, { treatUnconfirmedAsPending: true }),
+    );
+
+    expect(outcome.unit.status).toBe("pending");
+    if (outcome.unit.status === "pending") {
+      expect(outcome.unit.note).toBe("応答を受け取らずに接続が切れた。生成終了は未確認");
+      expect(outcome.unit.attempts).toBe(1);
+    }
+    expect(outcome.failure).toEqual(CONNECTION_CHAT_FAILURE);
+    expect(outcome.failure?.reason).toBe("connection");
+  });
+
+  it("U9: 判別子。HTTP 応答を受け取った接続系の拒否（halt.generationUnconfirmed === false）は failed のまま", async () => {
+    const halt: RunStop = {
+      reason: "connection-lost",
+      message: "LM Studio が要求を拒否したため実行を停止した",
+      failure: CONNECTION_CHAT_FAILURE,
+      generationUnconfirmed: false,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 1,
+        failure: CONNECTION_CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeCheckUnit(
+      baseCheckArgs(executor, { treatUnconfirmedAsPending: true }),
+    );
+
+    expect(outcome.unit.status).toBe("failed");
+    if (outcome.unit.status === "failed") {
+      expect(outcome.unit.failure).toEqual(CONNECTION_CHAT_FAILURE);
+    }
+  });
+
+  it("U10: treatUnconfirmedAsPending を渡さなければ（CLI 経路）接続断でも failed のまま", async () => {
+    const halt: RunStop = {
+      reason: "connection-lost",
+      message: "接続が切れたため実行を停止した",
+      failure: CONNECTION_CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<ExecOutcome<{ findings: [] }>>({
+        ok: false,
+        attempts: 1,
+        failure: CONNECTION_CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeCheckUnit(baseCheckArgs(executor));
+
+    expect(outcome.unit.status).toBe("failed");
+    if (outcome.unit.status === "failed") {
+      expect(outcome.unit.failure).toEqual(CONNECTION_CHAT_FAILURE);
+    }
+  });
+
   it("recoveryConfirmMs の値によらず、引数の onSend/onSettled が executor に届く（決定 27）", async () => {
     for (const recoveryConfirmMs of [0, 500]) {
       const onSend = vi.fn();
@@ -954,6 +1051,44 @@ describe("executeRecheckUnit", () => {
     expect(outcome.halt).toEqual(halt);
     expect(outcome.elapsedMs).toBe(1250);
     expect(outcome.usage).toBeNull();
+  });
+
+  it("U11: executeRecheckUnit でも、応答を受け取れないまま接続が切れたときは pending になる", async () => {
+    const halt: RunStop = {
+      reason: "connection-lost",
+      message: "接続が切れたため実行を停止した",
+      failure: CONNECTION_CHAT_FAILURE,
+      generationUnconfirmed: true,
+    };
+    const { executor } = createFakeExecutor(() =>
+      Promise.resolve<
+        ExecOutcome<{
+          reason: string;
+          reasonKind: string;
+          verdict: string;
+          suggestionValid: boolean;
+        }>
+      >({
+        ok: false,
+        attempts: 1,
+        failure: CONNECTION_CHAT_FAILURE,
+        usage: null,
+        elapsedMs: 5,
+        halt,
+      }),
+    );
+
+    const outcome = await executeRecheckUnit(
+      baseRecheckArgs(executor, { treatUnconfirmedAsPending: true }),
+    );
+
+    expect(outcome.result.status).toBe("pending");
+    if (outcome.result.status === "pending") {
+      expect(outcome.result.note).toBe("応答を受け取らずに接続が切れた。生成終了は未確認");
+      expect(outcome.result.attempts).toBe(1);
+    }
+    expect(outcome.failure).toEqual(CONNECTION_CHAT_FAILURE);
+    expect(outcome.failure?.reason).toBe("connection");
   });
 
   it("G1 相当（recheck 版）: executeRecheckUnit でも、共有キューでの順番待ちは recheckMs の計測に含まれない（決定 27）", async () => {

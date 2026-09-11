@@ -545,6 +545,28 @@ describe("createExecutor", () => {
     expect(client.chat).toHaveBeenCalledTimes(1);
   });
 
+  it('E28: 保持している halt と組になる失敗は origin: "local"（chat 由来の失敗が他の単位の halt と組になることはない）', async () => {
+    const client = createMockClient({
+      chat: async () => {
+        throw new LmStudioError("timeout", "生成がタイムアウトした");
+      },
+    });
+    const executor = createExecutor(client, { now: createClock() });
+
+    const [first, second] = await Promise.all([
+      executor.execute(REQUEST, parse, 1000),
+      executor.execute(REQUEST, parse, 1000),
+    ]);
+
+    expect(first.ok).toBe(false);
+    expect(second.ok).toBe(false);
+    if (first.ok || second.ok) return;
+    expect(first.failure?.origin).toBe("chat");
+    expect(second.failure?.origin).toBe("local");
+    expect(second.attempts).toBe(0);
+    expect(second.halt).toBe(first.halt);
+  });
+
   it("E23: onSend/onSettled は client.chat 呼び出しのたびに 1 往復ずつ呼ばれる", async () => {
     let count = 0;
     const client = createMockClient({

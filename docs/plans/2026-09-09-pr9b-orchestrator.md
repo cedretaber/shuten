@@ -336,7 +336,9 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 
 ### 決定 32：停止操作で打ち切った単位の `pending_note`（PR9a の持ち越し）
 
-決定 20 は 2 つの文言を定めている。PR9a は上限超過（`timeout`）側だけを実装した。停止側を足す。
+PR9a の時点で決定 20 が定めていた 2 つの文言のうち、上限超過（`timeout`）側だけを実装した
+（決定 20 は 2026-09-10 の PR11b で 3 つ目の文言を足しているが、それは本決定より後の話である）。
+停止側を足す。
 
 - `recoveryConfirmMs > 0` かつ `failure.origin === "chat"` かつ `failure.reason === "aborted"`
   → 「停止操作により打ち切った。生成終了は未確認」
@@ -349,6 +351,13 @@ export function finishRunChecked(db: AppDatabaseLike, id: string, input: FinishR
 **改訂（45-3）**：上の `recoveryConfirmMs > 0` は経路の判別子としては誤りだった。
 `treatUnconfirmedAsPending`（呼び出し元が渡すフラグ。既定 `false`、オーケストレーターは常に `true`）
 に置き換えている。読むときは上の 2 箇所を `treatUnconfirmedAsPending` と読み替えること。
+
+**改訂（2026-09-10、PR11b。`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）**：3 本目の文言を足す。
+
+- `treatUnconfirmedAsPending` かつ `failure.origin === "chat"` かつ `failure.reason === "connection"`
+  かつ `halt?.generationUnconfirmed === true` → 「応答を受け取らずに接続が切れた。生成終了は未確認」
+- HTTP 応答を受け取った `connection`（`halt?.generationUnconfirmed === false`）はこの分岐に当たらず、
+  従来どおり `failure.message` のまま。
 
 ### 決定 33：想定外の例外の扱い（決定 14 の具体化）
 
@@ -745,8 +754,9 @@ executor はこの決着を、既存の「送信しなかった」経路（`bloc
 「オーケストレーター経路か否か」の判別に使っている。しかし決定 43 は
 `SHUTEN_RECOVERY_CONFIRM_MS = 0` を**正規の設定値**として許している（「`checkMs` がそのまま
 ハード上限」の意味）。0 のときタイムアウトすると、実行は `recovery-waiting` になるのに当該単位は
-`failed` になり、**手動再開でその単位を拾えない**。決定 20 の「打ち切られた単位はどちらの経路でも
-`pending`」が待機時間の設定によって崩れる。
+`failed` になり、**手動再開でその単位を拾えない**。決定 20 の「打ち切られた単位はどの経路でも
+`pending`」（2026-09-10 の PR11b 改訂前は「どちらの経路でも」。当時は停止・タイムアウトの 2 経路
+だった）が待機時間の設定によって崩れる。
 
 判別子を待機時間から分離する。`CheckUnitArgs` / `RecheckUnitArgs` に
 `treatUnconfirmedAsPending?: boolean`（既定 `false`）を足し、オーケストレーターは**常に true** を
@@ -754,6 +764,19 @@ executor はこの決着を、既存の「送信しなかった」経路（`bloc
 「上限まで待つ時間」の意味だけに戻す（`recoveryConfirmMs <= 0` で遅延通知のタイマーを作らない
 早期 return はそのまま残す。待機時間の話であって `pending` 化とは別のため）。CLI は
 どちらも渡さないので従来どおり（E1）。
+
+**改訂（2026-09-10、PR11b。`docs/plans/2026-09-10-pr11b-one-step-recovery.md`）**：`isPendingFailure`
+はこのフラグだけでなく、`halt?.generationUnconfirmed === true` も見るようになった（`pendingNote` の
+接続断の枝も同様）。あわせて、`chat` 由来の失敗のうち `pending` にする最後の分岐が使っていた個別の
+理由名判定 `failure.reason === "timeout"` を外し、`halt?.generationUnconfirmed === true` に一本化した
+（同じ判定で接続断も `pending` になる）。
+
+**この判定が前提にする不変条件**：`origin === "chat"` の失敗と一緒に返る `halt` は、その失敗自身から
+導いたものである。根拠は「`halt` を**書く**のは `executor.ts` の `runOne` の中だけで、`runOne` は
+直列化される」（保持済みの `halt` があるときは `runOne` の冒頭で生成要求を送らずに返り、その失敗は
+`origin: "local"` になる）。これを固定しているテストは `executor.test.ts` の E20・E21・E28。
+
+待機時間 `recoveryConfirmMs` を経路の判別子に使わないという 45-3 の本来の主張は変わらない。
 
 #### 45-4：抑制が外れた再確認単位を `pending` に戻す（決定 3・34 の改訂）
 
@@ -1102,7 +1125,10 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
 6. 決定 33 の例外処理（`running` の単位を `pending` に戻す・定型文・`done` を reject しない）。
 7. O4：停止 → 上限内に応答 → その応答が保存され、実行が `stopped`。
    R2：上限超過 → `recovery-waiting` かつ `generation_unconfirmed = true`。
-   R4b：どちらの経路でも打ち切られた単位が `pending`（決定 20）で、`failure_reason` が残ること。
+   R4b：停止経路・タイムアウト経路・接続断経路のどれでも打ち切られた単位が `pending`（決定 20）で、
+   `failure_reason` が残ること。接続断の判別（`halt?.generationUnconfirmed === true` かどうかで
+   `pending` / `failed` が分かれること）は R4c・R4d（`orchestrator.stop.test.ts`。PR11b で追加）で
+   検証する。
 8. 決定 26 が「写像を自前で持たない」と言えることを固定する 3 本（R4b は単位が `pending` に
    なることしか見ていない）。停止要求が
    **キュー待ち中に届いたら、上限を待たずにただちに止まり `stopped`**
@@ -1174,7 +1200,9 @@ PR9 計画書の決定番号は本書と共通（決定 1〜23 は PR9 計画書
   「再開」に加えて「失敗単位の個別再試行」の 2 段の操作が要る。単位も `pending` にするには
   `UnitFailure` に「応答を受け取ったか否か」を持たせる必要があり、決定 20（打ち切りの経路を
   停止とタイムアウトの 2 つだけとしている）の文言の改訂も要るため、本 PR では広げなかった。
-  **PR10 でも解消せず、PR11b に切り出した**（PR10 決定 17）。
+  **PR10 でも解消せず、PR11b に切り出した**（PR10 決定 17）→ **2026-09-10 に PR11b で解消**
+  （`UnitFailure` に列は足さず、既存の `RunStop.generationUnconfirmed` を単位の判定にも使う形で
+  1 段にした。決定 20 の改訂を伴う）。
 - **「復旧を確認した」操作（PR10）。** 決定 39 のゲートを開ける口は現在 `resumeRun` しかない。
   版が変わった `recovery-waiting` の実行（決定 45-1）は再開できないので、プロセスを再起動する
   たびに `reconcileOnStartup` がゲートを閉じ直し、利用者は「拒否されるだけの再開」を 1 度
