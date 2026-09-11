@@ -67,6 +67,11 @@ export interface SetupApiOverrides {
   readonly createId?: (() => string) | undefined;
   readonly now?: (() => Date) | undefined;
   /**
+   * 実行された SQL 文を 1 本ずつ受け取る（PR12c 決定 7）。`createDatabase` へ素通しする
+   * テスト基盤側の継ぎ目で、本番の配線には影響しない。
+   */
+  readonly onStatement?: ((sql: string) => void) | undefined;
+  /**
    * テスト用の継ぎ目。`/api` に**追加のサブルーターをマウント**して route を足す
    * （`createApp` が組んだ実物のアプリに、`createApiRouter` と同じ `app.route("/api", ...)` で足す）。
    *
@@ -100,7 +105,10 @@ export interface ApiHarness {
 export function setupApi(overrides: SetupApiOverrides = {}): ApiHarness {
   const env = overrides.env ?? { lmStudioUrl: SCRIPTED_ENDPOINT_URL, lmStudioApiKey: null };
 
-  const { db, close: closeDb } = createDatabase(":memory:");
+  const { db, close: closeDb } = createDatabase(
+    ":memory:",
+    overrides.onStatement === undefined ? undefined : { onStatement: overrides.onStatement },
+  );
   applyMigrations(db);
 
   const client = scriptedClient(overrides.steps ?? [], {
