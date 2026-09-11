@@ -14,6 +14,7 @@
 import type { RunDto } from "@shuten/shared";
 import { Link } from "react-router";
 import { ROUTES } from "../../app/routes.ts";
+import { formatDateTime } from "./format-date-time.ts";
 import { RUN_STATUS_LABELS, RUN_STOP_REASON_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
 
@@ -52,8 +53,10 @@ export function RunHeader(props: RunHeaderProps) {
           )}
           {run.stopMessage !== null && <p className={styles.stopMessage}>{run.stopMessage}</p>}
           <p className={styles.statusLine}>モデル: {run.modelId}</p>
-          <p className={styles.statusLine}>開始: {run.startedAt}</p>
-          {run.finishedAt !== null && <p className={styles.statusLine}>終了: {run.finishedAt}</p>}
+          <p className={styles.statusLine}>開始: {formatDateTime(run.startedAt)}</p>
+          {run.finishedAt !== null && (
+            <p className={styles.statusLine}>終了: {formatDateTime(run.finishedAt)}</p>
+          )}
         </div>
       )}
 

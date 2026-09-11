@@ -217,6 +217,38 @@ describe("ResultsPage: R7 404・取得失敗", () => {
     await waitFor(() => expect(screen.getByText("指摘の取得に失敗しました")).toBeInTheDocument());
     expect(paragraphElements().length).toBe(0);
   });
+
+  // レビュー対応（Important 1）：404 の写し方は発生源で分ける。`getRun` 以外が 404 を返しても、
+  // 実行自体は取得できているので「その実行はありません」にはしない。常にエラー表示にする。
+  it("getManuscript が 404 のときエラー表示になる（『その実行はありません』ではない）", async () => {
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail()));
+    const getManuscript = vi.fn(() =>
+      Promise.reject(new ApiRequestError(404, "not-found", "manuscript not found")),
+    );
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("manuscript not found")).toBeInTheDocument());
+    expect(screen.queryByText(/その実行はありません/)).not.toBeInTheDocument();
+    expect(paragraphElements().length).toBe(0);
+  });
+
+  it("getFindings が 404 のときエラー表示になる（『その実行はありません』ではない）", async () => {
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail()));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() =>
+      Promise.reject(new ApiRequestError(404, "not-found", "findings not found")),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("findings not found")).toBeInTheDocument());
+    expect(screen.queryByText(/その実行はありません/)).not.toBeInTheDocument();
+    expect(paragraphElements().length).toBe(0);
+  });
 });
 
 describe("ResultsPage: R7 settings 停止", () => {
@@ -261,6 +293,43 @@ describe("ResultsPage: R7 指摘 0 件の文言（決定 2）", () => {
 
     await waitFor(() => expect(screen.getByText(/まだ指摘がありません/)).toBeInTheDocument());
     expect(screen.queryByText("指摘はありません")).not.toBeInTheDocument();
+  });
+});
+
+// 旧 run-receipt-page.test.tsx の W8-6 相当（削除に伴うカバレッジの穴埋め、Minor 3）。
+// 実装が誤って progress / targets の値をどこかに埋め込んだら検出できるよう、
+// 現実にはありえない値（進捗件数・対象 ID）を仕込んでおく。`progress` は PR12b の担当、
+// `targets` は Task 9 が使うため、本タスクではどちらも読み捨てるだけで画面に出さない。
+describe("ResultsPage: RunDetailDto の progress と targets を画面に出さない", () => {
+  it("進捗件数・対象 ID が document.body.textContent に出ない", async () => {
+    const detail: RunDetailDto = {
+      run: makeRun({ status: "completed" }),
+      progress: {
+        checkUnits: { pending: 0, running: 0, done: 12345, failed: 0, "not-applicable": 0 },
+        recheckUnits: { pending: 0, running: 0, done: 0, failed: 0, "not-applicable": 0 },
+      },
+      targets: [
+        {
+          id: "target-6789",
+          targetIndex: 0,
+          target: { start: 0, end: 10 },
+          contextBefore: null,
+          contextAfter: null,
+          input: { start: 0, end: 10 },
+          paragraphIds: [0],
+        },
+      ],
+    };
+    const getRun = vi.fn(() => Promise.resolve(detail));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
+    expect(document.body.textContent ?? "").not.toContain("12345");
+    expect(document.body.textContent ?? "").not.toContain("target-6789");
   });
 });
 

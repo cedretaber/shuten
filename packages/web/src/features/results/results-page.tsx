@@ -10,6 +10,11 @@
  * （部分描画をしない）。世代番号（`useRef` の連番）で古い応答を捨てる。`id` が変わったときと
  * 「最新の状態を取得」のたびに世代を進める。
  *
+ * 404 の写し方は発生源で分ける（レビュー対応）：**`getRun` の 404 だけ**が「その実行はありません」
+ * （`not-found`）になる。`getManuscript`・`getFindings` の失敗は 404 を含めて常にエラー表示にする
+ * （実行自体は存在するので「その実行はありません」と書かない。失敗を正常な値や別の意味の状態に
+ * すり替えない、という不変条件のとおり）。
+ *
  * 本タスクでは指摘の強調をまだ出さない（強調に渡す集合を決めるのは絞り込みを作る Task 6 の責務）。
  * `BodyView` には空の強調で作った段落を渡し、本文が正しく描けるところまでを作る。右側は指摘の件数
  * だけを出す仮表示で、Task 6 が一覧に置き換える。
@@ -78,40 +83,51 @@ export function ResultsPage() {
         setRefreshing(true);
       }
 
-      // `getRun` と `getFindings` は並行に投げる。`getManuscript` は `run.manuscriptVersionId` が
-      // 要るため `getRun` の応答が届いてから呼ぶ（決定 3）。3 つそろうまで setState しない
-      // （部分描画をしない）。
-      Promise.all([
-        apiClient
-          .getRun(id)
-          .then((detail) =>
-            apiClient
-              .getManuscript(detail.run.manuscriptVersionId)
-              .then((manuscript) => ({ detail, manuscript })),
-          ),
-        apiClient.getFindings(id),
-      ])
-        .then(([{ detail, manuscript }, findings]) => {
+      // `getRun` と `getFindings` は並行に投げる（決定 3）。`findingsPromise` の拒否は
+      // 下の then/catch のどちらかで必ず読むが、`getRun` が先に失敗した経路では読まれないまま
+      // 終わることがあるため、ここで空の catch を挟んで未処理拒否（unhandled rejection）を防ぐ
+      // （実際のエラー処理は下の分岐で行うので、ここでは何もしない）。
+      const findingsPromise = apiClient.getFindings(id);
+      findingsPromise.catch(() => {});
+
+      apiClient.getRun(id).then(
+        (detail) => {
           if (requestGenerationRef.current !== generation) return; // 古い応答
-          setState({
-            kind: "loaded",
-            run: detail.run,
-            targets: detail.targets,
-            manuscript,
-            findings,
-          });
-          setRefreshing(false);
-        })
-        .catch((cause: unknown) => {
+
+          // `getManuscript` は `run.manuscriptVersionId` が要るため `getRun` の応答が届いてから
+          // 呼ぶ（決定 3）。3 つそろうまで setState しない（部分描画をしない）。
+          Promise.all([apiClient.getManuscript(detail.run.manuscriptVersionId), findingsPromise])
+            .then(([manuscript, findings]) => {
+              if (requestGenerationRef.current !== generation) return;
+              setState({
+                kind: "loaded",
+                run: detail.run,
+                targets: detail.targets,
+                manuscript,
+                findings,
+              });
+              setRefreshing(false);
+            })
+            .catch((cause: unknown) => {
+              if (requestGenerationRef.current !== generation) return;
+              setRefreshing(false);
+              // `getManuscript`・`getFindings` の失敗は 404 でも「その実行はありません」にしない
+              // （実行自体は取得できているため）。取得の失敗はエラーとして見せる（空として見せない。
+              // 本文だけ描いて黙らない）。
+              setState({ kind: "error", message: errorMessageFrom(cause) });
+            });
+        },
+        (cause: unknown) => {
           if (requestGenerationRef.current !== generation) return;
           setRefreshing(false);
+          // `getRun` の 404 だけが「その実行はありません」になる（発生源で写し方を分ける）。
           if (cause instanceof ApiRequestError && cause.status === 404) {
             setState({ kind: "not-found" });
             return;
           }
-          // 取得の失敗はエラーとして見せる（空として見せない）。本文だけ描いて黙らない。
           setState({ kind: "error", message: errorMessageFrom(cause) });
-        });
+        },
+      );
     },
     [apiClient, id],
   );
