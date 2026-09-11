@@ -1,8 +1,7 @@
 import { eq } from "drizzle-orm";
-
+import { hashBody } from "../../hash.ts";
 import type { AppDatabase } from "../client.ts";
 import { assertWellFormedBody } from "../errors.ts";
-import { hashBody } from "../hash.ts";
 import { createId } from "../ids.ts";
 import type { ManuscriptVersionRecord } from "../records.ts";
 import { manuscriptVersions } from "../schema.ts";

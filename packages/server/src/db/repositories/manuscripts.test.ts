@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { hashBody } from "../../hash.ts";
 import { createDatabase } from "../client.ts";
 import { MalformedBodyError } from "../errors.ts";
-import { hashBody } from "../hash.ts";
 import { applyMigrations } from "../migrate.ts";
 import { findManuscriptVersion, insertManuscriptVersion } from "./manuscripts.ts";
 
