@@ -1,7 +1,8 @@
 /**
  * `fetch` を注入できる薄い API クライアント（決定 14）。
  *
- * PR11 が呼ぶ口だけを持つ（一覧・停止・再開・再試行・指摘・採否・復旧確認・SSE は PR12 が担当）。
+ * PR11・PR12a が呼ぶ口を持つ（実行の一覧・開始・詳細、原稿、接続設定、指摘の一覧・詳細・採否）。
+ * 停止・再開・再試行・復旧確認・SSE は PR12b が担当。
  * 応答は `@shuten/shared` の zod スキーマで検証し、型注釈と実際の JSON のずれを実行時に検知する。
  */
 
@@ -13,15 +14,25 @@ import {
   type CreateManuscriptRequest,
   connectionCheckDtoSchema,
   connectionSettingsDtoSchema,
+  type FindingDetailDto,
+  type FindingDto,
+  findingDetailDtoSchema,
+  findingDtoSchema,
+  type JudgmentDto,
+  judgmentDtoSchema,
   type ManuscriptVersionDto,
   manuscriptVersionDtoSchema,
   type PutConnectionRequest,
+  type PutJudgmentRequest,
   type RunDetailDto,
   type RunDto,
+  type RunSummaryDto,
   runDetailDtoSchema,
   runDtoSchema,
+  runSummaryDtoSchema,
   type StartRunRequest,
 } from "@shuten/shared";
+import { z } from "zod";
 
 import {
   ApiRequestError,
@@ -42,6 +53,10 @@ export interface ApiClient {
   getManuscript(id: string, options?: { signal?: AbortSignal }): Promise<ManuscriptVersionDto>;
   startRun(body: StartRunRequest): Promise<RunDto>;
   getRun(id: string, options?: { signal?: AbortSignal }): Promise<RunDetailDto>;
+  getRuns(options?: { signal?: AbortSignal }): Promise<RunSummaryDto[]>;
+  getFindings(runId: string, options?: { signal?: AbortSignal }): Promise<FindingDto[]>;
+  getFinding(findingId: string, options?: { signal?: AbortSignal }): Promise<FindingDetailDto>;
+  putJudgment(findingId: string, body: PutJudgmentRequest): Promise<JudgmentDto>;
 }
 
 /** zod スキーマの構造的な最小形。スキーマの実装（バージョンや具体の型）に縛られずに受け取るための型。 */
@@ -110,6 +125,12 @@ async function request<T>(
 }
 
 const JSON_HEADERS: HeadersInit = { "content-type": "application/json" };
+
+/** `GET /api/runs` の応答。配列の包みだけここで作る（スキーマ本体は `@shuten/shared`）。 */
+const runSummaryListSchema = z.array(runSummaryDtoSchema);
+
+/** `GET /api/runs/:id/findings` の応答。 */
+const findingListSchema = z.array(findingDtoSchema);
 
 /** `options?.signal` が指定されたときだけ `init` に足す（`exactOptionalPropertyTypes` 対策）。 */
 function withSignal(init: RequestInit, signal: AbortSignal | undefined): RequestInit {
@@ -197,6 +218,42 @@ export function createApiClient(deps?: { fetch?: typeof globalThis.fetch }): Api
         `/api/runs/${encodeURIComponent(id)}`,
         withSignal({ method: "GET" }, options?.signal),
         runDetailDtoSchema,
+      );
+    },
+
+    getRuns(options) {
+      return request(
+        fetchImpl,
+        "/api/runs",
+        withSignal({ method: "GET" }, options?.signal),
+        runSummaryListSchema,
+      );
+    },
+
+    getFindings(runId, options) {
+      return request(
+        fetchImpl,
+        `/api/runs/${encodeURIComponent(runId)}/findings`,
+        withSignal({ method: "GET" }, options?.signal),
+        findingListSchema,
+      );
+    },
+
+    getFinding(findingId, options) {
+      return request(
+        fetchImpl,
+        `/api/findings/${encodeURIComponent(findingId)}`,
+        withSignal({ method: "GET" }, options?.signal),
+        findingDetailDtoSchema,
+      );
+    },
+
+    putJudgment(findingId, body) {
+      return request(
+        fetchImpl,
+        `/api/findings/${encodeURIComponent(findingId)}/judgment`,
+        { method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(body) },
+        judgmentDtoSchema,
       );
     },
   };

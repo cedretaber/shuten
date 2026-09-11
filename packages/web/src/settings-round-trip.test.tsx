@@ -100,6 +100,10 @@ function makeClient(bodies: StartRunRequest[]): ApiClient {
       return Promise.reject(new ApiRequestError(400, "invalid_request", "検査を開始できません"));
     }),
     getRun: notImplemented("getRun"),
+    getRuns: notImplemented("getRuns"),
+    getFindings: notImplemented("getFindings"),
+    getFinding: notImplemented("getFinding"),
+    putJudgment: notImplemented("putJudgment"),
   };
 }
 

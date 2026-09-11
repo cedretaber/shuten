@@ -1,9 +1,13 @@
 import type {
   ConnectionCheckDto,
   ConnectionSettingsDto,
+  FindingDetailDto,
+  FindingDto,
+  JudgmentDto,
   ManuscriptVersionDto,
   RunDetailDto,
   RunDto,
+  RunSummaryDto,
   StartRunRequest,
 } from "@shuten/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -130,6 +134,59 @@ function makeRunDetailDto(): RunDetailDto {
     run: makeRunDto(),
     progress: { checkUnits: { ...counts }, recheckUnits: { ...counts } },
     targets: [],
+  };
+}
+
+function makeRunSummaryDto(overrides: Partial<RunSummaryDto> = {}): RunSummaryDto {
+  return {
+    id: "run-1",
+    manuscriptVersionId: "manuscript-1",
+    manuscriptName: "テスト原稿",
+    modelId: "model-1",
+    status: "running",
+    startedAt: "2026-09-10T00:00:00.000Z",
+    finishedAt: null,
+    ...overrides,
+  };
+}
+
+function makeJudgmentDto(overrides: Partial<JudgmentDto> = {}): JudgmentDto {
+  return {
+    findingId: "finding-1",
+    status: "undecided",
+    note: null,
+    updatedAt: "2026-09-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeFindingDto(overrides: Partial<FindingDto> = {}): FindingDto {
+  return {
+    id: "finding-1",
+    runId: "run-1",
+    targetId: "target-1",
+    locateStatus: "located",
+    range: { start: 0, end: 5 },
+    paragraphId: 0,
+    quote: "誤字",
+    suggestion: null,
+    category: "notation",
+    initialVerdict: "likely-error",
+    suppression: null,
+    reasons: [],
+    recheck: null,
+    judgment: makeJudgmentDto(),
+    createdAt: "2026-09-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makeFindingDetailDto(overrides: Partial<FindingDetailDto> = {}): FindingDetailDto {
+  return {
+    ...makeFindingDto(),
+    candidates: [],
+    diagnostics: [],
+    ...overrides,
   };
 }
 
@@ -401,5 +458,108 @@ describe("createApiClient", () => {
     expect((caught as ApiRequestError).message).not.toContain(apiKey);
     expect(consoleSpy).not.toHaveBeenCalled();
     consoleSpy.mockRestore();
+  });
+
+  it("R9-1: getRuns / getFindings / getFinding / putJudgment それぞれについて、fetch に渡るメソッド・パス・本文と戻り値が正しい", async () => {
+    {
+      const dtos = [makeRunSummaryDto()];
+      const fetchImpl = fetchMock(jsonResponse(200, dtos));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(client.getRuns()).resolves.toEqual(dtos);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/runs");
+      expect(init.method).toBe("GET");
+    }
+
+    {
+      const dtos = [makeFindingDto()];
+      const fetchImpl = fetchMock(jsonResponse(200, dtos));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      const controller = new AbortController();
+      await expect(client.getFindings("run-1", { signal: controller.signal })).resolves.toEqual(
+        dtos,
+      );
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/runs/run-1/findings");
+      expect(init.method).toBe("GET");
+      expect(init.signal).toBe(controller.signal);
+    }
+
+    {
+      const dto = makeFindingDetailDto();
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(client.getFinding("finding-1")).resolves.toEqual(dto);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/findings/finding-1");
+      expect(init.method).toBe("GET");
+    }
+
+    {
+      const dto = makeJudgmentDto({ status: "adopt-planned", note: "採用予定" });
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await expect(
+        client.putJudgment("finding-1", { status: "adopt-planned", note: "採用予定" }),
+      ).resolves.toEqual(dto);
+      const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/api/findings/finding-1/judgment");
+      expect(init.method).toBe("PUT");
+      const headers = init.headers === undefined ? new Headers() : new Headers(init.headers);
+      expect(headers.get("content-type")).toBe("application/json");
+      expect(JSON.parse(String(init.body))).toEqual({
+        status: "adopt-planned",
+        note: "採用予定",
+      });
+    }
+  });
+
+  it("R9-2: URL に含む ID を encodeURIComponent する", async () => {
+    {
+      const dtos = [makeFindingDto()];
+      const fetchImpl = fetchMock(jsonResponse(200, dtos));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await client.getFindings("run/1 あ");
+      const [url] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`/api/runs/${encodeURIComponent("run/1 あ")}/findings`);
+    }
+
+    {
+      const dto = makeFindingDetailDto();
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await client.getFinding("finding/1 あ");
+      const [url] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`/api/findings/${encodeURIComponent("finding/1 あ")}`);
+    }
+
+    {
+      const dto = makeJudgmentDto();
+      const fetchImpl = fetchMock(jsonResponse(200, dto));
+      const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+      await client.putJudgment("finding/1 あ", { status: "held" });
+      const [url] = fetchImpl.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(`/api/findings/${encodeURIComponent("finding/1 あ")}/judgment`);
+    }
+  });
+
+  it("R9-3: getFindings が形のおかしい応答（要素から id を落とす）を受け取ると ApiResponseError", async () => {
+    const { id: _id, ...findingWithoutId } = makeFindingDto();
+    const client = createApiClient({
+      fetch: fetchMock(jsonResponse(200, [findingWithoutId])) as unknown as typeof fetch,
+    });
+
+    await expect(client.getFindings("run-1")).rejects.toBeInstanceOf(ApiResponseError);
+  });
+
+  it('R9-4: putJudgment の note を省略すると本文が {"status":"held"} になる（null を補わない）', async () => {
+    const dto = makeJudgmentDto({ status: "held" });
+    const fetchImpl = fetchMock(jsonResponse(200, dto));
+    const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+
+    await expect(client.putJudgment("finding-1", { status: "held" })).resolves.toEqual(dto);
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).toBe('{"status":"held"}');
   });
 });

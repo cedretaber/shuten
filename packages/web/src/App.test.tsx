@@ -44,6 +44,10 @@ function makeClient(): ApiClient {
     getManuscript: notImplemented("getManuscript"),
     startRun: notImplemented("startRun"),
     getRun: vi.fn(pending),
+    getRuns: notImplemented("getRuns"),
+    getFindings: notImplemented("getFindings"),
+    getFinding: notImplemented("getFinding"),
+    putJudgment: notImplemented("putJudgment"),
   };
 }
 

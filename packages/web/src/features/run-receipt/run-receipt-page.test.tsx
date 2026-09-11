@@ -77,6 +77,10 @@ function makeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     getManuscript: notImplemented("getManuscript"),
     startRun: notImplemented("startRun"),
     getRun: vi.fn(() => Promise.resolve(makeDetail())),
+    getRuns: notImplemented("getRuns"),
+    getFindings: notImplemented("getFindings"),
+    getFinding: notImplemented("getFinding"),
+    putJudgment: notImplemented("putJudgment"),
     ...overrides,
   };
 }
