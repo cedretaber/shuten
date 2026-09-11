@@ -5,8 +5,10 @@
  * 世代番号による古い応答の破棄、404・取得失敗・`settings` 停止の扱い、指摘 0 件の文言分岐
  * （決定 2）、「最新の状態を取得」での再取得を確認する。
  *
- * 強調・一覧・詳細・採否・絞り込みは Task 6 以降が作る。ここでは `BodyView` が正しい段落数で
- * 描けること、右側は件数だけの仮表示であることまでを見る。
+ * 詳細・採否は Task 7 以降が作る。ここでは `BodyView` が正しい段落数で描けること、右側の
+ * 指摘一覧と絞り込み（決定 7・8・10。`finding-filter.ts`・`finding-filter.tsx`・
+ * `finding-list.tsx` の連携。単体の検査は `finding-filter.test.ts`・`finding-list.test.tsx`）が
+ * `ResultsPage` に正しく組み込まれていることまでを見る。
  */
 
 import type { FindingDto, ManuscriptVersionDto, RunDetailDto, RunDto } from "@shuten/shared";
@@ -19,6 +21,7 @@ import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES, runPath } from "../../app/routes.ts";
+import findingListStyles from "./results-page.module.css";
 import { ResultsPage } from "./results-page.tsx";
 
 const RUN_ID = "run-1";
@@ -353,5 +356,104 @@ describe("ResultsPage: R7 最新の状態を取得", () => {
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     expect(getManuscript).toHaveBeenCalledTimes(2);
     expect(getFindings).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Task 6（指摘一覧と絞り込み、決定 7・8・10）。BODY = "一段落目\n二段落目\n三段落目" の
+// 段落 0（"一段落目"、範囲 [0,4)）に finding-1（notation）、段落 1（"二段落目"、範囲 [5,9)）に
+// finding-2（grammar）を located で置く。
+function findingsSpans() {
+  return document.querySelectorAll("[data-findings]");
+}
+
+describe("ResultsPage: Task 6 絞り込みを変えると強調も減ること", () => {
+  it("分類の絞り込みを外すと、その分類の指摘の強調が消える", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({
+      id: "finding-1",
+      category: "notation",
+      locateStatus: "located",
+      range: { start: 0, end: 1 },
+      paragraphId: 0,
+    });
+    const finding2 = makeFinding({
+      id: "finding-2",
+      category: "grammar",
+      locateStatus: "located",
+      range: { start: 5, end: 6 },
+      paragraphId: 1,
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(findingsSpans().length).toBe(2));
+    expect(screen.getByText("2 / 2 件")).toBeInTheDocument();
+
+    // 分類「文法」（grammar）のチェックを外す。finding-2 だけが分類 grammar。
+    await user.click(screen.getByRole("checkbox", { name: "文法" }));
+
+    await waitFor(() => expect(findingsSpans().length).toBe(1));
+    expect(document.querySelector('[data-findings~="finding-2"]')).toBeNull();
+    expect(document.querySelector('[data-findings~="finding-1"]')).not.toBeNull();
+    expect(screen.getByText("1 / 2 件")).toBeInTheDocument();
+  });
+});
+
+describe("ResultsPage: Task 6 選択中の指摘が消えたら選択が外れること", () => {
+  it("選択中の指摘の分類を絞り込みで外すと、選択が null に戻る", async () => {
+    const user = userEvent.setup();
+    const finding1 = makeFinding({
+      id: "finding-1",
+      category: "notation",
+      locateStatus: "located",
+      range: { start: 0, end: 1 },
+      paragraphId: 0,
+    });
+    const finding2 = makeFinding({
+      id: "finding-2",
+      category: "grammar",
+      locateStatus: "located",
+      range: { start: 5, end: 6 },
+      paragraphId: 1,
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
+    const client = makeClient({ getRun, getManuscript, getFindings });
+
+    renderPage(client);
+
+    await waitFor(() => expect(findingsSpans().length).toBe(2));
+
+    // 一覧の行（finding-2 は表示順で 2 番目）をクリックして選択する——選択状態は
+    // `results-page.tsx` が一元管理し、`BodyView` と一覧の両方に同じ状態を渡すので、一覧側から
+    // 選んでも本文側の強調に選択用 class が付くことを確認する（逆方向は
+    // `body-view.test.tsx`（R2-8・R2-9）で検査済み）。
+    const rows = document.querySelectorAll(`.${findingListStyles.findingRow}`);
+    expect(rows).toHaveLength(2);
+    const row2 = rows[1] as HTMLElement;
+    await user.click(row2);
+
+    expect(row2.getAttribute("aria-current")).toBe("true");
+    const selectedSpan2 = document.querySelector('[data-findings~="finding-2"]') as HTMLElement;
+    expect(selectedSpan2.className).toContain("highlightSelected");
+
+    // 選択中の指摘（finding-2、分類 grammar）の分類を絞り込みで外す。
+    await user.click(screen.getByRole("checkbox", { name: "文法" }));
+
+    await waitFor(() => expect(findingsSpans().length).toBe(1));
+    // finding-2 の強調自体が消える（絞り込みで隠れたため）。
+    expect(document.querySelector('[data-findings~="finding-2"]')).toBeNull();
+
+    // 分類を戻しても、選択は null に戻っている（隠れている間だけ見た目上外れたのではなく、
+    // 状態そのものが null に戻っている）ので、finding-2 は選択済み表示にならない。
+    await user.click(screen.getByRole("checkbox", { name: "文法" }));
+    await waitFor(() => expect(findingsSpans().length).toBe(2));
+    const span2Again = document.querySelector('[data-findings~="finding-2"]') as HTMLElement;
+    expect(span2Again.className).not.toContain("highlightSelected");
   });
 });

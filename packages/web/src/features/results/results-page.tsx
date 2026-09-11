@@ -15,11 +15,18 @@
  * （実行自体は存在するので「その実行はありません」と書かない。失敗を正常な値や別の意味の状態に
  * すり替えない、という不変条件のとおり）。
  *
- * 本タスクでは指摘の強調をまだ出さない（強調に渡す集合を決めるのは絞り込みを作る Task 6 の責務）。
- * `BodyView` には空の強調で作った段落を渡し、本文が正しく描けるところまでを作る。右側は指摘の件数
- * だけを出す仮表示で、Task 6 が一覧に置き換える。
+ * 指摘一覧・絞り込み・選択（Task 6、決定 7・8・10）：選択状態（`selectedFindingId`）はこの
+ * コンポーネントが持ち、`BodyView`（本文の強調のクリック）と `FindingList`（一覧の行のクリック）
+ * の両方に同じ状態・同じハンドラーを渡す。強調に渡す集合は「絞り込み後に一覧へ出ている、位置が
+ * 確定した指摘」だけ（`visibleFindings` → `toHighlights`）——隠れている指摘を強調しない。
+ * `paragraphs` は `body` と `highlights`（＝絞り込み結果由来）の両方に依存する `useMemo` で作り、
+ * `BodyView` 側の `React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
  *
- * `progress`（PR12b の担当）と `targets`（Task 9 が使う）は本タスクでは読み捨てるだけで描画しない。
+ * 絞り込みの状態（`filter`）はこのコンポーネントのローカル状態で、URL にも `localStorage` にも
+ * 保存しない。絞り込みで選択中の指摘が一覧から消えたら選択を `null` に戻す（`handleFilterChange`）。
+ * データの再取得（更新ボタン・`id` の変更）で選択中の指摘そのものが無くなった場合も同様に戻す。
+ *
+ * `progress`（PR12b の担当）と `targets`（Task 9 が使う）は本タスクでも読み捨てるだけで描画しない。
  */
 
 import type { FindingDto, ManuscriptVersionDto, RunDto, RunTargetDto } from "@shuten/shared";
@@ -28,9 +35,12 @@ import { Link, useParams } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES } from "../../app/routes.ts";
-import type { Highlight } from "./body-view.ts";
 import { buildBodyView } from "./body-view.ts";
 import { BodyView } from "./body-view.tsx";
+import type { FindingFilter } from "./finding-filter.ts";
+import { DEFAULT_FINDING_FILTER, toHighlights, visibleFindings } from "./finding-filter.ts";
+import { FindingFilterControls } from "./finding-filter.tsx";
+import { FindingList } from "./finding-list.tsx";
 import { RUN_STATUS_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
@@ -51,8 +61,8 @@ function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "実行の取得に失敗しました";
 }
 
-/** 強調は本タスクでは出さない。空配列は毎回同じ参照にし、`buildBodyView` の呼び出しを安定させる。 */
-const NO_HIGHLIGHTS: readonly Highlight[] = [];
+/** `state.kind !== "loaded"` の間、`findings` の代わりに使う空配列。毎回同じ参照にする。 */
+const EMPTY_FINDINGS: readonly FindingDto[] = [];
 
 export function ResultsPage() {
   const { id } = useParams<{ id: string }>();
@@ -69,6 +79,12 @@ export function ResultsPage() {
   // 別に持つ。初回は state が "loading" になるのでボタン自体がまだ画面に無い）。
   const [refreshing, setRefreshing] = useState(false);
 
+  // 絞り込みと選択（Task 6、決定 7・8・10）。どちらもこの画面のセッションだけのローカル状態
+  // （URL にも localStorage にも保存しない）。id が変わったら（別の実行への直リンク遷移）
+  // 両方とも既定に戻す（`fetchAll` の "initial" 分岐でリセットする。理由は下記）。
+  const [filter, setFilter] = useState<FindingFilter>(DEFAULT_FINDING_FILTER);
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+
   // 同一コンポーネントインスタンスのまま id が変わる（別の実行への直リンク遷移）ことがある。
   // 古い要求の応答が後から届いて新しい要求の結果を上書きしないよう、要求ごとに世代を数える。
   const requestGenerationRef = useRef(0);
@@ -79,6 +95,10 @@ export function ResultsPage() {
       const generation = ++requestGenerationRef.current;
       if (mode === "initial") {
         setState({ kind: "loading" });
+        // 初回・id 変更（別の実行への直リンク遷移）のときだけ絞り込み・選択を既定に戻す。
+        // 更新ボタン（"refresh"）では戻さない——絞り込みは操作中の状態として保つ。
+        setFilter(DEFAULT_FINDING_FILTER);
+        setSelectedFindingId(null);
       } else {
         setRefreshing(true);
       }
@@ -107,6 +127,11 @@ export function ResultsPage() {
                 findings,
               });
               setRefreshing(false);
+              // 更新ボタンでの再取得で、選択中の指摘そのものが無くなっていたら選択を戻す
+              // （絞り込みで隠れただけの場合は handleFilterChange の役割。ここは指摘自体の消失）。
+              setSelectedFindingId((current) =>
+                current !== null && findings.some((f) => f.id === current) ? current : null,
+              );
             })
             .catch((cause: unknown) => {
               if (requestGenerationRef.current !== generation) return;
@@ -142,16 +167,39 @@ export function ResultsPage() {
     fetchAll("refresh");
   }, [fetchAll]);
 
-  // Task 6（絞り込みと選択）が来るまでの仮の実装：強調も選択も無い。`onSelectFinding` は
-  // 参照を安定させ、`React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
-  const handleSelectFinding = useCallback((_findingId: string) => {
-    // 本タスクでは強調を出さないため、この関数が呼ばれることはない。
+  // 本文の強調（クリック）と一覧の行（クリック）の両方から同じ状態を更新する。参照を安定させ、
+  // `BodyView` 側の `React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
+  const handleSelectFinding = useCallback((findingId: string) => {
+    setSelectedFindingId(findingId);
   }, []);
 
+  // 絞り込みの変更では、判定を絞り込み後の集合に対して行う（`setState` の関数形は現在の state
+  // を渡すだけで、変更後の filter は見えないため）。選択中の指摘が新しい絞り込みで消えたら
+  // 選択を null に戻す。
+  const handleFilterChange = useCallback(
+    (next: FindingFilter) => {
+      setFilter(next);
+      setSelectedFindingId((current) => {
+        if (current === null || state.kind !== "loaded") return current;
+        const stillVisible = visibleFindings(state.findings, next).some((f) => f.id === current);
+        return stillVisible ? current : null;
+      });
+    },
+    [state],
+  );
+
+  const findings = state.kind === "loaded" ? state.findings : EMPTY_FINDINGS;
+  // 決定 7：強調に渡すのは「絞り込み後に一覧へ出ている、位置が確定した指摘」だけ。隠れている
+  // 指摘は強調しない（強調を押しても一覧に行が無い、という状態を作らないため）。
+  const visible = useMemo(() => visibleFindings(findings, filter), [findings, filter]);
+  const highlights = useMemo(() => toHighlights(visible), [visible]);
+
   const manuscriptBody = state.kind === "loaded" ? state.manuscript.body : null;
+  // `body` と `highlights`（＝絞り込み結果由来）の両方に依存させる。`BodyView` 側の
+  // `React.memo` は参照比較なので、依存が揃っていないと不要な再描画抑止に失敗する。
   const paragraphs = useMemo(
-    () => (manuscriptBody === null ? [] : buildBodyView(manuscriptBody, NO_HIGHLIGHTS)),
-    [manuscriptBody],
+    () => (manuscriptBody === null ? [] : buildBodyView(manuscriptBody, highlights)),
+    [manuscriptBody, highlights],
   );
 
   return (
@@ -180,12 +228,20 @@ export function ResultsPage() {
               <div className={styles.bodyColumn}>
                 <BodyView
                   paragraphs={paragraphs}
-                  selectedFindingId={null}
+                  selectedFindingId={selectedFindingId}
                   onSelectFinding={handleSelectFinding}
                 />
               </div>
               <div className={styles.sideColumn}>
-                <FindingsSummary run={state.run} findings={state.findings} />
+                <FindingsPanel
+                  run={state.run}
+                  findings={state.findings}
+                  visible={visible}
+                  filter={filter}
+                  onFilterChange={handleFilterChange}
+                  selectedFindingId={selectedFindingId}
+                  onSelectFinding={handleSelectFinding}
+                />
               </div>
             </div>
           )}
@@ -196,16 +252,25 @@ export function ResultsPage() {
 }
 
 /**
- * 右側の仮表示（Task 6 が指摘一覧に置き換える）。件数だけの事実を出す。
+ * 右側（指摘一覧と絞り込み。Task 6、決定 7・8・10）。
  *
  * `completed` 以外では「指摘はありません」と書かない（決定 2）。未処理の範囲が残っている実行を
  * 「問題なし」と見せないため。0 件のときの文言は決定 2 の表のとおり状態で分ける。
+ * この 0 件判定は `findings`（絞り込み前の全件）で行う——絞り込みで 0 件になった場合は
+ * `FindingList` 側が「絞り込みに一致する指摘はありません」を出すので、ここの文言（実行状態の
+ * 説明）とは混同しない。
  */
-function FindingsSummary(props: {
+function FindingsPanel(props: {
   readonly run: RunDto;
   readonly findings: readonly FindingDto[];
+  readonly visible: readonly FindingDto[];
+  readonly filter: FindingFilter;
+  readonly onFilterChange: (next: FindingFilter) => void;
+  readonly selectedFindingId: string | null;
+  readonly onSelectFinding: (findingId: string) => void;
 }) {
-  const { run, findings } = props;
+  const { run, findings, visible, filter, onFilterChange, selectedFindingId, onSelectFinding } =
+    props;
 
   if (findings.length === 0) {
     if (run.status === "completed") {
@@ -219,5 +284,17 @@ function FindingsSummary(props: {
     );
   }
 
-  return <p>{findings.length} 件</p>;
+  return (
+    <div className={styles.findingsPanel}>
+      <p className={styles.findingCount}>
+        {visible.length} / {findings.length} 件
+      </p>
+      <FindingFilterControls filter={filter} onChange={onFilterChange} />
+      <FindingList
+        findings={visible}
+        selectedFindingId={selectedFindingId}
+        onSelectFinding={onSelectFinding}
+      />
+    </div>
+  );
 }
