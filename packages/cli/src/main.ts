@@ -1,5 +1,4 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { parseLmStudioApiKey, parseLmStudioUrl } from "@shuten/server/config.ts";
 import { hashBody } from "@shuten/server/hash.ts";
 import { createLmStudioClient } from "@shuten/server/lmstudio/client.ts";
@@ -11,9 +10,21 @@ import { runPipeline as runPipelineImpl } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus } from "@shuten/server/run/result.ts";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
+import { parseEvaluateArgs } from "./args/evaluate.ts";
 import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
-import { readManuscriptText, writeResultOrFixedError } from "./io.ts";
+import { formatEvaluationReport, formatTruthResolveFailureReport } from "./eval/report.ts";
+import { parseResultJson, validateFindingRanges } from "./eval/result-schema.ts";
+import { scoreRun } from "./eval/score.ts";
+import { parseTruthFile, resolveTruthEntries } from "./eval/truth.ts";
+import type { FileIdentity, NamedPath } from "./io.ts";
+import {
+  findPathConflict,
+  readEvalResultText,
+  readManuscriptText,
+  readTruthText,
+  writeResultOrFixedError,
+} from "./io.ts";
 
 /**
  * server の既定値（`packages/server/src/config.ts` の `loadConfig`）と合わせる。
@@ -21,20 +32,21 @@ import { readManuscriptText, writeResultOrFixedError } from "./io.ts";
  */
 const DEFAULT_LM_STUDIO_URL = "http://127.0.0.1:1234";
 
-/** 同一ファイル判定に使う識別情報（`stat` の dev/ino）。 */
-export interface FileIdentity {
-  readonly dev: number;
-  readonly ino: number;
-}
+/** 同一ファイル判定に使う識別情報（`stat` の dev/ino）。`io.ts` の同名の型の再エクスポート。 */
+export type { FileIdentity };
 
 /**
  * main の外界依存をすべてここにまとめる。テストでは `runPipeline` などをモックに差し替え、
  * 実際の LM Studio や実ファイルシステムに触れずに検証する。`hash` サブコマンドも原稿読み込み・
  * 結果書き出しは同じ入出力経路（`readManuscriptBytes` / `writeResult`）を使う。
+ * `evaluate` は正解ファイル・結果 JSON の読み込みに `readTruthBytes` / `readResultBytes` を、
+ * 指標 JSON・レポートの書き出しに既存の `writeResult` をそのまま使う。
  */
 export interface MainIO {
   readonly readManuscriptBytes: (path: string) => Promise<Uint8Array>;
   readonly readAllowedWordsBytes: (path: string) => Promise<Uint8Array>;
+  readonly readTruthBytes: (path: string) => Promise<Uint8Array>;
+  readonly readResultBytes: (path: string) => Promise<Uint8Array>;
   /** ファイルの識別情報。存在しない・取得できないときは null（比較を諦める）。 */
   readonly statFile: (path: string) => Promise<FileIdentity | null>;
   readonly writeResult: (outPath: string | null, json: string) => Promise<void>;
@@ -48,6 +60,8 @@ function defaultIO(): MainIO {
   return {
     readManuscriptBytes: (path) => readFile(path),
     readAllowedWordsBytes: (path) => readFile(path),
+    readTruthBytes: (path) => readFile(path),
+    readResultBytes: (path) => readFile(path),
     // シンボリックリンクを追う stat を使う（リンク先が入力ファイルなら同一と判定したいため）。
     statFile: (path) =>
       stat(path).then(
@@ -73,7 +87,9 @@ function defaultIO(): MainIO {
 }
 
 /**
- * `--out` が入力ファイルと同じ実体を指していないか調べる。衝突していればその引数名を返す。
+ * `--out` が入力ファイルと同じ実体を指していないか調べる（決定 21）。衝突していればその
+ * 入力側の引数名を返す。`io.ts` の `findPathConflict`（`--out` 対 全入力の一般化版）の薄い
+ * ラッパーで、`run` の呼び出し形（結果は「`--out` と衝突した入力の引数名」の 1 つだけ）を保つ。
  *
  * 実原稿を結果 JSON で上書きする事故を防ぐための検査。パス文字列の正規化比較（`./x.txt` と
  * `x.txt` を同一と見る）に加えて、出力先が既存ファイルのときは `stat` の dev/ino も比べ、
@@ -85,33 +101,20 @@ async function findOutPathConflict(
   manuscriptPath: string,
   allowedWordsPath: string | null,
 ): Promise<string | null> {
-  const inputs: readonly (readonly [string, string])[] = [
-    ["--manuscript", manuscriptPath],
-    ...(allowedWordsPath === null ? [] : ([["--allowed-words", allowedWordsPath]] as const)),
+  const paths: NamedPath[] = [
+    { name: "--out", path: outPath },
+    { name: "--manuscript", path: manuscriptPath },
+    ...(allowedWordsPath === null ? [] : [{ name: "--allowed-words", path: allowedWordsPath }]),
   ];
-
-  const resolvedOut = resolve(outPath);
-  for (const [name, inputPath] of inputs) {
-    if (resolve(inputPath) === resolvedOut) {
-      return name;
-    }
-  }
-
-  // 出力先が存在しない（これから作る）なら実体の比較はできないので、ここで終わる。
-  const outIdentity = await io.statFile(outPath);
-  if (outIdentity === null) {
+  const conflict = await findPathConflict(io, paths);
+  if (conflict === null) {
     return null;
   }
-  for (const [name, inputPath] of inputs) {
-    const inputIdentity = await io.statFile(inputPath);
-    if (
-      inputIdentity !== null &&
-      inputIdentity.dev === outIdentity.dev &&
-      inputIdentity.ino === outIdentity.ino
-    ) {
-      return name;
-    }
-  }
+  // `run` が関心を持つのは「--out が入力のどれかと衝突しているか」だけ。入力どうし
+  // （--manuscript と --allowed-words）が同じ実体を指す組み合わせは、この関数の対象外
+  // （決定 21 が `run` に課しているのは出力対入力の検査だけで、従来の挙動もそうだった）。
+  if (conflict[0] === "--out") return conflict[1];
+  if (conflict[1] === "--out") return conflict[0];
   return null;
 }
 
@@ -299,9 +302,174 @@ async function runHash(argv: readonly string[], io: MainIO): Promise<number> {
   return 0;
 }
 
+/**
+ * `evaluate` サブコマンドの本体（決定 3・4・9・10・13・18・21）。
+ *
+ * 処理の順序（Task 6 ブリーフの指定どおり）：
+ * 1. 引数の解釈
+ * 2. 出力先の衝突検査（決定 21。生成要求も読み込みもする前に）
+ * 3. 原稿を読む
+ * 4. 正解ファイルを読む → JSON.parse → `parseTruthFile`
+ * 5. 結果 JSON を読む → JSON.parse → `parseResultJson`
+ * 6. 3 方向のハッシュ照合（決定 3）
+ * 7. `validateFindingRanges`（決定 18 の意味の検証）
+ * 8. `resolveTruthEntries`（決定 4）
+ * 9. `scoreRun`
+ * 10. 出力（指標 JSON と、`--report` があれば Markdown）
+ *
+ * どの段でも、失敗したら集計せずに終了コード 1 で終わる。指標の良し悪しでは終了コードを変えない
+ * （決定 14）。
+ */
+async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number> {
+  const parsed = parseEvaluateArgs(argv);
+  if (!parsed.ok) {
+    io.writeErrorLine(`引数エラー: ${parsed.error}`);
+    return 1;
+  }
+  const args = parsed.value;
+
+  // 2. 出力先の衝突検査（決定 21）。--out/--report 対 全入力、--out と --report どうしを見る。
+  const namedPaths: NamedPath[] = [
+    ...(args.outPath === null ? [] : [{ name: "--out", path: args.outPath }]),
+    ...(args.reportPath === null ? [] : [{ name: "--report", path: args.reportPath }]),
+    { name: "--manuscript", path: args.manuscriptPath },
+    { name: "--truth", path: args.truthPath },
+    { name: "--result", path: args.resultPath },
+  ];
+  const conflict = await findPathConflict(io, namedPaths);
+  if (conflict !== null) {
+    io.writeErrorLine(`引数エラー: ${conflict[0]} と ${conflict[1]} が同じファイルを指しています`);
+    return 1;
+  }
+
+  // 3. 原稿を読む。
+  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+  if (!manuscriptText.ok) {
+    io.writeErrorLine(manuscriptText.error);
+    return 1;
+  }
+  const text = manuscriptText.value;
+
+  // 4. 正解ファイルを読む → JSON.parse → parseTruthFile。
+  const truthText = await readTruthText(io, args.truthPath);
+  if (!truthText.ok) {
+    io.writeErrorLine(truthText.error);
+    return 1;
+  }
+  let truthJson: unknown;
+  try {
+    truthJson = JSON.parse(truthText.value);
+  } catch {
+    // JSON.parse の例外メッセージは不正な断片を含みうるため連結しない（決定 9 と同じ姿勢）。
+    io.writeErrorLine("正解ファイルの JSON 構文が不正です");
+    return 1;
+  }
+  const parsedTruth = parseTruthFile(truthJson);
+  if (!parsedTruth.ok) {
+    io.writeErrorLine(`正解ファイルの検証に失敗しました: ${parsedTruth.errors.join("; ")}`);
+    return 1;
+  }
+  const truth = parsedTruth.value;
+
+  // 5. 結果 JSON を読む → JSON.parse → parseResultJson。
+  const resultText = await readEvalResultText(io, args.resultPath);
+  if (!resultText.ok) {
+    io.writeErrorLine(resultText.error);
+    return 1;
+  }
+  let resultJson: unknown;
+  try {
+    resultJson = JSON.parse(resultText.value);
+  } catch {
+    io.writeErrorLine("結果ファイルの JSON 構文が不正です");
+    return 1;
+  }
+  const parsedResult = parseResultJson(resultJson);
+  if (!parsedResult.ok) {
+    io.writeErrorLine(`結果ファイルの検証に失敗しました: ${parsedResult.errors.join("; ")}`);
+    return 1;
+  }
+  const result = parsedResult.value;
+
+  // 6. 3 方向のハッシュ照合（決定 3）。ハッシュ値そのものは原稿の内容ではないので出してよいが、
+  //    パス文字列は出さない。
+  const manuscriptHash = hashBody(text);
+  const hashMismatches: string[] = [];
+  if (manuscriptHash !== truth.manuscript.bodyHash) {
+    hashMismatches.push(
+      `原稿と正解ファイルの bodyHash が一致しません（原稿: ${manuscriptHash}、正解ファイル: ${truth.manuscript.bodyHash}）`,
+    );
+  }
+  if (manuscriptHash !== result.conditions.manuscript.bodyHash) {
+    hashMismatches.push(
+      `原稿と結果 JSON の bodyHash が一致しません（原稿: ${manuscriptHash}、結果 JSON: ${result.conditions.manuscript.bodyHash}）`,
+    );
+  }
+  if (hashMismatches.length > 0) {
+    for (const message of hashMismatches) {
+      io.writeErrorLine(message);
+    }
+    return 1;
+  }
+
+  // 7. validateFindingRanges（決定 18 の意味の検証）。
+  const rangeCheck = validateFindingRanges(result, text);
+  if (!rangeCheck.ok) {
+    for (const message of rangeCheck.errors) {
+      io.writeErrorLine(message);
+    }
+    return 1;
+  }
+
+  // 8. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く。
+  const resolved = resolveTruthEntries(truth, text);
+  if (!resolved.ok) {
+    for (const failure of resolved.failures) {
+      io.writeErrorLine(failure.message);
+    }
+    if (args.reportPath !== null) {
+      const failureReport = formatTruthResolveFailureReport({ failures: resolved.failures, text });
+      const writtenReport = await writeResultOrFixedError(
+        io,
+        args.reportPath,
+        failureReport,
+        "レポート",
+      );
+      if (!writtenReport.ok) {
+        io.writeErrorLine(writtenReport.error);
+      }
+    }
+    return 1;
+  }
+
+  // 9. scoreRun。
+  const metrics = scoreRun(resolved.value, result);
+
+  // 10. 出力。--out 未指定なら標準出力へ（run と同じ方針）。
+  const json = JSON.stringify(metrics, null, 2);
+  const written = await writeResultOrFixedError(io, args.outPath, json, "指標");
+  if (!written.ok) {
+    io.writeErrorLine(written.error);
+    return 1;
+  }
+
+  if (args.reportPath !== null) {
+    const report = formatEvaluationReport({ metrics, truth, result });
+    const writtenReport = await writeResultOrFixedError(io, args.reportPath, report, "レポート");
+    if (!writtenReport.ok) {
+      io.writeErrorLine(writtenReport.error);
+      return 1;
+    }
+  }
+
+  // 決定 14：指標の良し悪しで終了コードを変えない。集計できたら常に 0。
+  return 0;
+}
+
 type SubcommandDispatch =
   | { readonly subcommand: "run"; readonly rest: readonly string[] }
   | { readonly subcommand: "hash"; readonly rest: readonly string[] }
+  | { readonly subcommand: "evaluate"; readonly rest: readonly string[] }
   | { readonly subcommand: "unknown"; readonly name: string };
 
 /**
@@ -318,6 +486,9 @@ function dispatchSubcommand(argv: readonly string[]): SubcommandDispatch {
   }
   if (first === "hash") {
     return { subcommand: "hash", rest: argv.slice(1) };
+  }
+  if (first === "evaluate") {
+    return { subcommand: "evaluate", rest: argv.slice(1) };
   }
   return { subcommand: "unknown", name: first };
 }
@@ -337,6 +508,8 @@ export async function main(
       return runRun(dispatch.rest, env, io);
     case "hash":
       return runHash(dispatch.rest, io);
+    case "evaluate":
+      return runEvaluate(dispatch.rest, io);
     case "unknown":
       io.writeErrorLine(`引数エラー: 未知のサブコマンドです: ${dispatch.name}`);
       return 1;
