@@ -78,7 +78,7 @@
 `close()` を呼ばないと「接続 → `run-settled` → 切断 → 再接続」の無限ループになる
 （ブラウザの Network で `/events` の要求が延々と並ぶ形で現れる）。
 
-規則を 2 つ置く。
+規則を 4 つ置く。
 
 1. `subscribeRunEvents` は `run-settled` を受け取ったら、**ハンドラーを呼ぶ前に自分で `close()` する**。
    この不変条件はこの関数 1 か所に閉じ込め、単体テストで守る（テスト B2）。
@@ -89,7 +89,19 @@
    `streamEnded = false` にする（`useEffect` の依存が変わり、購読が張り直される）。終端状態なら
    `streamEnded` を立てたままにする。
 
-`useEffect` の依存は `[runId, run.status === "running" && !streamEnded]` である。
+**`streamEnded` を持つのは `ResultsPage` である**（`useRunStream` ではない）。hook は REST の
+取り直しの成否を知らないので規則 4 を実行できず、逆に `ResultsPage` は SSE のイベントを直接
+受け取れない。そこで所有と通知を次のように分ける。
+
+- `ResultsPage` が `streamEnded` と `streamDisconnected` を持ち、
+  `enabled = run.status === "running" && !streamEnded` を計算して hook に渡す。
+- `useRunStream` は `enabled` が真のときだけ購読し、`onSettled()` と
+  `onConnectionStateChange("open" | "disconnected")` で `ResultsPage` に知らせる。
+- `useEffect` の依存は `[runId, enabled]`。
+
+規則 4 の判定は**軽い取得（`getRun` + `getRunUnits`）の成功だけ**で行う。実行の状態は
+`getRun` の応答で分かっており、`getFindings` の成否を待つ理由が無い（決定 3 の 2 段反映と同じ理由：
+重い取得の失敗に軽い側を巻き込まない）。
 
 **規則 3・4 が無いと自動更新が永久に止まる**（レビュー指摘 1）。`run-settled` を受けて購読を閉じた後、
 続けて走る取り直しが失敗すると、画面の `run.status` は `running` のまま・依存も変わらないので
@@ -184,11 +196,14 @@ PR12a の `refresh()`（「最新の状態を取得」ボタン）は `refreshin
   | --- | --- |
   | `streamEnded` かつ `run.status === "running"`（決定 1 の規則 3・4。取り直しが失敗したままの状態） | 「自動更新は停止しています。「最新の状態を取得」を押してください。」 |
   | SSE が切れている（`onError` を受けてから次の `onOpen` まで） | 「サーバーとの接続が切れました。再接続を試みています。」 |
-  | 自動の取り直しが失敗した（`autoRefreshError`） | 「自動更新に失敗しました。再接続を試みています。」 |
+  | 自動の取り直しが失敗した（`autoRefreshError`） | 「最新情報の取得に失敗しました。「最新の状態を取得」を押してください。」 |
 
 - `onError`（`EventSource` の接続断。自動再接続が走る）は `streamDisconnected` を立てるだけで、
   取り直しは行わない（切れている間に取っても意味が無い）。次の `onOpen` で下ろす。
 - `autoRefreshError` は自動の取り直しが 1 回でも成功したら消す。連続して失敗しても行は増えない。
+  文言に「再接続」を持ち出さない：REST の取得が失敗しても `EventSource` を張り直すとは限らず、
+  終端イベントの後なら接続はこちらが意図して閉じている。「再接続を試みています」は
+  SSE が実際に切れている 2 行目だけの文言である。
 - 手動の `refreshError`（PR12a で入れた、内容を消さずに出す帯）はそのまま残す。
 
 ### 決定 5：観点別の進捗は `GET /api/runs/:id/units` を数えて作る
@@ -487,7 +502,7 @@ jsdom の制約（PR12a で確認済み）：`getBoundingClientRect()` は常に
 | B11 | 決定 12：`/units` の `failure.message` / `pendingNote` / `finishReason` に番兵を入れても画面に出ない（`leak.test.tsx`） |
 | B12 | 決定 9・10：中間状態の文と遅延の通知が出る／消える |
 | B13 | 決定 1・2：`status === "running"` でないときは購読しない。`running` になったら購読する |
-| B14 | 決定 1 の規則 3・4：`run-settled` の後の取り直しが**失敗**したら購読は張り直されず、「自動更新は停止しています」が出る。その後の手動の取り直しが**成功**し、`status` がまだ `running` なら購読が張り直される |
+| B14 | 決定 1 の規則 3・4：`run-settled` の後の取り直しが**失敗**したら購読は張り直されず、「自動更新は停止しています」が出る。その後の取り直しで**軽い取得が成功して `status` が `running`** なら、**続く `getFindings` が失敗しても**購読が張り直される |
 | B15 | 決定 3 の 2 段反映：取り直しで `getRun` + `getRunUnits` が成功し `getFindings` が失敗したとき、状態・進捗・ボタンは新しい値に追従し、既に出ている指摘一覧は消えない |
 | B16 | 決定 4：`onError` で「サーバーとの接続が切れました」が出て、`onOpen` と続く取り直しの成功で消える。行は同時に 2 つ出ない |
 | S1 | 実ブラウザでの確認（決定 15）：`/events` の要求が決着後に増え続けないこと、左右が独立にスクロールすること |
@@ -854,17 +869,30 @@ export type RefreshKind = "light" | "heavy";
 
 export interface RunStreamOptions {
   readonly runId: string;
-  /** 決定 1：`running` のときだけ購読する。 */
-  readonly running: boolean;
+  /**
+   * 決定 1：購読するかどうか。`ResultsPage` が
+   * `run.status === "running" && !streamEnded` を計算して渡す。
+   */
+  readonly enabled: boolean;
   /** 合図。実際の取得は呼び出し元が行う（決定 2・3）。 */
   readonly onRefresh: (kind: RefreshKind) => void;
+  /** 決定 1 の規則 3：`run-settled` を受けた（購読は既に閉じてある）。 */
+  readonly onSettled: () => void;
+  /** 決定 4：SSE の接続状態。`open` は再接続の成功も含む。 */
+  readonly onConnectionStateChange: (state: "open" | "disconnected") => void;
   /** 決定 10：遅延通知の unitId。 */
   readonly onGenerationSlow: (unitId: string) => void;
-  readonly deps?: { EventSource?: EventSourceConstructor };
 }
 
 export function useRunStream(options: RunStreamOptions): void;
 ```
+
+`EventSource` の注入は `ApiClient.subscribeRunEvents` が持つ（決定 16）ので、この hook は
+構築子を受け取らない。hook は `useApiClient()` から `subscribeRunEvents` を引く。
+
+**`streamEnded` / `streamDisconnected` の所有者は `ResultsPage`**（決定 1）。hook は状態を持たず、
+上の 3 つのコールバックで知らせるだけにする。開通時は `onConnectionStateChange("open")` の後に
+`onRefresh("heavy")`、`run-settled` では `onSettled()` の後に `onRefresh("heavy")` を呼ぶ。
 
 - 合流（決定 3）は `results-page.tsx` 側に置く：`inFlightRef`（真偽）と `dirtyRef`
   （`null | "light" | "heavy"`、強い方を残す）で、取り直しが終わったら `dirtyRef` を取り出して
@@ -876,8 +904,9 @@ export function useRunStream(options: RunStreamOptions): void;
 - 反映は 2 段（決定 3）：`getRun` + `getRunUnits` の成功をまず反映し、`getFindings` と詳細は
   別に反映する。後者の失敗で前者を巻き戻さない（B15）。
 - `refreshing` は手動のときだけ立てる。自動の失敗は `autoRefreshError`（真偽値）に畳む（決定 4）。
-- `streamEnded` / `streamDisconnected` を持ち、決定 1 の規則 3・4 と決定 4 の 3 行の出し分けを行う
-  （B14・B16）。
+- `streamEnded` / `streamDisconnected` は `ResultsPage` が持つ（決定 1）。規則 4 の解除は
+  **軽い取得の成功だけ**で判定し、重い取得の成否を待たない（B14）。決定 4 の 3 行の出し分けも
+  ここで行う（B16）。
 - 操作（stop/resume/retry/confirm）の後は、成功・失敗を問わず `heavy` で取り直す（決定 8）。
   2 段反映があるので、`getFindings` がこけても操作の結果はボタンと進捗に出る。
 
