@@ -170,11 +170,33 @@ describe("parseTruthFile", () => {
       expect(result.errors.join(" ")).not.toContain("1.5");
     });
 
+    it("paragraphId が安全な整数の範囲を超える（1e21）なら拒否する", () => {
+      const json = validTruthJson() as { entries: Array<Record<string, unknown>> };
+      const first = json.entries[0];
+      if (first === undefined) throw new Error("fixture broken");
+      first.paragraphId = 1e21;
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.includes("paragraphId"))).toBe(true);
+    });
+
     it("occurrence が 0 なら拒否する", () => {
       const json = validTruthJson() as { entries: Array<Record<string, unknown>> };
       const first = json.entries[0];
       if (first === undefined) throw new Error("fixture broken");
       first.occurrence = 0;
+      const result = parseTruthFile(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.includes("occurrence"))).toBe(true);
+    });
+
+    it("occurrence が安全な整数の範囲を超える（1e21）なら拒否する", () => {
+      const json = validTruthJson() as { entries: Array<Record<string, unknown>> };
+      const first = json.entries[0];
+      if (first === undefined) throw new Error("fixture broken");
+      first.occurrence = 1e21;
       const result = parseTruthFile(json);
       expect(result.ok).toBe(false);
       if (result.ok) return;
@@ -323,7 +345,16 @@ describe("resolveTruthEntries", () => {
 
       const insufficient = byId.get("e-insufficient");
       expect(insufficient?.paragraphId).toBe(1);
-      expect(insufficient?.reason).toEqual({ kind: "not-enough-matches", matchCount: 2 });
+      // matchRanges は段落 1（"二番目の段落にはりんごとりんごがある。"）内で実際に見つかった
+      // 2 件の "りんご" の位置（--report が段落本文と突き合わせるための材料）。
+      expect(insufficient?.reason).toEqual({
+        kind: "not-enough-matches",
+        matchCount: 2,
+        matchRanges: [
+          { start: 15, end: 18 },
+          { start: 19, end: 22 },
+        ],
+      });
 
       // error 側が entryId、normal 側が reason.otherId になる（決定的な割り当て）。
       const overlap = byId.get("e-overlap");

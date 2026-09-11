@@ -53,7 +53,12 @@ export interface ResolvedTruthEntry {
 export type TruthResolveFailureReason =
   | { readonly kind: "paragraph-out-of-range"; readonly paragraphCount: number }
   | { readonly kind: "no-match" }
-  | { readonly kind: "not-enough-matches"; readonly matchCount: number }
+  | {
+      readonly kind: "not-enough-matches";
+      readonly matchCount: number;
+      /** 段落内で見つかった一致の範囲（本文の UTF-16 半開区間）。`--report` に出す材料。 */
+      readonly matchRanges: readonly Range[];
+    }
   | { readonly kind: "error-normal-overlap"; readonly otherId: string };
 
 export interface TruthResolveFailure {
@@ -82,10 +87,12 @@ const idSchema = z.string().min(1, "id は空文字にできません");
 // エディターの行番号（1 起点）や目で数えた「段落」とはずれるため、ここで明示する。
 const PARAGRAPH_ID_HELP =
   "段落 ID は本文を仕様書 6.1 節の規則で分けた段落の 0 起点の通し番号です（空行も 1 段落として数えます。エディターの行番号や目で数えた段落とは一致しません）";
+// z.int() は zod 4 で「安全な整数」（Number.isSafeInteger）に限る（決定 2 の値域の表どおり。
+// packages/shared/src/api/requests.ts と同じ規約）。z.number().int() だけだと桁が大きい値
+// （例：1e21）を通す余地が読み手に伝わりにくいため、表の文言に合わせて z.int() を使う。
 const paragraphIdSchema = z
-  .number()
   .int(`paragraphId は整数でなければなりません（${PARAGRAPH_ID_HELP}）`)
-  .min(0, `paragraphId は 0 以上でなければなりません（${PARAGRAPH_ID_HELP}）`);
+  .min(0, `paragraphId は 0 以上の安全な整数でなければなりません（${PARAGRAPH_ID_HELP}）`);
 
 // 空文字を許すとゼロ長の範囲になり、どの指摘とも重ならない「絶対に検出されない正解項目」が
 // 静かに残る（決定 2）。必ず拒否する。
@@ -94,9 +101,8 @@ const quoteSchema = z
   .min(1, "quote は空文字にできません（ゼロ長の範囲は検出できない正解項目として残ります）");
 
 const occurrenceSchema = z
-  .number()
   .int("occurrence は整数でなければなりません")
-  .min(1, "occurrence は 1 以上でなければなりません（1 起点。省略時は 1）");
+  .min(1, "occurrence は 1 以上の安全な整数でなければなりません（1 起点。省略時は 1）");
 
 const manuscriptSchema = z.object({
   name: z.string(),
@@ -286,7 +292,7 @@ export function resolveTruthEntries(truth: TruthFile, text: string): TruthResolv
       failures.push({
         entryId: entry.id,
         paragraphId: entry.paragraphId,
-        reason: { kind: "not-enough-matches", matchCount: matches.length },
+        reason: { kind: "not-enough-matches", matchCount: matches.length, matchRanges: matches },
         message: `${entry.id}: paragraphId ${String(entry.paragraphId)} 内の一致は ${String(matches.length)} 件で、occurrence（${String(entry.occurrence)}）に届きません`,
       });
       continue;
