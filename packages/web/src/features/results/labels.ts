@@ -18,13 +18,21 @@ import type {
   FindingLocateStatus,
   InitialVerdict,
   JudgmentStatus,
+  Perspective,
   RecheckNotApplicableReason,
   RecheckReasonKind,
   RecheckVerdict,
   RunStatus,
   RunStopReason,
+  UnitFailureDto,
   UnitStatus,
 } from "@shuten/shared";
+
+/**
+ * 生成要求の失敗元区分。`@shuten/shared` に独立した型が無いため `UnitFailureDto["origin"]`
+ * から導く（`unitFailureDtoSchema` の `origin` と同じ列挙に自動で追随する）。
+ */
+type FailureOrigin = UnitFailureDto["origin"];
 
 export const RUN_STATUS_LABELS = {
   running: "実行中",
@@ -126,3 +134,16 @@ export const FAILURE_REASON_LABELS = {
   malformed: "形式不正",
   aborted: "中断",
 } as const satisfies Record<FailureReason, string>;
+
+/** 検査の観点（`Perspective`）。 */
+export const PERSPECTIVE_LABELS = {
+  typo: "誤字・脱字",
+  naturalness: "日本語の自然さ",
+} as const satisfies Record<Perspective, string>;
+
+/** 生成要求が失敗した箇所（`UnitFailureDto["origin"]`。仕様書 7 節）。 */
+export const FAILURE_ORIGIN_LABELS = {
+  "ensure-loaded": "モデルの準備",
+  chat: "生成",
+  local: "アプリ内",
+} as const satisfies Record<FailureOrigin, string>;

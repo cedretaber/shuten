@@ -46,9 +46,16 @@ function makeClient(): ApiClient {
     startRun: notImplemented("startRun"),
     getRun: vi.fn(pending),
     getRuns: vi.fn(pending),
+    getRunUnits: notImplemented("getRunUnits"),
+    stopRun: notImplemented("stopRun"),
+    resumeRun: notImplemented("resumeRun"),
+    retryFailedUnits: notImplemented("retryFailedUnits"),
+    getRecovery: notImplemented("getRecovery"),
+    confirmRecovery: notImplemented("confirmRecovery"),
     getFindings: vi.fn(pending),
     getFinding: notImplemented("getFinding"),
     putJudgment: notImplemented("putJudgment"),
+    subscribeRunEvents: notImplemented("subscribeRunEvents"),
   };
 }
 

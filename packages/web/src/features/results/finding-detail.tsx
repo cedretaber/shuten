@@ -38,18 +38,10 @@ import { JudgmentControl } from "./judgment-control.tsx";
 import {
   FINDING_CATEGORY_LABELS,
   INITIAL_VERDICT_LABELS,
+  PERSPECTIVE_LABELS,
   RECHECK_VERDICT_LABELS,
 } from "./labels.ts";
 import styles from "./results-page.module.css";
-
-/**
- * 検査の観点（`Perspective`）の日本語ラベル。`labels.ts`（変更禁止）には無いので、
- * `run-settings-form.tsx` の `PERSPECTIVE_LABELS` と同じ形でここに置く（`satisfies` で網羅性を担保）。
- */
-const PERSPECTIVE_LABELS = {
-  typo: "誤字・脱字",
-  naturalness: "日本語の自然さ",
-} as const satisfies Record<Perspective, string>;
 
 /**
  * 候補・診断候補の位置特定状態（`CandidateLocateStatus`。`FindingLocateStatus` と違い
