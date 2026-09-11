@@ -90,6 +90,21 @@ describe("Header", () => {
     expect(screen.getByRole("link", { name: "朱点" })).toHaveAttribute("href", "/");
   });
 
+  it("Task 10: 「検査結果」リンクが /runs を指す", () => {
+    const checkConnection = vi.fn(() => new Promise<ConnectionCheckDto>(() => {}));
+    const client = makeFakeClient(checkConnection as ApiClient["checkConnection"]);
+
+    render(
+      <MemoryRouter>
+        <ConnectionProvider client={client}>
+          <Header />
+        </ConnectionProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "検査結果" })).toHaveAttribute("href", "/runs");
+  });
+
   it("S2-2: 「設定」リンクがある", () => {
     const checkConnection = vi.fn(() => new Promise<ConnectionCheckDto>(() => {}));
     const client = makeFakeClient(checkConnection as ApiClient["checkConnection"]);

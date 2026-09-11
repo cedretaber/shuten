@@ -1,0 +1,58 @@
+/**
+ * `/runs` — 保存された検査実行の一覧（Task 10）が使うスタイル。
+ * `results-page.module.css` の `.page` / `.error` / `.findingRow` 系と同じトークン・考え方に揃える。
+ */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+}
+
+.error {
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+.runList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+/* 行全体を <Link> にする（決定 6 と同じ考え方：一覧の行は単一のタブ止まりにする）。 */
+.runRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  text-decoration: none;
+}
+
+.runRow:hover {
+  border-color: var(--color-accent);
+}
+
+.runManuscriptName {
+  font-size: var(--font-size-md);
+  font-weight: bold;
+}
+
+.runMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}

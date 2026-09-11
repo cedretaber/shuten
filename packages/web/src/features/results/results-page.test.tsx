@@ -28,7 +28,7 @@ import { splitParagraphs } from "@shuten/shared";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
@@ -725,6 +725,26 @@ describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新�
 // jsdom には scrollIntoView が無い（申し送り 3）ため、Element.prototype にテスト用のスタブを
 // 代入し、テストの後で元に戻す。
 describe("ResultsPage: Task 9 指摘から本文への移動", () => {
+  // 2 つのテストで共通のスタブ設定・後始末を beforeEach/afterEach に寄せる（レビュー対応）。
+  // `vi.fn()`（型引数なし）の戻り値は `Mock<Constructable | Procedure>` になり
+  // `Element.prototype.scrollIntoView` の型に代入できないため、実際のシグネチャを型引数で渡す。
+  let scrollIntoView: ReturnType<typeof vi.fn<typeof Element.prototype.scrollIntoView>>;
+  let originalScrollIntoView: typeof Element.prototype.scrollIntoView;
+
+  beforeEach(() => {
+    scrollIntoView = vi.fn();
+    originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+  });
+
+  afterEach(() => {
+    if (originalScrollIntoView === undefined) {
+      delete (Element.prototype as { scrollIntoView?: () => void }).scrollIntoView;
+    } else {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
   it("一覧の行をクリックすると移動し、本文の強調をクリックしたときは移動しない", async () => {
     const user = userEvent.setup();
     const finding1 = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一" });
@@ -734,36 +754,26 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
     const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
 
-    const scrollIntoView = vi.fn();
-    const originalScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = scrollIntoView;
+    renderPage(client);
 
-    try {
-      renderPage(client);
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const highlight = document.querySelector('[data-findings~="finding-1"]') as HTMLElement;
+    expect(highlight).not.toBeNull();
 
-      await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
-      const highlight = document.querySelector('[data-findings~="finding-1"]') as HTMLElement;
-      expect(highlight).not.toBeNull();
+    // 本文の強調をクリック：選択は変わる（詳細パネルが出る）が、移動はしない
+    // （すでに見えている場所なので画面を跳ねさせる必要が無いため）。
+    await user.click(highlight);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    expect(scrollIntoView).not.toHaveBeenCalled();
 
-      // 本文の強調をクリック：選択は変わる（詳細パネルが出る）が、移動はしない
-      // （すでに見えている場所なので画面を跳ねさせる必要が無いため）。
-      await user.click(highlight);
-      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
-      expect(scrollIntoView).not.toHaveBeenCalled();
+    // 一覧の行をクリック：同じ指摘を選び直すだけでも、正しい要素（強調）に対して移動する。
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
 
-      // 一覧の行をクリック：同じ指摘を選び直すだけでも、正しい要素（強調）に対して移動する。
-      const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
-      await user.click(row);
-
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(scrollIntoView.mock.instances[0]).toBe(highlight);
-    } finally {
-      if (originalScrollIntoView === undefined) {
-        delete (Element.prototype as { scrollIntoView?: () => void }).scrollIntoView;
-      } else {
-        Element.prototype.scrollIntoView = originalScrollIntoView;
-      }
-    }
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    // `this`（呼び出された要素）を見るので `mock.instances` ではなく `mock.contexts` を使う
+    // （Vitest では `instances` は戻り値の記録で、呼び出し時の `this` は `contexts` の役割）。
+    expect(scrollIntoView.mock.contexts[0]).toBe(highlight);
   });
 
   it("詳細の『本文の該当箇所へ移動』を押すと移動する（位置未確定なら検査対象範囲の段落へ）", async () => {
@@ -796,36 +806,24 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     const getFinding = vi.fn(() => Promise.resolve(makeFindingDetail({ id: "finding-1" })));
     const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
 
-    const scrollIntoView = vi.fn();
-    const originalScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = scrollIntoView;
+    renderPage(client);
 
-    try {
-      renderPage(client);
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
+    await user.click(row);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
 
-      await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
-      const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
-      await user.click(row);
-      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    // 一覧の行クリックでも移動するので、ここまでの呼び出しは無視し、詳細の操作子を押した
+    // 分だけを見る。
+    scrollIntoView.mockClear();
 
-      // 一覧の行クリックでも移動するので、ここまでの呼び出しは無視し、詳細の操作子を押した
-      // 分だけを見る。
-      scrollIntoView.mockClear();
+    const navigateButton = await screen.findByRole("button", { name: "本文の該当箇所へ移動" });
+    await user.click(navigateButton);
 
-      const navigateButton = await screen.findByRole("button", { name: "本文の該当箇所へ移動" });
-      await user.click(navigateButton);
-
-      const paragraph = document.querySelector('[data-paragraph-id="2"]') as HTMLElement;
-      expect(paragraph).not.toBeNull();
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(scrollIntoView.mock.instances[0]).toBe(paragraph);
-    } finally {
-      if (originalScrollIntoView === undefined) {
-        delete (Element.prototype as { scrollIntoView?: () => void }).scrollIntoView;
-      } else {
-        Element.prototype.scrollIntoView = originalScrollIntoView;
-      }
-    }
+    const paragraph = document.querySelector('[data-paragraph-id="2"]') as HTMLElement;
+    expect(paragraph).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(paragraph);
   });
 
   it("該当する検査対象が無ければ移動の操作子を出さない", async () => {

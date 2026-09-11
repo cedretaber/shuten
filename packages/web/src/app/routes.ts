@@ -4,6 +4,7 @@ export const ROUTES = {
   settings: "/settings",
   // 旧パス。リダイレクトのためだけに残している。
   legacyConnectionSettings: "/settings/connection",
+  runs: "/runs",
   run: "/runs/:id",
 } as const;
 

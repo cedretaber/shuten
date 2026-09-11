@@ -9,6 +9,7 @@ import { NotFound } from "./app/not-found.tsx";
 import { ROUTES } from "./app/routes.ts";
 import { SettingsPage } from "./app/settings-page.tsx";
 import { ResultsPage } from "./features/results/results-page.tsx";
+import { RunListPage } from "./features/run-list/run-list-page.tsx";
 
 export interface AppProps {
   /** 省略時は `createApiClient()`（既定の `globalThis.fetch`）。テストは fake を注入する。 */
@@ -31,6 +32,8 @@ export function App({ client: injectedClient }: AppProps = {}) {
               path={ROUTES.legacyConnectionSettings}
               element={<Navigate to={ROUTES.settings} replace />}
             />
+            {/* `/runs` は `/runs/:id` より先に置く（react-router の解決順への配慮）。 */}
+            <Route path={ROUTES.runs} element={<RunListPage />} />
             <Route path={ROUTES.run} element={<ResultsPage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
