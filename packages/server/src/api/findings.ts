@@ -25,7 +25,7 @@ import type { Hono } from "hono";
 import { z } from "zod";
 
 import type { AppDatabase } from "../db/client.ts";
-import type { CandidateRecord, JudgmentRecord } from "../db/records.ts";
+import type { CandidateRecord, JudgmentRecord, RecheckUnitRecord } from "../db/records.ts";
 import { findCheckUnit } from "../db/repositories/check-units.ts";
 import { findDiagnostic } from "../db/repositories/diagnostics.ts";
 import {
@@ -34,8 +34,8 @@ import {
   listCandidatesForFinding,
   listFindings,
 } from "../db/repositories/findings.ts";
-import { findJudgment, setJudgment } from "../db/repositories/judgments.ts";
-import { findRecheckUnitByFinding } from "../db/repositories/rechecks.ts";
+import { findJudgment, listJudgments, setJudgment } from "../db/repositories/judgments.ts";
+import { findRecheckUnitByFinding, listRecheckUnits } from "../db/repositories/rechecks.ts";
 import { findRun } from "../db/repositories/runs.ts";
 import type { ApiDeps } from "./deps.ts";
 import { toCandidateDto, toDiagnosticDto, toFindingDto, toJudgmentDto } from "./dto.ts";
@@ -51,6 +51,23 @@ const findingListSchema = z.array(findingDtoSchema);
 function requireJudgment(db: AppDatabase, findingId: string): JudgmentRecord {
   const judgment = findJudgment(db, findingId);
   if (judgment === null) {
+    throw new Error(`judgments の行がありません（指摘 ID: ${findingId}）`);
+  }
+  return judgment;
+}
+
+/**
+ * 指摘の `judgment` を `Map`（`listJudgments` を 1 回呼んで畳んだもの）から読む。
+ * `requireJudgment` の一覧向け版。`Map` に無ければ同じ文言で例外にする（丸めない。
+ * `requireJudgment` と同じ姿勢。既存テスト「judgments の行を消した指摘の一覧は 500 internal」
+ * がこの経路を守る）。
+ */
+function requireJudgmentFromMap(
+  judgmentsByFindingId: ReadonlyMap<string, JudgmentRecord>,
+  findingId: string,
+): JudgmentRecord {
+  const judgment = judgmentsByFindingId.get(findingId);
+  if (judgment === undefined) {
     throw new Error(`judgments の行がありません（指摘 ID: ${findingId}）`);
   }
   return judgment;
@@ -83,7 +100,24 @@ export function registerFindingRoutes(router: Hono, deps: ApiDeps): void {
     if (findRun(deps.db, runId) === null) {
       throw notFound("実行", runId);
     }
-    const dtos = listFindings(deps.db, runId).map((finding) => buildFindingDto(deps.db, finding));
+    const findings = listFindings(deps.db, runId);
+    // 再確認・採否は指摘 1 件ごとに問い合わせず、実行全体を 1 本ずつ読んで Map から引く
+    // （決定 1・4。旧実装は指摘 N 件で `findRecheckUnitByFinding` / `findJudgment` を N 回ずつ
+    // 呼んでいた）。`recheck_units_finding_id_key`（`finding_id` の一意索引）があるので
+    // 再確認の Map にキーの衝突は起こらない。
+    const recheckByFindingId = new Map<string, RecheckUnitRecord>(
+      listRecheckUnits(deps.db, runId).map((unit) => [unit.findingId, unit]),
+    );
+    const judgmentsByFindingId = new Map<string, JudgmentRecord>(
+      listJudgments(deps.db, runId).map((judgment) => [judgment.findingId, judgment]),
+    );
+    const dtos = findings.map((finding) =>
+      toFindingDto(
+        finding,
+        recheckByFindingId.get(finding.id) ?? null,
+        requireJudgmentFromMap(judgmentsByFindingId, finding.id),
+      ),
+    );
     return respond(c, findingListSchema, dtos);
   });
 
