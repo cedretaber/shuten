@@ -32,7 +32,9 @@ export function App({ client: injectedClient }: AppProps = {}) {
               path={ROUTES.legacyConnectionSettings}
               element={<Navigate to={ROUTES.settings} replace />}
             />
-            {/* `/runs` は `/runs/:id` より先に置く（react-router の解決順への配慮）。 */}
+            {/* react-router 8 系はセグメント数で特異性を判定するため、`/runs` と `/runs/:id` の
+                順序に競合は無い（どちらを先に書いても一致する方へ解決する）。ここでは静的パスを
+                先に書く並びが読みやすいというだけの理由で `/runs` を先に置く。 */}
             <Route path={ROUTES.runs} element={<RunListPage />} />
             <Route path={ROUTES.run} element={<ResultsPage />} />
             <Route path="*" element={<NotFound />} />

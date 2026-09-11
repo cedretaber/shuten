@@ -771,8 +771,9 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     await user.click(row);
 
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    // `this`（呼び出された要素）を見るので `mock.instances` ではなく `mock.contexts` を使う
-    // （Vitest では `instances` は戻り値の記録で、呼び出し時の `this` は `contexts` の役割）。
+    // `this`（呼び出された要素）を見るには `mock.contexts` を使う。`mock.instances` は
+    // `new` 呼び出しで生成されたインスタンスを記録する API で、通常の呼び出しでも実装上
+    // `this` が入ってしまうが、それは `contexts` の役割であり `instances` の意図した用途ではない。
     expect(scrollIntoView.mock.contexts[0]).toBe(highlight);
   });
 

@@ -31,6 +31,12 @@
  *   赤くなることを確認した。
  * - W9-7：`app/header.tsx` の描画へ、番兵のホスト名（`leak-sentinel.invalid`）を含む文字列を
  *   一時的に足し、`/` と `/runs/:id` の両方で赤くなることを確認した。
+ * - W9-7（PR12a 決定 16 で `/runs` へ拡張）：`features/run-list/run-list-page.tsx` の描画へ、
+ *   番兵のホスト名を一時的に足し、`/runs` でも赤くなることを確認した。API キーの localStorage
+ *   検査についても、`connection-section.tsx` の保存成功時に `apiKeyInput` を `localStorage` へ
+ *   書くよう一時的に変え（W9-6 と同じ手口）、W9-6・W9-7 の両方が赤くなることを確認した。
+ *   （画面の描画テキストへの API キーの混入は既存の他画面に混入経路が無いため、この 4 件の
+ *   時点では常に緑になる。実質の担保は `localStorage` 側にある。）
  */
 
 import type {
@@ -40,6 +46,7 @@ import type {
   ManuscriptVersionDto,
   ModelInfoDto,
   RunDetailDto,
+  RunSummaryDto,
 } from "@shuten/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -54,6 +61,7 @@ import { Layout } from "./app/layout.tsx";
 import { ROUTES, runPath } from "./app/routes.ts";
 import { SettingsPage } from "./app/settings-page.tsx";
 import { ResultsPage } from "./features/results/results-page.tsx";
+import { RunListPage } from "./features/run-list/run-list-page.tsx";
 
 /** ---------------------------------------------------------------------- */
 /** 番兵 */
@@ -127,6 +135,19 @@ function makeFindings(): FindingDto[] {
   return [];
 }
 
+/** `/runs`（実行一覧）の描画に要る 1 件。`RunSummaryDto` は `endpointUrl` を持たない。 */
+function makeRunSummary(): RunSummaryDto {
+  return {
+    id: SETTLED_RUN_ID,
+    manuscriptVersionId: MANUSCRIPT_ID,
+    manuscriptName: "原稿（漏えい検査用）",
+    modelId: "model-a",
+    status: "running",
+    startedAt: "2026-09-10T00:00:00.000Z",
+    finishedAt: null,
+  };
+}
+
 function makeRunDetail(): RunDetailDto {
   const counts = { pending: 0, running: 0, done: 0, failed: 0, "not-applicable": 0 } as const;
   return {
@@ -186,6 +207,9 @@ function createFakeFetch(requests: RecordedRequest[]): typeof globalThis.fetch {
     if (url === "/api/settings/connection/check" && method === "POST") {
       return jsonResponse(200, makeCheck());
     }
+    if (url === "/api/runs" && method === "GET") {
+      return jsonResponse(200, [makeRunSummary()]);
+    }
     if (url === `/api/runs/${SETTLED_RUN_ID}` && method === "GET") {
       return jsonResponse(200, makeRunDetail());
     }
@@ -233,6 +257,9 @@ function NavigationProbe() {
       <button type="button" onClick={() => navigate(ROUTES.home)}>
         検査用ナビゲーション：トップへ
       </button>
+      <button type="button" onClick={() => navigate(ROUTES.runs)}>
+        検査用ナビゲーション：一覧へ
+      </button>
       <button type="button" onClick={() => navigate(runPath(SETTLED_RUN_ID))}>
         検査用ナビゲーション：実行画面へ
       </button>
@@ -251,6 +278,7 @@ function renderAppTree(client: ApiClient) {
             <Route element={<Layout />}>
               <Route path={ROUTES.home} element={<HomePage />} />
               <Route path={ROUTES.settings} element={<SettingsPage />} />
+              <Route path={ROUTES.runs} element={<RunListPage />} />
               <Route path={ROUTES.run} element={<ResultsPage />} />
             </Route>
           </Routes>
@@ -343,26 +371,55 @@ describe("漏えい検査：接続設定画面（決定 18）", () => {
 });
 
 describe("漏えい検査：接続設定画面以外（決定 18）", () => {
-  it("W9-7: 接続先 URL は '/' にも '/runs/:id' にも出ない", async () => {
+  it("W9-7: 接続先 URL・API キーは '/'・'/runs'・'/runs/:id' のいずれにも出ない（PR12a 決定 16）", async () => {
     const client = createApiClient({ fetch: createFakeFetch([]) });
     renderAppTree(client);
 
     // 空振り防止：接続設定画面で GET が実際に走り、番兵の URL を読み込んだことを確認してから、
     // 他画面へ移る（読み込まれてすらいない値が出ないのは当然で、検査にならない）。
     await waitForConnectionLoaded();
+    await waitFor(() => expect(screen.getByText("model-a")).toBeInTheDocument());
 
     const user = userEvent.setup();
+
+    // localStorage に実際に何か書かれる操作（モデル選択）と、API キーの保存を両方混ぜる
+    // （W9-6 と同じ空振り防止：localStorage が終始空のままでは何も検査していないのと同じ）。
+    await user.click(screen.getByRole("radio", { name: "model-a" }));
+    await user.type(screen.getByLabelText("API キー"), API_KEY_SENTINEL);
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.getByText(/設定済み/)).toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：トップへ" }));
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: "原稿と検査設定" })).toBeInTheDocument(),
     );
     expect(document.body.textContent ?? "").not.toContain(ENDPOINT_URL_HOST_SENTINEL);
+    expect(document.body.textContent ?? "").not.toContain(API_KEY_SENTINEL);
+
+    // 実行一覧（Task 10・決定 16）。RunSummaryDto は endpointUrl を持たないが、ヘッダー
+    // （全画面共通）を経由した漏えいはここでも起こり得るため、他の画面と同じ検査を行う。
+    await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：一覧へ" }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "検査結果" })).toBeInTheDocument(),
+    );
+    expect(document.body.textContent ?? "").not.toContain(ENDPOINT_URL_HOST_SENTINEL);
+    expect(document.body.textContent ?? "").not.toContain(API_KEY_SENTINEL);
 
     await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：実行画面へ" }));
     // ヘッダー（決定 1）と右側の指摘 0 件表示（決定 2）の両方に「状態:」が出るため、
     // 完全一致でヘッダー側だけを選ぶ。
     await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
     expect(document.body.textContent ?? "").not.toContain(ENDPOINT_URL_HOST_SENTINEL);
+    expect(document.body.textContent ?? "").not.toContain(API_KEY_SENTINEL);
+
+    // localStorage のどのキーの値にも、いずれの番兵も出ない（決定 18）。
+    expect(localStorage.length).toBeGreaterThan(0); // 空振り防止
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key === null) continue;
+      const value = localStorage.getItem(key) ?? "";
+      expect(value).not.toContain(ENDPOINT_URL_HOST_SENTINEL);
+      expect(value).not.toContain(API_KEY_SENTINEL);
+    }
   });
 });
