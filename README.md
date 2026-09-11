@@ -69,8 +69,21 @@ PR12a の計測で 100 ms を上回ったため据え置きをやめたもので
 2026-09-09 に残りの工程を見直し、PR11b・PR12a/12b・PR13a/13b に分け直した
 （ロードマップの「2026-09-09 の見直し」節）。評価原稿と正解データの準備は並行して進める。
 
-一括エクスポート（`GET /api/runs/:id/export`）は形式を評価ツールと揃えるため PR13a に回した。
-保存済み結果の再閲覧は `GET /api/runs/:id` と `GET /api/runs/:id/findings` で行う。
+一括エクスポート（`GET /api/runs/:id/export`）は形式を評価ツールと揃えるため PR13a（後述の分割後は
+PR13a-2）に回した。保存済み結果の再閲覧は `GET /api/runs/:id` と `GET /api/runs/:id/findings` で行う。
+
+2026-09-12 に PR13a を 13a-1（評価ツール）・13a-2（エクスポート）・13a-3（全文チャット方式）の 3 本に
+分け、**PR13a-1 が完了**した。正解ファイルの形式が決まり（`docs/reference/truth-format.md`。ユーザーが
+これから正解データを用意できる状態になった）、評価用 CLI（`packages/cli`）をサブコマンド化して
+（`run`／`evaluate`／`aggregate`／`hash`）、正解ファイルと結果 JSON を突き合わせ、仕様書 10 節の
+自動集計分（誤りの検出率、誤検出、位置特定失敗率、許容語の抑制、実行性能）を指標 JSON として出し、
+人手で判断する指標（修正案の妥当性、人間の確認負担、診断候補の正誤）は空欄で示す。同条件で複数回
+実行した結果のぶれ（error 項目ごとの検出回数 k/N、各指標の最小・中央値・最大）も集計できる。
+原稿・正解ファイル・結果 JSON の 3 者は本文ハッシュ（`pnpm eval hash`）で照合し、一致しなければ
+集計せずエラー終了する。品質の合否は判定しない（数値目標は未決のまま。仕様書 10・13 節）。
+詳細は `docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 1〜22）。エクスポート
+（`GET /api/runs/:id/export`）と全文チャット方式（現在の全文チャット方式との比較用モード）は
+PR13a-2・PR13a-3 に持ち越した。
 
 ## 技術スタック
 
@@ -94,6 +107,7 @@ PR12a の計測で 100 ms を上回ったため据え置きをやめたもので
 | [docs/spec/mvp-spec.md](docs/spec/mvp-spec.md) | MVP 仕様書（正本）。機能範囲、検査処理、保存、評価方法、受け入れ条件 |
 | [docs/reference/invariants.md](docs/reference/invariants.md) | 仕様から導いた不変条件と対象外。実装前に読む |
 | [docs/reference/conventions.md](docs/reference/conventions.md) | 開発規約、パッケージ構成、コマンド |
+| [docs/reference/truth-format.md](docs/reference/truth-format.md) | 評価用の正解ファイルの書き方（`pnpm eval evaluate` / `aggregate` の入力） |
 | [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約、LM Studio 接続検証） |
 | [docs/experiments/](docs/experiments/) | 検証の手順・要求・結果。再検証できる形で残す |
 | [docs/plans/](docs/plans/) | 実装計画。PR 単位のロードマップと、各 PR の詳細計画 |
@@ -142,10 +156,21 @@ Windows 環境では未確認**（`docs/guides/windows-verification.md` のチ�
 
 ## 評価ハーネス（`packages/cli`）
 
-原稿ファイルに検査パイプラインを回し、結果 JSON を出す試運転用の CLI。
+原稿ファイルに検査パイプラインを回して結果 JSON を出し、正解データと突き合わせて仕様書 10 節の指標を
+出す評価用の CLI。サブコマンドは `run`（既定）／`evaluate`／`aggregate`／`hash`。
+先頭の引数が `--` で始まる場合と引数が無い場合は `run` に振られるので、旧来の起動
+（`... --manuscript x --model y`）もそのまま動く。ルートの `pnpm eval` はこの CLI のショートカットで、
+次の 2 つはどちらも同じように動く。
 
 ```sh
-node packages/cli/bin/shuten-eval.ts --manuscript <path> --model <id>
+pnpm eval <サブコマンド> [オプション...]
+node packages/cli/bin/shuten-eval.ts <サブコマンド> [オプション...]
+```
+
+### `run`：検査パイプラインを回す
+
+```sh
+pnpm eval run --manuscript <path> --model <id>
 ```
 
 接続先と API キーは引数では渡さない（シェル履歴に残さないため）。環境変数
@@ -166,6 +191,41 @@ Web UI 側のオーケストレーター経路では同名の設定値の意味�
 思考ありで動かすときは `--reasoning-effort low|medium|high` を渡す（決定記録 [0003](docs/decisions/0003-lm-studio-connection.md) の 2026-09-09 の追記）。
 
 分割長などの既定値は実測前の暫定値で、試運転の結果を見て調整する。
+
+### `evaluate` / `aggregate`：正解データと突き合わせる
+
+正解ファイル（`--truth`）の書き方は [docs/reference/truth-format.md](docs/reference/truth-format.md)。
+原稿・正解ファイル・結果 JSON の本文ハッシュが一致していることを確認してから採点する
+（`pnpm eval hash` でハッシュ値を取れる。後述）。
+
+```sh
+pnpm eval evaluate --manuscript <原稿> --truth <正解.json> --result <結果.json> \
+                   [--out <指標.json>] [--report <レポート.md>]
+pnpm eval aggregate --manuscript <原稿> --truth <正解.json> \
+                    --result <結果1.json> --result <結果2.json> [--result ...] \
+                    [--out <集計.json>] [--report <レポート.md>]
+```
+
+`evaluate` は 1 回の実行を仕様書 10 節の指標（誤りの検出率、誤検出、位置特定失敗率、許容語の抑制、
+実行性能）で採点する。率はすべて `{ numerator, denominator, rate }` で、分母が 0 なら `rate` は `null`。
+人手で判断する指標（修正案の妥当性、人間の確認負担、診断候補の正誤）は指標 JSON・レポートともに空欄で示す。
+
+`aggregate` は同じ条件で複数回実行した結果のぶれを、`--result`（2 本以上必須）から集計する。
+各指標の最小・中央値・最大と、正解項目ごとの検出回数 k/N を出す。実行条件（モデル・観点・分割設定・
+タイムアウトなど）が 1 本でも食い違うと、ぶれを測れないため集計せずエラーになる。
+
+どちらも `--out` を指定しなければ指標 JSON を標準出力に書く。`--report` を指定すると Markdown の
+レポート（人手の欄を含む）を追加で書く。品質の合否は判定しない（終了コードは指標の良し悪しでは変わらない。
+数値目標は未決のまま。仕様書 10・13 節）。
+
+### `hash`：原稿の本文ハッシュを出す
+
+```sh
+pnpm eval hash --manuscript <原稿>
+```
+
+正解ファイルの `manuscript.bodyHash` に貼るハッシュ値を標準出力に 1 行だけ出す。LM Studio には接続しない。
+`sha256sum` の結果とは一致しない（BOM を除いた本文文字列のハッシュのため）ので、必ずこのコマンドで取る。
 
 Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/windows-verification.md)。
 
