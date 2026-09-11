@@ -1,5 +1,5 @@
 /**
- * 漏えい検査（W9-4〜7、決定 18）。web 側から見る。
+ * 漏えい検査（W9-4〜7・B11、決定 18・12）。web 側から見る。
  *
  * `packages/server/src/api/leak.test.ts`（PR10・A0）と同じ趣旨で、番兵の文字列（API キー・
  * 接続先 URL）を実際に画面へ流し、どこにも漏れないことを見る。サーバー側と違う点は 2 つ：
@@ -37,14 +37,36 @@
  *   書くよう一時的に変え（W9-6 と同じ手口）、W9-6・W9-7 の両方が赤くなることを確認した。
  *   （画面の描画テキストへの API キーの混入は既存の他画面に混入経路が無いため、この 4 件の
  *   時点では常に緑になる。実質の担保は `localStorage` 側にある。）
+ *
+ * ## Task 10（PR12b）：B11 の確認
+ *
+ * `GET /api/runs/:id/units` は PR12b で `ResultsPage` の初回取得・自動更新に加わり、`failed-units.tsx`
+ * が失敗単位の一覧を描くようになった（決定 12）。`UnitFailureDto.message`・`finishReason`・
+ * `CheckUnitDto`/`RecheckUnitDto` の `pendingNote`・`RecheckUnitDto.reason` は実行時の生の文字列
+ * （`message` は接続先 URL を含みうる）で、`failed-units.tsx` は型の上でこれらを受け取れるため
+ * W9-7 と違って「描画しようがなく常に緑」にはならない。そのため B11 を書いた時点で、
+ * `failed-units.tsx` の `FailedCheckUnitRow`／`FailedRecheckUnitRow` へ 1 行ずつ**一時的に**
+ * 足し、戻す前に実際に赤くなることを手作業で確認した（作業報告に記録）。
+ *
+ * - `FailedCheckUnitRow` に `{unit.failure?.message}` を足し、接続先ホスト・API キーの番兵が
+ *   `document.body.textContent` に出て赤くなることを確認した。
+ * - 同じ行を `{unit.pendingNote}` に差し替え、`pendingNote` の番兵で赤くなることを確認した。
+ * - 同じ行を `{unit.failure?.finishReason}` に差し替え、`finishReason` の番兵で赤くなることを
+ *   確認した。
+ * - `FailedRecheckUnitRow` に `{unit.reason}` を足し、`RecheckUnitDto.reason` の番兵で赤くなる
+ *   ことを確認した。
+ *
+ * 4 件とも確認後、`failed-units.tsx` を元の内容へ戻した（`git diff` が空であることを確認済み）。
  */
 
 import type {
+  CheckUnitDto,
   ConnectionCheckDto,
   ConnectionSettingsDto,
   FindingDto,
   ManuscriptVersionDto,
   ModelInfoDto,
+  RecheckUnitDto,
   RunDetailDto,
   RunSummaryDto,
   RunUnitsDto,
@@ -74,6 +96,14 @@ const ENDPOINT_URL_HOST_SENTINEL = "leak-sentinel.invalid";
 const ENDPOINT_URL_SENTINEL = `http://${ENDPOINT_URL_HOST_SENTINEL}:9999`;
 const SETTLED_RUN_ID = "run-leak-sentinel-1";
 const MANUSCRIPT_ID = "mv-leak-sentinel-1";
+
+/**
+ * Task 10（決定 12・B11）：`/units` の応答のうち、画面に描いてはいけない実行時の生の文字列に
+ * 使う番兵。実原稿から取った文字列ではなく、架空の値にしてある。
+ */
+const PENDING_NOTE_SENTINEL = "SENTINEL-PENDING-NOTE：これは検査専用の架空の原稿断片である";
+const FINISH_REASON_SENTINEL = "sentinel-finish-reason-fabricated";
+const RECHECK_REASON_SENTINEL = "SENTINEL-RECHECK-REASON：これは検査専用の架空の再確認理由である";
 
 /** ---------------------------------------------------------------------- */
 /** fake fetch（実際の HTTP は呼ばない） */
@@ -144,6 +174,62 @@ function makeUnits(): RunUnitsDto {
   return { checkUnits: [], recheckUnits: [] };
 }
 
+/**
+ * Task 10（決定 12・B11）：失敗した検査単位・再確認単位を 1 件ずつ。`failure.message`・
+ * `failure.finishReason`・`pendingNote`・`RecheckUnitDto.reason` に番兵を入れ、`failed-units.tsx`
+ * がこれらを読んでも描かないことを検査する（`FailedUnits` は `status` が `partially-failed` か
+ * `stopped` のときだけ一覧を描くので、呼び出す側で `run.status` を合わせること）。
+ */
+function makeFailedCheckUnit(): CheckUnitDto {
+  return {
+    id: "cu-leak-sentinel-1",
+    targetId: "target-leak-sentinel-1",
+    targetIndex: 0,
+    perspective: "typo",
+    status: "failed",
+    attempts: 1,
+    failure: {
+      reason: "connection",
+      message: `接続に失敗しました: ${ENDPOINT_URL_SENTINEL}（キー: ${API_KEY_SENTINEL}）`,
+      finishReason: FINISH_REASON_SENTINEL,
+      origin: "chat",
+    },
+    pendingNote: PENDING_NOTE_SENTINEL,
+    elapsedMs: 1234,
+    startedAt: "2026-09-10T00:00:00.000Z",
+    finishedAt: "2026-09-10T00:00:05.000Z",
+  };
+}
+
+function makeFailedRecheckUnit(): RecheckUnitDto {
+  return {
+    id: "ru-leak-sentinel-1",
+    findingId: "finding-leak-sentinel-1",
+    inputRange: null,
+    status: "failed",
+    notApplicableReason: null,
+    attempts: 1,
+    failure: {
+      reason: "connection",
+      message: `接続に失敗しました: ${ENDPOINT_URL_SENTINEL}（キー: ${API_KEY_SENTINEL}）`,
+      finishReason: FINISH_REASON_SENTINEL,
+      origin: "chat",
+    },
+    pendingNote: PENDING_NOTE_SENTINEL,
+    verdict: null,
+    reasonKind: null,
+    reason: RECHECK_REASON_SENTINEL,
+    suggestionValid: null,
+    elapsedMs: 2345,
+    startedAt: "2026-09-10T00:01:00.000Z",
+    finishedAt: "2026-09-10T00:01:05.000Z",
+  };
+}
+
+function makeUnitsWithFailures(): RunUnitsDto {
+  return { checkUnits: [makeFailedCheckUnit()], recheckUnits: [makeFailedRecheckUnit()] };
+}
+
 /** `/runs`（実行一覧）の描画に要る 1 件。`RunSummaryDto` は `endpointUrl` を持たない。 */
 function makeRunSummary(): RunSummaryDto {
   return {
@@ -157,7 +243,8 @@ function makeRunSummary(): RunSummaryDto {
   };
 }
 
-function makeRunDetail(): RunDetailDto {
+/** `run` の一部だけ差し替えたいとき用（Task 10：`status` を `partially-failed` にするなど）。 */
+function makeRunDetail(runOverrides: Partial<RunDetailDto["run"]> = {}): RunDetailDto {
   const counts = { pending: 0, running: 0, done: 0, failed: 0, "not-applicable": 0 } as const;
   return {
     run: {
@@ -189,17 +276,29 @@ function makeRunDetail(): RunDetailDto {
       recoveryConfirmMs: 60_000,
       startedAt: "2026-09-10T00:00:00.000Z",
       finishedAt: null,
+      ...runOverrides,
     },
     progress: { checkUnits: { ...counts }, recheckUnits: { ...counts } },
     targets: [],
   };
 }
 
+/** `createFakeFetch` の応答を差し替えたいとき用（Task 10：`/units` を失敗単位ありにするなど）。 */
+interface FakeFetchOverrides {
+  /** `GET /api/runs/:id` が返す `run` の一部。省略時は `makeRunDetail()` の既定（`running`）。 */
+  readonly runOverrides?: Partial<RunDetailDto["run"]>;
+  /** `GET /api/runs/:id/units` の応答そのもの。省略時は `makeUnits()`（空）。 */
+  readonly units?: RunUnitsDto;
+}
+
 /**
  * この検査に要る最小限の口だけに応える fake fetch。呼ばれた要求は `requests` にそのまま積む。
  * 想定していない要求が来たら、空振りに気付けるよう例外にする。
  */
-function createFakeFetch(requests: RecordedRequest[]): typeof globalThis.fetch {
+function createFakeFetch(
+  requests: RecordedRequest[],
+  overrides: FakeFetchOverrides = {},
+): typeof globalThis.fetch {
   return async (input, init) => {
     const url = urlOf(input);
     const method = init?.method ?? "GET";
@@ -220,7 +319,7 @@ function createFakeFetch(requests: RecordedRequest[]): typeof globalThis.fetch {
       return jsonResponse(200, [makeRunSummary()]);
     }
     if (url === `/api/runs/${SETTLED_RUN_ID}` && method === "GET") {
-      return jsonResponse(200, makeRunDetail());
+      return jsonResponse(200, makeRunDetail(overrides.runOverrides));
     }
     if (url === `/api/manuscripts/${MANUSCRIPT_ID}` && method === "GET") {
       return jsonResponse(200, makeManuscript());
@@ -229,7 +328,7 @@ function createFakeFetch(requests: RecordedRequest[]): typeof globalThis.fetch {
       return jsonResponse(200, makeFindings());
     }
     if (url === `/api/runs/${SETTLED_RUN_ID}/units` && method === "GET") {
-      return jsonResponse(200, makeUnits());
+      return jsonResponse(200, overrides.units ?? makeUnits());
     }
 
     throw new Error(`fake fetch: 想定していない要求 ${method} ${url}`);
@@ -433,6 +532,57 @@ describe("漏えい検査：接続設定画面以外（決定 18）", () => {
       const value = localStorage.getItem(key) ?? "";
       expect(value).not.toContain(ENDPOINT_URL_HOST_SENTINEL);
       expect(value).not.toContain(API_KEY_SENTINEL);
+    }
+  });
+
+  it("B11: /units の failure.message・finishReason・pendingNote・RecheckUnitDto.reason に番兵を入れても、失敗単位の一覧にもlocalStorageにも出ない（決定 12）", async () => {
+    const requests: RecordedRequest[] = [];
+    const client = createApiClient({
+      fetch: createFakeFetch(requests, {
+        runOverrides: { status: "partially-failed", finishedAt: "2026-09-10T00:02:00.000Z" },
+        units: makeUnitsWithFailures(),
+      }),
+    });
+    renderAppTree(client);
+
+    // 空振り防止：接続設定画面で GET が実際に走り、番兵の URL を読み込んだことを確認してから、
+    // 実行画面へ移る（W9-7 と同じ手口）。
+    await waitForConnectionLoaded();
+    await waitFor(() => expect(screen.getByText("model-a")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    // 空振り防止：localStorage に実際に何か書かれる操作（モデル選択）を混ぜる（W9-6・W9-7 と同じ）。
+    await user.click(screen.getByRole("radio", { name: "model-a" }));
+
+    await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：実行画面へ" }));
+
+    // 空振り防止：「失敗した処理」の見出しだけでなく、番兵を含む行（failure.reason のラベル
+    // 「接続失敗」。検査単位・再確認単位の 2 行に出る）が実際に描かれるまで待つ。見出しだけでは、
+    // 番兵を持つ行がまだ描かれていないうちに検査してしまう恐れがある。
+    await waitFor(() => expect(screen.getAllByText(/接続失敗/)).toHaveLength(2));
+    // 空振り防止：GET /api/runs/:id/units が実際に呼ばれたこと。
+    expect(
+      requests.some((r) => r.method === "GET" && r.url === `/api/runs/${SETTLED_RUN_ID}/units`),
+    ).toBe(true);
+
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain(ENDPOINT_URL_HOST_SENTINEL);
+    expect(text).not.toContain(API_KEY_SENTINEL);
+    expect(text).not.toContain(PENDING_NOTE_SENTINEL);
+    expect(text).not.toContain(FINISH_REASON_SENTINEL);
+    expect(text).not.toContain(RECHECK_REASON_SENTINEL);
+
+    // localStorage のどのキーの値にも、いずれの番兵も出ない。
+    expect(localStorage.length).toBeGreaterThan(0); // 空振り防止
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key === null) continue;
+      const value = localStorage.getItem(key) ?? "";
+      expect(value).not.toContain(ENDPOINT_URL_HOST_SENTINEL);
+      expect(value).not.toContain(API_KEY_SENTINEL);
+      expect(value).not.toContain(PENDING_NOTE_SENTINEL);
+      expect(value).not.toContain(FINISH_REASON_SENTINEL);
+      expect(value).not.toContain(RECHECK_REASON_SENTINEL);
     }
   });
 });
