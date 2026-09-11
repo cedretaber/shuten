@@ -688,7 +688,9 @@ function evalTruthJson(overrides: { bodyHash?: string } = {}): unknown {
   };
 }
 
-function evalResultJson(overrides: { bodyHash?: string; omitBodyHash?: boolean } = {}): unknown {
+function evalResultJson(
+  overrides: { bodyHash?: string; omitBodyHash?: boolean; mode?: string } = {},
+): unknown {
   const manuscriptConditions: Record<string, unknown> = {
     utf16Length: 5,
     graphemeCount: 5,
@@ -704,7 +706,7 @@ function evalResultJson(overrides: { bodyHash?: string; omitBodyHash?: boolean }
     conditions: {
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:01.000Z",
-      mode: "split",
+      mode: overrides.mode ?? "split",
       perspectives: ["typo"],
       generation: { model: "test-model", maxTokens: 16000, temperature: 0 },
       model: null,
@@ -1116,6 +1118,308 @@ describe("main evaluate T22: パスの漏えいを防ぐ（決定9）", () => {
         outPath === "report.md" ? Promise.reject(sentinelError("EACCES")) : Promise.resolve(),
     });
     const code = await main([...EVAL_ARGS, "--report", "report.md"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+});
+
+// --- aggregate サブコマンド（Task 7：決定 3・4・9・10・12・13・18・21） ------------------------------
+//
+// すべて合成のテキスト・合成の JSON（実原稿の断片を含まない）。`evaluate` が使う部品
+// （parseResultJson・resolveTruthEntries・scoreRun）をそのまま流用する。
+
+const AGGREGATE_ARGS = [
+  "aggregate",
+  "--manuscript",
+  "manuscript.txt",
+  "--truth",
+  "truth.json",
+  "--result",
+  "result1.json",
+  "--result",
+  "result2.json",
+];
+
+/**
+ * 既定では2本の --result がどちらも同じ内容（evalResultJson()）を返す（条件が一致するので
+ * 集計が成功する）。個別の結果 JSON を変えたいテストは readResultBytes をパスで分岐して上書きする。
+ */
+function buildAggregateIO(overrides: Partial<MainIO> = {}): CapturedIO {
+  return buildIO({
+    readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode(EVAL_TEXT)),
+    readTruthBytes: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(evalTruthJson()))),
+    readResultBytes: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(evalResultJson()))),
+    ...overrides,
+  });
+}
+
+describe("main aggregate T10: 複数回実行の集計（決定12）", () => {
+  it("条件が一致していれば集計JSONを標準出力に書く", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toHaveLength(1);
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      formatVersion?: unknown;
+      runCount?: unknown;
+    };
+    expect(parsed.formatVersion).toBe("1");
+    expect(parsed.runCount).toBe(2);
+  });
+
+  it("条件が食い違う結果を混ぜると集計せずエラー終了する（決定12）", async () => {
+    const captured = buildAggregateIO({
+      readResultBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              path === "result2.json" ? evalResultJson({ mode: "full-text" }) : evalResultJson(),
+            ),
+          ),
+        ),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("mode");
+  });
+});
+
+describe("main aggregate T19: 出力先の衝突（決定21）", () => {
+  it("--out と --report が同じパス文字列ならエラー", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      [...AGGREGATE_ARGS, "--out", "same.json", "--report", "same.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--out");
+    expect(stderr).toContain("--report");
+  });
+
+  it("--out が --manuscript と同じパス文字列ならエラー", async () => {
+    const captured = buildAggregateIO();
+    const code = await main([...AGGREGATE_ARGS, "--out", "manuscript.txt"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("--manuscript");
+  });
+
+  it("--report が --truth と同じ実体（dev/ino 一致。シンボリックリンク・ハードリンク経由の別名を想定）ならエラー", async () => {
+    const identities: Readonly<Record<string, { dev: number; ino: number }>> = {
+      "report.md": { dev: 1, ino: 100 },
+      "truth.json": { dev: 1, ino: 100 },
+      "manuscript.txt": { dev: 1, ino: 1 },
+      "result1.json": { dev: 1, ino: 2 },
+      "result2.json": { dev: 1, ino: 3 },
+    };
+    const captured = buildAggregateIO({
+      statFile: (path) => Promise.resolve(identities[path] ?? null),
+    });
+    const code = await main([...AGGREGATE_ARGS, "--report", "report.md"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("--truth");
+  });
+
+  it("--result どうしが同じパス文字列なら重複としてエラー（ぶれを偽装するため。決定21）", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      [
+        "aggregate",
+        "--manuscript",
+        "manuscript.txt",
+        "--truth",
+        "truth.json",
+        "--result",
+        "same-result.json",
+        "--result",
+        "same-result.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--result");
+    expect(stderr).not.toContain("same-result.json");
+  });
+
+  it("--result どうしが同じ実体（dev/ino 一致。シンボリックリンク・ハードリンク経由の別名を想定）なら重複としてエラー", async () => {
+    const identities: Readonly<Record<string, { dev: number; ino: number }>> = {
+      "manuscript.txt": { dev: 1, ino: 1 },
+      "truth.json": { dev: 1, ino: 2 },
+      "result-a.json": { dev: 1, ino: 100 },
+      "result-b-link.json": { dev: 1, ino: 100 },
+    };
+    const captured = buildAggregateIO({
+      statFile: (path) => Promise.resolve(identities[path] ?? null),
+    });
+    const code = await main(
+      [
+        "aggregate",
+        "--manuscript",
+        "manuscript.txt",
+        "--truth",
+        "truth.json",
+        "--result",
+        "result-a.json",
+        "--result",
+        "result-b-link.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("--result");
+  });
+
+  it("3本目以降で重複していても検出する（1本目と3本目の重複）", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      [
+        "aggregate",
+        "--manuscript",
+        "manuscript.txt",
+        "--truth",
+        "truth.json",
+        "--result",
+        "a.json",
+        "--result",
+        "b.json",
+        "--result",
+        "a.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("--result");
+  });
+
+  it("エラーメッセージにパス文字列を含めない", async () => {
+    const captured = buildAggregateIO();
+    const code = await main([...AGGREGATE_ARGS, "--out", "manuscript.txt"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain("manuscript.txt");
+  });
+
+  it("入力どうし（--manuscript と --truth）が同じ実体でも衝突エラーにはならず、後段の JSON 解析エラーになる（決定21の絞り込み）", async () => {
+    const captured = buildAggregateIO({
+      readTruthBytes: (path) =>
+        path === "manuscript.txt"
+          ? Promise.resolve(new TextEncoder().encode(EVAL_TEXT))
+          : Promise.resolve(new TextEncoder().encode(JSON.stringify(evalTruthJson()))),
+    });
+    const code = await main(
+      [
+        "aggregate",
+        "--manuscript",
+        "manuscript.txt",
+        "--truth",
+        "manuscript.txt",
+        "--result",
+        "result1.json",
+        "--result",
+        "result2.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).not.toContain("が同じファイルを指しています");
+    expect(stderr).toContain("正解ファイルの JSON 構文が不正です");
+  });
+
+  it("衝突が無ければ従来どおり集計が実行される", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      [...AGGREGATE_ARGS, "--out", "aggregate.json", "--report", "report.md"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(0);
+    expect(captured.writtenFiles.map((file) => file.path)).toEqual(["aggregate.json", "report.md"]);
+  });
+});
+
+describe("main aggregate T22: パスの漏えいを防ぐ（決定9）", () => {
+  const SENTINEL_PATH = "/private/leak-should-not-appear/aggregate.json";
+  const sentinelError = (prefix: string) =>
+    new Error(`${prefix}: no such file or directory, open '${SENTINEL_PATH}'`);
+
+  it("原稿読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildAggregateIO({
+      readManuscriptBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("正解ファイル読み込み失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildAggregateIO({
+      readTruthBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("結果ファイル読み込み失敗の例外にパスが含まれても標準エラーに出さない（2本目で失敗）", async () => {
+    const captured = buildAggregateIO({
+      readResultBytes: (path) =>
+        path === "result2.json"
+          ? Promise.reject(sentinelError("ENOENT"))
+          : Promise.resolve(new TextEncoder().encode(JSON.stringify(evalResultJson()))),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("集計 JSON の書き出し失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildAggregateIO({
+      writeResult: () => Promise.reject(sentinelError("EACCES")),
+    });
+    const code = await main([...AGGREGATE_ARGS, "--out", "aggregate.json"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("レポートの書き出し失敗の例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildAggregateIO({
+      writeResult: (outPath) =>
+        outPath === "report.md" ? Promise.reject(sentinelError("EACCES")) : Promise.resolve(),
+    });
+    const code = await main([...AGGREGATE_ARGS, "--report", "report.md"], {}, captured.io);
     expect(code).toBe(1);
     expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
     expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);

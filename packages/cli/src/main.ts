@@ -10,10 +10,14 @@ import { runPipeline as runPipelineImpl } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus } from "@shuten/server/run/result.ts";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
+import { parseAggregateArgs } from "./args/aggregate.ts";
 import { parseEvaluateArgs } from "./args/evaluate.ts";
 import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
+import { aggregateRuns, checkRunConditions } from "./eval/aggregate.ts";
+import { formatAggregateReport } from "./eval/aggregate-report.ts";
 import { formatEvaluationReport, formatTruthResolveFailureReport } from "./eval/report.ts";
+import type { EvaluationResultInput } from "./eval/result-schema.ts";
 import { parseResultJson, validateFindingRanges } from "./eval/result-schema.ts";
 import { scoreRun } from "./eval/score.ts";
 import { parseTruthFile, resolveTruthEntries } from "./eval/truth.ts";
@@ -480,10 +484,215 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   return 0;
 }
 
+/**
+ * `aggregate` サブコマンドの本体（決定 3・4・9・10・12・13・18・21。Task 7 ブリーフ）。
+ * `evaluate`（Task 6）と同じ部品を、`--result` の本数ぶん回して使う。
+ *
+ * 処理の順序（Task 7 ブリーフの指定どおり）：
+ * 1. 引数の解釈
+ * 2. 出力先の衝突検査（決定 21。`--result` どうしの重複も含む）
+ * 3. 原稿を読む
+ * 4. 正解ファイルを読む
+ * 5. 各結果 JSON を 1 本ずつ（`parseResultJson` → `validateFindingRanges`）
+ * 6. 3 方向のハッシュ照合（結果は本数ぶん）
+ * 7. 条件の一致検査（決定 12。`resolveTruthEntries`・`scoreRun` という重い処理の前に fail-fast する）
+ * 8. `resolveTruthEntries`
+ * 9. 各実行に `scoreRun`
+ * 10. 集計（`aggregateRuns`。内部でも条件の一致検査を行うが、7 で既に確認済みなのでここでは
+ *     必ず成功する。二重に検査するのは、`aggregateRuns` 単体でも条件不一致を拒否できることを
+ *     保証する契約（Task 7 ブリーフが固定した型）を保ちながら、CLI 経路では無駄な計算を避けるため）
+ * 11. 出力（集計 JSON と、`--report` があれば Markdown レポート）
+ *
+ * どの段でも、失敗したら集計せずに終了コード 1 で終わる。部分的な数字は見せない。
+ */
+async function runAggregate(argv: readonly string[], io: MainIO): Promise<number> {
+  const parsed = parseAggregateArgs(argv);
+  if (!parsed.ok) {
+    io.writeErrorLine(`引数エラー: ${parsed.error}`);
+    return 1;
+  }
+  const args = parsed.value;
+
+  // 2. 出力先の衝突検査（決定 21）。
+  //    --result どうしの重複（決定 21 の追加分）と、--out/--report 対 全入力・--out と --report
+  //    どうし（evaluate と同じ組）を見る。--manuscript・--truth・--result が互いに衝突していても
+  //    ここでは何も言わない（決定 21 が挙げている組ではない。evaluate と同じ絞り込み）。
+  const namedPaths: NamedPath[] = [
+    ...(args.outPath === null ? [] : [{ name: "--out", path: args.outPath }]),
+    ...(args.reportPath === null ? [] : [{ name: "--report", path: args.reportPath }]),
+    { name: "--manuscript", path: args.manuscriptPath },
+    { name: "--truth", path: args.truthPath },
+    ...args.resultPaths.map((path) => ({ name: "--result", path })),
+  ];
+  const rawConflict = await findPathConflict(io, namedPaths);
+  if (rawConflict !== null) {
+    const [a, b] = rawConflict;
+    const isOutputName = (name: string): boolean => name === "--out" || name === "--report";
+    if (isOutputName(a) || isOutputName(b)) {
+      io.writeErrorLine(`引数エラー: ${a} と ${b} が同じファイルを指しています`);
+      return 1;
+    }
+    if (a === "--result" && b === "--result") {
+      // 同じ実行を2回数えると分散が小さく出て、ぶれを偽装する（決定 21）。パスは出さない。
+      io.writeErrorLine("引数エラー: --result に同じファイルが重複して指定されています");
+      return 1;
+    }
+    // --manuscript・--truth と --result の間の衝突は決定 21 の対象外（evaluate と同じ絞り込み）。
+  }
+
+  // 3. 原稿を読む。
+  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+  if (!manuscriptText.ok) {
+    io.writeErrorLine(manuscriptText.error);
+    return 1;
+  }
+  const text = manuscriptText.value;
+
+  // 4. 正解ファイルを読む → JSON.parse → parseTruthFile。
+  const truthText = await readTruthText(io, args.truthPath);
+  if (!truthText.ok) {
+    io.writeErrorLine(truthText.error);
+    return 1;
+  }
+  let truthJson: unknown;
+  try {
+    truthJson = JSON.parse(truthText.value);
+  } catch {
+    io.writeErrorLine("正解ファイルの JSON 構文が不正です");
+    return 1;
+  }
+  const parsedTruth = parseTruthFile(truthJson);
+  if (!parsedTruth.ok) {
+    io.writeErrorLine(`正解ファイルの検証に失敗しました: ${parsedTruth.errors.join("; ")}`);
+    return 1;
+  }
+  const truth = parsedTruth.value;
+
+  // 5. 各結果 JSON を1本ずつ（parseResultJson → validateFindingRanges）。
+  const results: EvaluationResultInput[] = [];
+  for (const [index, resultPath] of args.resultPaths.entries()) {
+    const resultText = await readEvalResultText(io, resultPath);
+    if (!resultText.ok) {
+      io.writeErrorLine(resultText.error);
+      return 1;
+    }
+    let resultJson: unknown;
+    try {
+      resultJson = JSON.parse(resultText.value);
+    } catch {
+      io.writeErrorLine(`結果 JSON ${String(index + 1)} 本目: JSON 構文が不正です`);
+      return 1;
+    }
+    const parsedResult = parseResultJson(resultJson);
+    if (!parsedResult.ok) {
+      io.writeErrorLine(
+        `結果 JSON ${String(index + 1)} 本目: 検証に失敗しました: ${parsedResult.errors.join("; ")}`,
+      );
+      return 1;
+    }
+    const result = parsedResult.value;
+    const rangeCheck = validateFindingRanges(result, text);
+    if (!rangeCheck.ok) {
+      for (const message of rangeCheck.errors) {
+        io.writeErrorLine(`結果 JSON ${String(index + 1)} 本目: ${message}`);
+      }
+      return 1;
+    }
+    results.push(result);
+  }
+
+  // 6. 3方向のハッシュ照合（決定 3。結果は本数ぶん）。
+  const manuscriptHash = hashBody(text);
+  const hashMismatches: string[] = [];
+  if (manuscriptHash !== truth.manuscript.bodyHash) {
+    hashMismatches.push(
+      `原稿と正解ファイルの bodyHash が一致しません（原稿: ${manuscriptHash}、正解ファイル: ${truth.manuscript.bodyHash}）`,
+    );
+  }
+  results.forEach((result, index) => {
+    if (manuscriptHash !== result.conditions.manuscript.bodyHash) {
+      hashMismatches.push(
+        `原稿と結果 JSON ${String(index + 1)} 本目の bodyHash が一致しません（原稿: ${manuscriptHash}、結果 JSON: ${result.conditions.manuscript.bodyHash}）`,
+      );
+    }
+  });
+  if (hashMismatches.length > 0) {
+    for (const message of hashMismatches) {
+      io.writeErrorLine(message);
+    }
+    return 1;
+  }
+
+  // 7. 条件の一致検査（決定 12）。resolveTruthEntries・scoreRun という重い処理をする前に、
+  //    集計不能なら先に失敗させる。
+  const conditionCheck = checkRunConditions(results);
+  if (conditionCheck.errors.length > 0) {
+    for (const message of conditionCheck.errors) {
+      io.writeErrorLine(message);
+    }
+    return 1;
+  }
+
+  // 8. resolveTruthEntries（決定 4）。失敗は集計せず、--report があるときだけ詳細を書く。
+  const resolved = resolveTruthEntries(truth, text);
+  if (!resolved.ok) {
+    for (const failure of resolved.failures) {
+      io.writeErrorLine(failure.message);
+    }
+    if (args.reportPath !== null) {
+      const failureReport = formatTruthResolveFailureReport({ failures: resolved.failures, text });
+      const writtenReport = await writeResultOrFixedError(
+        io,
+        args.reportPath,
+        failureReport,
+        "レポート",
+      );
+      if (!writtenReport.ok) {
+        io.writeErrorLine(writtenReport.error);
+      }
+    }
+    return 1;
+  }
+
+  // 9. 各実行に scoreRun（同じ resolveTruthEntries の結果を使う。全実行が同じ正解項目集合に対して
+  //    採点されることを、正解項目ごとの k/N の分母が意味を持つための前提として保証する）。
+  const metricsList = results.map((result) => scoreRun(resolved.value, result));
+
+  // 10. 集計。
+  const outcome = aggregateRuns(metricsList, results);
+  if (!outcome.ok) {
+    // 7 で条件は確認済みなので通常は起こらないが、防御的に扱う。
+    for (const message of outcome.errors) {
+      io.writeErrorLine(message);
+    }
+    return 1;
+  }
+
+  // 11. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。
+  const json = JSON.stringify(outcome.value, null, 2);
+  const written = await writeResultOrFixedError(io, args.outPath, json, "集計");
+  if (!written.ok) {
+    io.writeErrorLine(written.error);
+    return 1;
+  }
+
+  if (args.reportPath !== null) {
+    const report = formatAggregateReport(outcome.value);
+    const writtenReport = await writeResultOrFixedError(io, args.reportPath, report, "レポート");
+    if (!writtenReport.ok) {
+      io.writeErrorLine(writtenReport.error);
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 type SubcommandDispatch =
   | { readonly subcommand: "run"; readonly rest: readonly string[] }
   | { readonly subcommand: "hash"; readonly rest: readonly string[] }
   | { readonly subcommand: "evaluate"; readonly rest: readonly string[] }
+  | { readonly subcommand: "aggregate"; readonly rest: readonly string[] }
   | { readonly subcommand: "unknown"; readonly name: string };
 
 /**
@@ -503,6 +712,9 @@ function dispatchSubcommand(argv: readonly string[]): SubcommandDispatch {
   }
   if (first === "evaluate") {
     return { subcommand: "evaluate", rest: argv.slice(1) };
+  }
+  if (first === "aggregate") {
+    return { subcommand: "aggregate", rest: argv.slice(1) };
   }
   return { subcommand: "unknown", name: first };
 }
@@ -524,6 +736,8 @@ export async function main(
       return runHash(dispatch.rest, io);
     case "evaluate":
       return runEvaluate(dispatch.rest, io);
+    case "aggregate":
+      return runAggregate(dispatch.rest, io);
     case "unknown":
       io.writeErrorLine(`引数エラー: 未知のサブコマンドです: ${dispatch.name}`);
       return 1;
