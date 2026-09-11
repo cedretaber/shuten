@@ -321,7 +321,9 @@ async function runHash(argv: readonly string[], io: MainIO): Promise<number> {
  * 7. `validateFindingRanges`（決定 18 の意味の検証）
  * 8. `resolveTruthEntries`（決定 4）
  * 9. `scoreRun`
- * 10. 出力（指標 JSON と、`--report` があれば Markdown）
+ * 10. 出力（指標 JSON と、`--report` があれば Markdown。両方の文字列を組み立ててから書き出す。
+ *     M-2 修正：--report の組み立てを --out の書き出しより後にすると、その間に失敗したとき
+ *     部分的な状態が残る）
  *
  * どの段でも、失敗したら集計せずに終了コード 1 で終わる。指標の良し悪しでは終了コードを変えない
  * （決定 14）。
@@ -424,16 +426,20 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   // 9. scoreRun。
   const metrics = scoreRun(resolved.value, result);
 
-  // 10. 出力。--out 未指定なら標準出力へ（run と同じ方針）。
+  // 10. 出力。--out 未指定なら標準出力へ（run と同じ方針）。両方の文字列を先に組み立ててから
+  //     書き出す（M-2 修正：--report の組み立てを --out の書き出しより後で行うと、その間に
+  //     失敗したとき既に --out へ書き出し済みという部分的な状態になりうる）。
   const json = JSON.stringify(metrics, null, 2);
+  const report =
+    args.reportPath === null ? null : formatEvaluationReport({ metrics, truth, result });
+
   const written = await writeResultOrFixedError(io, args.outPath, json, "指標");
   if (!written.ok) {
     io.writeErrorLine(written.error);
     return 1;
   }
 
-  if (args.reportPath !== null) {
-    const report = formatEvaluationReport({ metrics, truth, result });
+  if (args.reportPath !== null && report !== null) {
     const writtenReport = await writeResultOrFixedError(io, args.reportPath, report, "レポート");
     if (!writtenReport.ok) {
       io.writeErrorLine(writtenReport.error);
@@ -452,7 +458,8 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
  * 処理の順序（`evaluate` と同じ並び：ハッシュ照合を `validateFindingRanges` より先に行う。
  * コーディネーターの指摘により、最初の実装にあった逆順を修正した）：
  * 1. 引数の解釈
- * 2. 出力先の衝突検査（決定 21。`--result` どうしの重複も含む）
+ * 2. 出力先の衝突検査（決定 21。`--result` どうしの重複は、他の入力の衝突に先を越されないよう
+ *    別に検査する。M-3 修正）
  * 3. 原稿を読む
  * 4. 正解ファイルを読む
  * 5. 各結果 JSON を 1 本ずつ `parseResultJson`（形の検証だけ）
@@ -466,7 +473,9 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
  * 11. 集計（`aggregateRuns`。内部でも条件の一致検査を行うが、8 で既に確認済みなのでここでは
  *     必ず成功する。二重に検査するのは、`aggregateRuns` 単体でも条件不一致を拒否できることを
  *     保証する契約（Task 7 ブリーフが固定した型）を保ちながら、CLI 経路では無駄な計算を避けるため）
- * 12. 出力（集計 JSON と、`--report` があれば Markdown レポート）
+ * 12. 出力（集計 JSON と、`--report` があれば Markdown レポート。両方の文字列を組み立ててから
+ *     書き出す。M-2 修正：--report の組み立てを --out の書き出しより後にすると、その間に失敗
+ *     したとき部分的な状態が残る）
  *
  * どの段でも、失敗したら集計せずに終了コード 1 で終わる。部分的な数字は見せない。
  */
@@ -491,11 +500,16 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   if (conflictCheck.handled) {
     return 1;
   }
-  if (
-    conflictCheck.rawConflict !== null &&
-    conflictCheck.rawConflict[0] === "--result" &&
-    conflictCheck.rawConflict[1] === "--result"
-  ) {
+  // --result どうしの重複だけを、上とは別に単独で検査する（M-3 修正）。`findPathConflict` は
+  // 最初に見つかった 1 組だけを返すため、上の検査に --manuscript・--truth・--result をまとめて
+  // 渡すと、--manuscript と --truth の衝突（決定 21 の対象外なので握りつぶす）が先に見つかった
+  // 場合、その後ろに並ぶ --result どうしの重複が一度も検査されない。「ぶれを偽装しない」という
+  // 決定 21 の要である --result の重複検査を、他の入力の衝突の有無に左右されない形にする。
+  const resultConflict = await findPathConflict(
+    io,
+    args.resultPaths.map((path) => ({ name: "--result", path })),
+  );
+  if (resultConflict !== null) {
     // 同じ実行を2回数えると分散が小さく出て、ぶれを偽装する（決定 21）。パスは出さない。
     io.writeErrorLine("引数エラー: --result に同じファイルが重複して指定されています");
     return 1;
@@ -610,16 +624,18 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     return 1;
   }
 
-  // 12. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。
+  // 12. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。両方の文字列を先に組み立てて
+  //     から書き出す（M-2 修正。理由は runEvaluate と同じ）。
   const json = JSON.stringify(outcome.value, null, 2);
+  const report = args.reportPath === null ? null : formatAggregateReport(outcome.value);
+
   const written = await writeResultOrFixedError(io, args.outPath, json, "集計");
   if (!written.ok) {
     io.writeErrorLine(written.error);
     return 1;
   }
 
-  if (args.reportPath !== null) {
-    const report = formatAggregateReport(outcome.value);
+  if (args.reportPath !== null && report !== null) {
     const writtenReport = await writeResultOrFixedError(io, args.reportPath, report, "レポート");
     if (!writtenReport.ok) {
       io.writeErrorLine(writtenReport.error);
@@ -635,7 +651,7 @@ type SubcommandDispatch =
   | { readonly subcommand: "hash"; readonly rest: readonly string[] }
   | { readonly subcommand: "evaluate"; readonly rest: readonly string[] }
   | { readonly subcommand: "aggregate"; readonly rest: readonly string[] }
-  | { readonly subcommand: "unknown"; readonly name: string };
+  | { readonly subcommand: "unknown" };
 
 /**
  * 先頭トークンでサブコマンドを振り分ける（決定 9）。`--` 始まりと空の argv は `run` を補う。
@@ -658,7 +674,7 @@ function dispatchSubcommand(argv: readonly string[]): SubcommandDispatch {
   if (first === "aggregate") {
     return { subcommand: "aggregate", rest: argv.slice(1) };
   }
-  return { subcommand: "unknown", name: first };
+  return { subcommand: "unknown" };
 }
 
 /**
@@ -681,7 +697,11 @@ export async function main(
     case "aggregate":
       return runAggregate(dispatch.rest, io);
     case "unknown":
-      io.writeErrorLine(`引数エラー: 未知のサブコマンドです: ${dispatch.name}`);
+      // 先頭トークンが `--` で始まらなければ何でもサブコマンド名扱いなので、打ち間違えた
+      // パス（例：原稿ファイルのパス）がそのまま入りうる。固定文言のみを返す（決定 9。M-1 修正）。
+      io.writeErrorLine(
+        "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate）",
+      );
       return 1;
   }
 }

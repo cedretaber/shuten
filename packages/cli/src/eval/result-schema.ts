@@ -13,6 +13,7 @@ import type {
 import { RESULT_VERSION } from "@shuten/server/run/result.ts";
 import type {
   CandidateBase,
+  DiagnosticTransform,
   FindingCategory,
   InitialVerdict,
   LlmFinding,
@@ -81,12 +82,32 @@ interface EvaluationFindingInput {
   readonly recheck: EvaluationRecheckInput;
 }
 
-/** 評価が読む位置未確定の候補（`UnlocatedCandidate` の部分集合）。`locate` は `reason` だけ読む。 */
+/**
+ * 評価が読む診断候補（`DiagnosticCandidate` の部分集合）。診断変換別の候補取得件数
+ * （仕様書 10 節「位置特定失敗」、決定 8 に追記）を数えるのに `transform` だけ読む。
+ * `text` と `range` は原文の断片を運ぶので読まない（決定 9 と同じ姿勢）。
+ */
+interface EvaluationDiagnosticCandidateInput {
+  readonly transform: DiagnosticTransform;
+}
+
+/** 評価が読む診断（`Diagnostic` の部分集合）。`candidates[]` の `transform` だけ読む。 */
+interface EvaluationDiagnosticInput {
+  readonly candidates: readonly EvaluationDiagnosticCandidateInput[];
+}
+
+/**
+ * 評価が読む位置未確定の候補（`UnlocatedCandidate` の部分集合）。`locate` は `reason` と
+ * `diagnostic`（診断変換別の候補取得件数の集計に使う。`null` もありうる）だけ読む。
+ */
 interface EvaluationUnlocatedCandidateInput {
   readonly id: string;
   readonly perspective: Perspective;
   readonly llm: LlmFinding;
-  readonly locate: { readonly reason: LocateFailureReason };
+  readonly locate: {
+    readonly reason: LocateFailureReason;
+    readonly diagnostic: EvaluationDiagnosticInput | null;
+  };
 }
 
 /** 評価が読む位置未確定の項目（`UnlocatedResult` の部分集合）。 */
@@ -151,6 +172,12 @@ const LOCATE_FAILURE_REASONS = [
   "ambiguous",
   "outside-target",
 ] as const satisfies readonly LocateFailureReason[];
+
+const DIAGNOSTIC_TRANSFORMS = [
+  "newline",
+  "nfc",
+  "newline+nfc",
+] as const satisfies readonly DiagnosticTransform[];
 
 const REASONING_EFFORTS = [
   "none",
@@ -277,12 +304,23 @@ const findingResultSchema = z.object({
   recheck: recheckSchema,
 }) satisfies z.ZodType<EvaluationFindingInput>;
 
+const diagnosticCandidateSchema = z.object({
+  transform: z.enum(DIAGNOSTIC_TRANSFORMS),
+}) satisfies z.ZodType<EvaluationDiagnosticCandidateInput>;
+
+const diagnosticSchema = z
+  .object({
+    candidates: z.array(diagnosticCandidateSchema),
+  })
+  .nullable() satisfies z.ZodType<EvaluationDiagnosticInput | null>;
+
 const unlocatedCandidateSchema = z.object({
   id: z.string(),
   perspective: z.enum(PERSPECTIVES),
   llm: llmFindingSchema,
   locate: z.object({
     reason: z.enum(LOCATE_FAILURE_REASONS),
+    diagnostic: diagnosticSchema,
   }),
 }) satisfies z.ZodType<EvaluationUnlocatedCandidateInput>;
 

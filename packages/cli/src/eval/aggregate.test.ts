@@ -158,6 +158,7 @@ function baseMetrics(
       outsideTarget: 0,
       failureRate: rate(0, 0),
       unlocatedQuotingTruth: 0,
+      candidatesByTransform: { newline: 0, nfc: 0, "newline+nfc": 0 },
     },
     performance: {
       status: overrides.status ?? "completed",

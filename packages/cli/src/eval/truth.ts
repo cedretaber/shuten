@@ -191,6 +191,13 @@ const truthFileSchema: z.ZodType<TruthFile> = z
 /**
  * zod の issues を path と理由だけの文字列に写す。**値そのものは含めない**
  * （受け取った JSON の内容、とくに引用や原稿の断片が混ざりうるため）。
+ *
+ * `result-schema.ts`（結果 JSON 側）は `path: code` の形にしているが、こちらは `path: message`
+ * （自前の日本語メッセージ）を使う。値域制約にはすべて自前のメッセージが付いているので
+ * 利用者に親切なこちらを選んだ。**これは zod 4.5.4 の既定文言（`message`）に受信値が
+ * 含まれないことに依存している。** zod のバージョンを上げるときは、既定文言（カスタムメッセージを
+ * 付けていない箇所の message）に値が混ざるようにならないか、必ず確かめること。混ざるように
+ * なった場合は `result-schema.ts` と同じ `path: code` の形に変える必要がある。
  */
 function formatIssues(
   issues: readonly { path: readonly PropertyKey[]; message: string }[],

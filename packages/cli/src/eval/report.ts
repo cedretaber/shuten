@@ -245,6 +245,22 @@ function formatUnlocatedSection(u: UnlocatedMetrics): string[] {
       ],
     ),
     "",
+    "診断変換別の候補取得件数（位置特定に失敗した候補が持つ診断候補を `transform` ごとに数えたもの。" +
+      "**この合計は失敗候補数と一致するとは限らない**——1 つの失敗候補が複数の診断候補を持つことも、" +
+      "診断自体を持たない失敗候補（ambiguous・outside-target・空引用の not-found）があることも" +
+      "あるため、合計は失敗候補数を超えることも下回ることもある）:",
+    "",
+    ...mdTable(
+      ["newline", "nfc", "newline+nfc"],
+      [
+        [
+          String(u.candidatesByTransform.newline),
+          String(u.candidatesByTransform.nfc),
+          String(u.candidatesByTransform["newline+nfc"]),
+        ],
+      ],
+    ),
+    "",
     `- 参考値（近似一致。**検出率には算入しない**）: ${String(u.unlocatedQuotingTruth)}`,
     "",
   ];
@@ -484,6 +500,17 @@ export function formatEvaluationReport(input: EvaluationReportInput): string {
   return lines.join("\n");
 }
 
+/**
+ * 本文をコードブロックで囲むためのフェンスを作る（M-5 修正）。本文中に連続するバッククォートが
+ * 出ると（原稿にまれに含まれうる）、3 連固定のフェンスではコードブロックが途中で終わってしまう。
+ * 本文中の最長のバッククォート連より 1 つ長く、かつ最低 3 連のフェンスを返す。
+ */
+function codeFenceFor(body: string): string {
+  const runs = body.match(/`+/g);
+  const longestRun = runs === null ? 0 : Math.max(...runs.map((run) => run.length));
+  return "`".repeat(Math.max(longestRun + 1, 3));
+}
+
 // --- 正解の解決に失敗したときのレポート（決定 4） -----------------------------------------------
 
 export interface TruthResolveFailureReportInput {
@@ -522,11 +549,13 @@ export function formatTruthResolveFailureReport(input: TruthResolveFailureReport
 
     const paragraph = paragraphs[failure.paragraphId];
     if (paragraph !== undefined) {
+      const paragraphText = input.text.slice(paragraph.range.start, paragraph.range.end);
+      const fence = codeFenceFor(paragraphText);
       lines.push("段落本文:");
       lines.push("");
-      lines.push("```");
-      lines.push(input.text.slice(paragraph.range.start, paragraph.range.end));
-      lines.push("```");
+      lines.push(fence);
+      lines.push(paragraphText);
+      lines.push(fence);
       lines.push("");
     }
 

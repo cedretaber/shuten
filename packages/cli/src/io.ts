@@ -249,12 +249,6 @@ export interface OutputConflictCheck {
    * `io.writeErrorLine` に書き終えている（呼び出し側は追加で何も書かず `return 1` してよい）。
    */
   readonly handled: boolean;
-  /**
-   * 見つかった生の衝突（無ければ `null`）。`--out`/`--report` を含まない衝突
-   * （`aggregate` の `--result` どうしの重複など）も呼び出し側が追加判定できるよう、
-   * そのまま返す。
-   */
-  readonly rawConflict: readonly [string, string] | null;
 }
 
 /**
@@ -267,8 +261,14 @@ export interface OutputConflictCheck {
  *
  * `evaluate`・`aggregate` の両方が「衝突検査の対象を組み立てて `findPathConflict` を呼び、
  * `--out`/`--report` が絡む衝突だけをエラーにする」という手順を一字一句同じ形で書いていたため、
- * ここに 1 か所へまとめた（レビュー指摘。Task 7）。`aggregate` はこれに加えて `--result` どうしの
- * 重複（決定 21 の追加分）も見るため、`rawConflict` を呼び出し側にも返す。
+ * ここに 1 か所へまとめた（レビュー指摘。Task 7）。
+ *
+ * `aggregate` はこれに加えて `--result` どうしの重複（決定 21 の追加分）も見るが、その検査は
+ * ここでは行わない。`findPathConflict` は渡された集合の中で最初に見つかった 1 組しか返さないため、
+ * ここに `--manuscript`・`--truth` と一緒に `--result` を混ぜて渡すと、決定 21 の対象外である
+ * `--manuscript`/`--truth` どうしの衝突が先に見つかった場合に `--result` どうしの重複を見落とす
+ * （レビュー指摘 M-3）。呼び出し側（`main.ts` の `runAggregate`）が `--result` だけを渡して
+ * `findPathConflict` を別に呼ぶこと。
  */
 export async function checkOutputConflict(
   io: PathConflictChecker & ErrorLineWriter,
@@ -283,12 +283,12 @@ export async function checkOutputConflict(
   ];
   const rawConflict = await findPathConflict(io, namedPaths);
   if (rawConflict === null) {
-    return { handled: false, rawConflict: null };
+    return { handled: false };
   }
   const [a, b] = rawConflict;
   if (isOutputName(a) || isOutputName(b)) {
     io.writeErrorLine(`引数エラー: ${a} と ${b} が同じファイルを指しています`);
-    return { handled: true, rawConflict };
+    return { handled: true };
   }
-  return { handled: false, rawConflict };
+  return { handled: false };
 }

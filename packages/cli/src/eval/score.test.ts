@@ -110,7 +110,11 @@ function finding(
   };
 }
 
-function unlocated(id: string, quote: string): UnlocatedInput {
+function unlocated(
+  id: string,
+  quote: string,
+  diagnostic: UnlocatedInput["candidate"]["locate"]["diagnostic"] = null,
+): UnlocatedInput {
   return {
     targetIndex: 0,
     candidate: {
@@ -126,7 +130,7 @@ function unlocated(id: string, quote: string): UnlocatedInput {
         suggestion: null,
         verdict: "likely-error",
       },
-      locate: { reason: "not-found" },
+      locate: { reason: "not-found", diagnostic },
     },
   };
 }
@@ -555,6 +559,58 @@ describe("T9 位置特定失敗", () => {
       rate: 0,
     });
     expect(metrics.beforeRecheck.detection.detectedLoose.numerator).toBe(0);
+  });
+
+  it("candidatesByTransform は変換ごとの診断候補件数（diagnostic が null の候補は数えない）", () => {
+    const metrics = scoreRun(
+      [],
+      makeResult([], {
+        unlocated: [
+          unlocated("u1", "引用1", { candidates: [{ transform: "newline" }] }),
+          unlocated("u2", "引用2", { candidates: [{ transform: "nfc" }] }),
+          // diagnostic が null（空引用など）は数えない。
+          unlocated("u3", "引用3", null),
+        ],
+        unlocatedTotals: { notFound: 3, ambiguous: 0, outsideTarget: 0 },
+        candidates: 3,
+      }),
+    );
+    expect(metrics.unlocated.candidatesByTransform).toEqual({
+      newline: 1,
+      nfc: 1,
+      "newline+nfc": 0,
+    });
+  });
+
+  it("1 つの失敗候補が複数の診断候補を持つと、合計は失敗候補数を超えうる", () => {
+    // 変異：diagnostic.candidates を 1 件しか数えない → newline が 1 のままで落ちる。
+    const metrics = scoreRun(
+      [],
+      makeResult([], {
+        unlocated: [
+          unlocated("u1", "引用1", {
+            candidates: [
+              { transform: "newline" },
+              { transform: "newline" },
+              { transform: "newline+nfc" },
+            ],
+          }),
+        ],
+        unlocatedTotals: { notFound: 1, ambiguous: 0, outsideTarget: 0 },
+        candidates: 1,
+      }),
+    );
+    // 失敗候補は 1 件だが、診断候補の合計は 3 件（1 件の合計が失敗候補数を超える）。
+    expect(metrics.unlocated.candidatesByTransform).toEqual({
+      newline: 2,
+      nfc: 0,
+      "newline+nfc": 1,
+    });
+    const total =
+      metrics.unlocated.candidatesByTransform.newline +
+      metrics.unlocated.candidatesByTransform.nfc +
+      metrics.unlocated.candidatesByTransform["newline+nfc"];
+    expect(total).toBeGreaterThan(1);
   });
 
   it("実行性能は conditions と totals からの転記だけ", () => {

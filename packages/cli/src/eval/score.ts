@@ -1,4 +1,4 @@
-import type { Perspective, Range } from "@shuten/shared";
+import type { DiagnosticTransform, Perspective, Range } from "@shuten/shared";
 
 import type { MatchEdge } from "./matching.ts";
 import { maximumMatching } from "./matching.ts";
@@ -125,6 +125,17 @@ export interface UnlocatedMetrics {
   readonly failureRate: Rate;
   /** 参考値（近似一致）。**検出率には算入しない**（決定 8）。 */
   readonly unlocatedQuotingTruth: number;
+  /**
+   * 診断変換別の候補取得件数（仕様書 10 節「位置特定失敗」の指標。決定 8 に追記）。
+   *
+   * 数え方は「位置特定に失敗した候補（`result.unlocated[]`）が持つ診断候補
+   * （`locate.diagnostic.candidates[]`）を、`transform` ごとに数え上げる」。
+   * **1 つの失敗候補が複数の診断候補を持ちうるため、この 3 つの合計は失敗候補数と一致するとは
+   * 限らない**（超えることも下回ることもある）。`diagnostic` は `reason: "not-found"`（空引用を除く）
+   * のときだけ非 null（`packages/shared` の `locateQuote`）。`ambiguous` / `outside-target` の
+   * 失敗と、空引用の `not-found` は診断を持たないため何も数えない。
+   */
+  readonly candidatesByTransform: Readonly<Record<DiagnosticTransform, number>>;
 }
 
 export interface PerformanceMetrics {
@@ -215,6 +226,32 @@ function byPerspective<T>(
   build: (perspective: Perspective) => T,
 ): Readonly<Record<Perspective, T>> {
   return { typo: build("typo"), naturalness: build("naturalness") };
+}
+
+/**
+ * 診断変換別の候補取得件数（`UnlocatedMetrics.candidatesByTransform`）。位置特定に失敗した候補
+ * （`unlocated[]`）が持つ診断候補を `transform` ごとに数え上げる。`diagnostic` が `null` の候補
+ * （`ambiguous` / `outside-target` の失敗、空引用の `not-found`）は数えない。1 つの失敗候補が
+ * 複数の診断候補を持ちうる一方で診断自体を持たない失敗候補もあるため、戻り値の 3 つの合計は
+ * `unlocated.length` と一致するとは限らない（超えることも下回ることもある）。
+ *
+ * キーをベタ書きした形にして、`DiagnosticTransform` に変換が増えたら型検査で落ちるようにする
+ * （`byPerspective` と同じ考え方）。
+ */
+function countCandidatesByTransform(
+  unlocated: EvaluationResultInput["unlocated"],
+): Readonly<Record<DiagnosticTransform, number>> {
+  const counts: Record<DiagnosticTransform, number> = { newline: 0, nfc: 0, "newline+nfc": 0 };
+  for (const item of unlocated) {
+    const diagnostic = item.candidate.locate.diagnostic;
+    if (diagnostic === null) {
+      continue;
+    }
+    for (const candidate of diagnostic.candidates) {
+      counts[candidate.transform] += 1;
+    }
+  }
+  return counts;
 }
 
 // --- 検出（決定 5・20） -----------------------------------------------------------------------
@@ -532,6 +569,7 @@ export function scoreRun(
       outsideTarget: unlocatedTotals.outsideTarget,
       failureRate: makeRate(unlocatedFailures, result.totals.candidates),
       unlocatedQuotingTruth,
+      candidatesByTransform: countCandidatesByTransform(result.unlocated),
     },
     performance: {
       status: result.status,

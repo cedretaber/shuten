@@ -9,6 +9,31 @@ import type { ResolvedTruthEntry, TruthFile, TruthResolveFailure } from "./truth
 // すべて合成のテキスト・合成の JSON（実原稿の断片を含まない）。
 
 type FindingInput = EvaluationResultInput["findings"][number];
+type UnlocatedInput = EvaluationResultInput["unlocated"][number];
+
+function unlocatedCandidate(
+  id: string,
+  diagnostic: UnlocatedInput["candidate"]["locate"]["diagnostic"] = null,
+): UnlocatedInput {
+  return {
+    targetIndex: 0,
+    candidate: {
+      id,
+      perspective: "typo",
+      llm: {
+        paragraphId: 0,
+        quote: "引用",
+        before: "",
+        after: "",
+        category: "notation",
+        reason: "理由",
+        suggestion: null,
+        verdict: "likely-error",
+      },
+      locate: { reason: "not-found", diagnostic },
+    },
+  };
+}
 
 function errorEntry(
   id: string,
@@ -103,7 +128,10 @@ function finding(
   };
 }
 
-function makeResult(findings: readonly FindingInput[]): EvaluationResultInput {
+function makeResult(
+  findings: readonly FindingInput[],
+  unlocated: EvaluationResultInput["unlocated"] = [],
+): EvaluationResultInput {
   return {
     status: "completed",
     stop: null,
@@ -140,14 +168,14 @@ function makeResult(findings: readonly FindingInput[]): EvaluationResultInput {
       },
     },
     findings,
-    unlocated: [],
+    unlocated,
     totals: {
       targets: 1,
       checkUnits: { done: 1, failed: 0, pending: 0 },
       requests: 1,
-      candidates: findings.length,
+      candidates: findings.length + unlocated.length,
       located: findings.length,
-      unlocated: { notFound: 0, ambiguous: 0, outsideTarget: 0 },
+      unlocated: { notFound: unlocated.length, ambiguous: 0, outsideTarget: 0 },
       findings: findings.length,
       suppressed: findings.filter((item) => item.suppression !== null).length,
       rechecks: { done: 0, failed: 0, pending: 0, suppressed: 0, disabled: findings.length },
@@ -279,6 +307,32 @@ describe("formatEvaluationReport", () => {
     // 最後の列（修正案の妥当性）が空欄（行末が `|  |` になる）。
     expect(report).toContain("| e1 | 誤り | 直した形 | f1 | 誤り | 案 | exact |  |");
   });
+
+  it("位置特定失敗の節に診断変換別の候補取得件数の表と、合計が一致しない旨の注記を出す", () => {
+    const entries: ResolvedTruthEntry[] = [];
+    const result = makeResult(
+      [],
+      [
+        unlocatedCandidate("u1", {
+          candidates: [{ transform: "newline" }, { transform: "newline" }],
+        }),
+        unlocatedCandidate("u2", { candidates: [{ transform: "nfc" }] }),
+      ],
+    );
+    const metrics = scoreRun(entries, result);
+    expect(metrics.unlocated.candidatesByTransform).toEqual({
+      newline: 2,
+      nfc: 1,
+      "newline+nfc": 0,
+    });
+
+    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+
+    expect(report).toContain("診断変換別の候補取得件数");
+    expect(report).toContain("この合計は失敗候補数と一致するとは限らない");
+    expect(report).toContain("| newline | nfc | newline+nfc |");
+    expect(report).toContain("| 2 | 1 | 0 |");
+  });
 });
 
 describe("formatTruthResolveFailureReport（決定4）", () => {
@@ -337,5 +391,25 @@ describe("formatTruthResolveFailureReport（決定4）", () => {
     expect(report).toContain("二段落目です。");
     expect(report).toContain("見つかった一致の位置:");
     expect(report).toContain("- 8-10");
+  });
+
+  it("段落本文に連続するバッククォートが含まれてもコードブロックが壊れない（M-5）", () => {
+    const textWithBackticks = "冒頭の段落。\n本文中に```が含まれる段落です。\n末尾の段落。";
+    const failures: readonly TruthResolveFailure[] = [
+      {
+        entryId: "e4",
+        paragraphId: 1,
+        reason: { kind: "no-match" },
+        message: "e4: 一致する箇所が見つかりません",
+      },
+    ];
+
+    const report = formatTruthResolveFailureReport({ failures, text: textWithBackticks });
+
+    expect(report).toContain("本文中に```が含まれる段落です。");
+    // フェンスだけの行（本文全体がバッククォートの行）を数える。本文の3連と区別できるよう、
+    // 開始・終了フェンスが本文より1つ長い4連になっていることを確かめる。
+    const fenceLines = report.split("\n").filter((line) => /^`{3,}$/.test(line));
+    expect(fenceLines).toEqual(["````", "````"]);
   });
 });

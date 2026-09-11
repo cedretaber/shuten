@@ -238,6 +238,45 @@ describe("parseResultJson", () => {
       expect(recheck).not.toHaveProperty("usage");
     });
 
+    it("unlocated[].candidate.locate.diagnostic は候補の transform だけを読む（決定8 追記）", () => {
+      const base = validPipelineResult();
+      const json = withPatch(base, ["unlocated", 0, "candidate", "locate"], {
+        status: "failed",
+        reason: "not-found",
+        exactMatches: [],
+        diagnostic: {
+          transformVersion: "1",
+          candidates: [
+            { transform: "newline", text: "秘密の原稿断片1", range: { start: 0, end: 1 } },
+            { transform: "nfc", text: "秘密の原稿断片2", range: null },
+          ],
+          omitted: 1,
+          tied: true,
+        },
+      });
+      const result = parseResultJson(json);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const diagnostic = result.value.unlocated[0]?.candidate.locate.diagnostic;
+      expect(diagnostic).toEqual({
+        candidates: [{ transform: "newline" }, { transform: "nfc" }],
+      });
+      // transformVersion・omitted・tied・text・range は評価が読まないので現れない。
+      expect(diagnostic).not.toHaveProperty("transformVersion");
+      expect(diagnostic).not.toHaveProperty("omitted");
+      expect(diagnostic).not.toHaveProperty("tied");
+      expect(diagnostic?.candidates[0]).not.toHaveProperty("text");
+      expect(diagnostic?.candidates[0]).not.toHaveProperty("range");
+    });
+
+    it("unlocated[].candidate.locate.diagnostic が null の候補も通る", () => {
+      // validPipelineResult() の unlocated[0] は既に diagnostic: null（not-found）。
+      const result = parseResultJson(JSON.parse(JSON.stringify(validPipelineResult())));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.unlocated[0]?.candidate.locate.diagnostic).toBeNull();
+    });
+
     it("stop が非 null（failure を含む）の結果 JSON を検証できる", () => {
       const result = parseResultJson(JSON.parse(JSON.stringify(stoppedPipelineResult())));
       expect(result.ok).toBe(true);
@@ -313,6 +352,29 @@ describe("parseResultJson", () => {
       if (result.ok) return;
       expect(result.errors.some((e) => e.startsWith("stop.reason:"))).toBe(true);
       expect(result.errors.join(" ")).not.toContain("not-a-reason");
+    });
+
+    it("unlocated[].candidate.locate.diagnostic.candidates[].transform が未知の値なら拒否する", () => {
+      const json = withPatch(validPipelineResult(), ["unlocated", 0, "candidate", "locate"], {
+        status: "failed",
+        reason: "not-found",
+        exactMatches: [],
+        diagnostic: {
+          transformVersion: "1",
+          candidates: [{ transform: "not-a-transform", text: "x", range: null }],
+          omitted: 0,
+          tied: false,
+        },
+      });
+      const result = parseResultJson(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(
+        result.errors.some((e) =>
+          e.startsWith("unlocated.0.candidate.locate.diagnostic.candidates.0.transform:"),
+        ),
+      ).toBe(true);
+      expect(result.errors.join(" ")).not.toContain("not-a-transform");
     });
 
     it("stop.failure.origin が未知の値なら拒否する", () => {

@@ -4,8 +4,10 @@ import type { PipelineArgs } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus, RunStop } from "@shuten/server/run/result.ts";
 import { RESULT_VERSION } from "@shuten/server/run/result.ts";
 import { ingestUtf8Bytes } from "@shuten/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import * as aggregateReportModule from "./eval/aggregate-report.ts";
+import * as reportModule from "./eval/report.ts";
 import type { MainIO } from "./main.ts";
 import { main } from "./main.ts";
 
@@ -537,12 +539,17 @@ describe("main T2: サブコマンドの振り分け（決定9）", () => {
     expect(captured.receivedClientOptions).toHaveLength(0);
   });
 
-  it("未知のサブコマンド名はエラーになる（終了コード1）", async () => {
+  it("未知のサブコマンド名はエラーになる（終了コード1）。固定文言でパスは出さない（M-1修正）", async () => {
     const captured = buildIO();
     const code = await main(["frobnicate", "--manuscript", "manuscript.txt"], {}, captured.io);
     expect(code).toBe(1);
     expect(captured.receivedPipelineArgs).toHaveLength(0);
-    expect(captured.stderr.join("\n")).toContain("frobnicate");
+    // 先頭トークンは `--` で始まらなければ何でもサブコマンド名扱いになるため、打ち間違えた
+    // パスがそのまま入りうる（決定9）。固定文言だけを出し、受け取った文字列は出さない。
+    expect(captured.stderr.join("\n")).not.toContain("frobnicate");
+    expect(captured.stderr.join("\n")).toContain(
+      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate）",
+    );
   });
 
   it("run の --out は今までどおり重複を拒否する", async () => {
@@ -875,6 +882,25 @@ describe("main evaluate T11: 出力（決定10・11・13）", () => {
 
     expect(code).toBe(0);
     expect(captured.writtenFiles).toHaveLength(0);
+  });
+
+  it("レポートの組み立てが失敗しても --out に何も書き出さない（M-2修正）", async () => {
+    // 両方の文字列を組み立ててから書き出すようにしたことの検証：レポートの組み立て
+    // （formatEvaluationReport）が --out の書き出しより前に行われるので、それが失敗すると
+    // --out にも一切書き出されない（部分的な出力が残らない）。
+    const spy = vi.spyOn(reportModule, "formatEvaluationReport").mockImplementation(() => {
+      throw new Error("レポート組み立ての失敗（テスト用）");
+    });
+    try {
+      const captured = buildEvalIO();
+      await expect(
+        main([...EVAL_ARGS, "--out", "metrics.json", "--report", "report.md"], {}, captured.io),
+      ).rejects.toThrow("レポート組み立ての失敗（テスト用）");
+      expect(captured.writtenFiles).toHaveLength(0);
+      expect(captured.stdout).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -1422,6 +1448,38 @@ describe("main aggregate T19: 出力先の衝突（決定21）", () => {
     expect(stderr).toContain("正解ファイルの JSON 構文が不正です");
   });
 
+  it("--manuscript と --truth が同じ実体でも、--result どうしの重複を見逃さない（M-3修正）", async () => {
+    // --manuscript と --truth の衝突（決定21の対象外）が namedPaths の並びで --result より先に
+    // 現れるため、findPathConflict を1回しか呼ばないと --result の重複が見逃されていた
+    // （修正前のバグ）。--result どうしの検査を別に呼ぶことで、この組み合わせでも検出できる。
+    const captured = buildAggregateIO();
+    const code = await main(
+      [
+        "aggregate",
+        "--manuscript",
+        "manuscript.txt",
+        "--truth",
+        "manuscript.txt",
+        "--result",
+        "same-result.json",
+        "--result",
+        "same-result.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--result");
+    expect(stderr).not.toContain("same-result.json");
+    // 後段（正解ファイルの JSON 解析）まで進まず、--result の重複検査で先に失敗したことの確認。
+    expect(stderr).not.toContain("正解ファイルの JSON 構文が不正です");
+    expect(stderr).not.toContain("が同じファイルを指しています");
+  });
+
   it("衝突が無ければ従来どおり集計が実行される", async () => {
     const captured = buildAggregateIO();
     const code = await main(
@@ -1431,6 +1489,28 @@ describe("main aggregate T19: 出力先の衝突（決定21）", () => {
     );
     expect(code).toBe(0);
     expect(captured.writtenFiles.map((file) => file.path)).toEqual(["aggregate.json", "report.md"]);
+  });
+
+  it("レポートの組み立てが失敗しても --out に何も書き出さない（M-2修正）", async () => {
+    // evaluate と同じ検証：formatAggregateReport が --out の書き出しより前に呼ばれるので、
+    // それが失敗すると --out にも一切書き出されない。
+    const spy = vi.spyOn(aggregateReportModule, "formatAggregateReport").mockImplementation(() => {
+      throw new Error("レポート組み立ての失敗（テスト用）");
+    });
+    try {
+      const captured = buildAggregateIO();
+      await expect(
+        main(
+          [...AGGREGATE_ARGS, "--out", "aggregate.json", "--report", "report.md"],
+          {},
+          captured.io,
+        ),
+      ).rejects.toThrow("レポート組み立ての失敗（テスト用）");
+      expect(captured.writtenFiles).toHaveLength(0);
+      expect(captured.stdout).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
