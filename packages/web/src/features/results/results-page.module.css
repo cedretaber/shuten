@@ -40,6 +40,82 @@
   color: var(--color-fg-muted);
 }
 
+/* 中間状態の案内（Task 5、決定 9。`run-control.ts` の `statusNotice`）。エラーではないので
+   `.error`（赤系）ではなく、本文の強調と同じ配色（注意を引くが警告ではない）を使う。 */
+.statusNotice {
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+  background-color: var(--color-highlight-bg);
+  border: 1px solid var(--color-highlight-border);
+  color: var(--color-fg);
+  font-size: var(--font-size-sm);
+}
+
+/*
+ * 実行制御の操作と案内（Task 5、決定 6・7・8。`run-control.tsx`）。
+ */
+.controlPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.controlButtons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+
+.controlButton {
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.controlButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.controlAction {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.controlNote {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.controlFailure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  color: var(--color-danger);
+  background-color: var(--color-danger-bg);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+}
+
+.controlFailureMessage {
+  margin: 0;
+}
+
+.controlFailureLinks {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
 /*
  * 進捗の表示（Task 3、決定 5・10・11。`run-progress.tsx`）。仕様 9 節「根拠のない残り時間を
  * 示さない」のとおり、割合バーや残り時間の見た目は持たない（件数の文字列だけ）。

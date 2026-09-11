@@ -5,9 +5,10 @@
  * を吸収し、本文と指摘を読む結果画面に置き換える。上部の表示（原稿名・状態・停止理由・停止メッセージ・
  * モデル・時刻・「最新の状態を取得」ボタン）は `run-header.tsx` の 1 か所に閉じ込める。
  *
- * 取得は決定 3 のとおり：`getRun` と `getFindings` を並行に投げ、`getManuscript` は
- * `run.manuscriptVersionId` が要るため `getRun` の後に呼ぶ。3 つがそろうまで本文も右側も描かない
- * （部分描画をしない）。世代番号（`useRef` の連番）で古い応答を捨てる。`id` が変わったときと
+ * 取得は決定 3 のとおり：`getRun`・`getFindings`・`getRunUnits`（決定 5。PR12b Task 5 で追加）を
+ * 並行に投げ、`getManuscript` は `run.manuscriptVersionId` が要るため `getRun` の後に呼ぶ。
+ * 4 つがそろうまで本文も右側も描かない（部分描画をしない）。世代番号（`useRef` の連番）で
+ * 古い応答を捨てる。`id` が変わったときと
  * 「最新の状態を取得」のたびに世代を進める。
  *
  * 404 の写し方は発生源で分ける（レビュー対応）：**`getRun` の 404 だけ**が「その実行はありません」
@@ -34,11 +35,20 @@
  * 初回取得（`fetchAll("initial")`）の失敗のときだけで、その場合は再試行の操作子
  * （「最新の状態を取得」ボタン）を出す。
  *
- * `progress`（PR12b の担当）と `targets`（Task 9 が使う）は本タスクでも読み捨てるだけで描画しない。
+ * 進捗と実行制御（PR12b Task 5、決定 5・6・7・8・9・10・11）：初回取得に `getRunUnits` を足し
+ * （`getFindings` と同じく `getRun` と並行に投げる。決定 5）、`run.progress` とあわせて
+ * `RunHeader`（実体は `run-progress.tsx`・`run-control.tsx`）へ渡す。停止・再開・失敗単位の
+ * 再試行・復旧確認の 4 操作は `runControlAction` に集約する：API を呼び、成功・失敗を問わず
+ * `fetchAll("refresh")` の完了を待ってから `pending` を `null` に戻す（202 の応答の `RunDto` を
+ * 画面の状態へ継ぎ当てない——`RunDetailDto` ではなく進捗も対象も持たないため。かつ、先に
+ * `pending` を戻すと取り直し前の古い `run.status` のままボタンが再度押せてしまい、二重送信の
+ * 窓が開く）。操作の失敗は `controlFailureOf` で `ControlFailure` に写して保持する
+ * （`error.message` は画面に出さない）。`slowUnitIds`（決定 10）はこの Task では空集合のまま
+ * 持つだけで、実際に埋めるのは SSE を足す後続 Task の担当。
  *
  * 指摘詳細（Task 7、決定 3・9・12）：選択中の指摘 ID が変わるたびに `getFinding` を 1 回呼ぶ
  * （キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。専用の世代番号
- * （`detailGenerationRef`）で古い応答を捨てる——`requestGenerationRef`（3 つの取得）とは別の
+ * （`detailGenerationRef`）で古い応答を捨てる——`requestGenerationRef`（4 つの取得）とは別の
  * カウンタにする。選択を解除しても・別の指摘を選び直しても本編の再取得は要らないため。
  * 取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲（引用・理由・判定など）は
  * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
@@ -89,9 +99,11 @@ import type {
   FindingDto,
   JudgmentStatus,
   ManuscriptVersionDto,
+  ProgressDto,
   PutJudgmentRequest,
   RunDto,
   RunTargetDto,
+  RunUnitsDto,
 } from "@shuten/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
@@ -110,6 +122,7 @@ import { RUN_STATUS_LABELS } from "./labels.ts";
 import type { NavigationTarget } from "./navigate.ts";
 import { findTargetElement, navigationTargetOf, scrollIntoViewIfPossible } from "./navigate.ts";
 import styles from "./results-page.module.css";
+import { type ControlFailure, controlFailureOf } from "./run-control.ts";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
 
 type ResultsState =
@@ -118,11 +131,16 @@ type ResultsState =
       kind: "loaded";
       run: RunDto;
       targets: readonly RunTargetDto[];
+      progress: ProgressDto;
+      units: RunUnitsDto;
       manuscript: ManuscriptVersionDto;
       findings: readonly FindingDto[];
     }
   | { kind: "not-found" }
   | { kind: "error"; message: string };
+
+/** 実行制御（決定 6・7・8）の送信中の操作。`null` なら送信していない。 */
+type PendingControlAction = "stop" | "resume" | "retry" | "confirm" | null;
 
 function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "実行の取得に失敗しました";
@@ -205,9 +223,13 @@ export function ResultsPage() {
     [apiClient],
   );
 
+  // `fetchAll` は必ず解決する（内部で全ての拒否を捕まえて `setState`/`setRefreshError` に写す）
+  // `Promise<void>` を返す。実行制御の操作（`runControlAction`、下）がこれを待ってから `pending` を
+  // 戻すため——操作の直後にすぐ `pending` を戻すと、取り直し前の古い `run.status` のままボタンが
+  // 再度押せてしまい、二重送信の窓が開く。
   const fetchAll = useCallback(
-    (mode: "initial" | "refresh") => {
-      if (id === undefined) return;
+    (mode: "initial" | "refresh"): Promise<void> => {
+      if (id === undefined) return Promise.resolve();
       const generation = ++requestGenerationRef.current;
       if (mode === "initial") {
         setState({ kind: "loading" });
@@ -216,32 +238,45 @@ export function ResultsPage() {
         setFilter(DEFAULT_FINDING_FILTER);
         setSelectedFindingId(null);
         setRefreshError(null);
+        // 実行制御の失敗案内（決定 8）も id 変更のたびに戻す。戻さないと、別の実行（run A）で
+        // 出ていた 409 の案内（「この検査はすでに動いていません」等）が、直リンクで移った
+        // 別の実行（run B）の画面にそのまま残ってしまう。
+        setControlFailure(null);
       } else {
         setRefreshing(true);
         // 前回の更新失敗の表示を、新しい試みの結果が出るまで一旦消す。
         setRefreshError(null);
       }
 
-      // `getRun` と `getFindings` は並行に投げる（決定 3）。`findingsPromise` の拒否は
-      // 下の then/catch のどちらかで必ず読むが、`getRun` が先に失敗した経路では読まれないまま
-      // 終わることがあるため、ここで空の catch を挟んで未処理拒否（unhandled rejection）を防ぐ
-      // （実際のエラー処理は下の分岐で行うので、ここでは何もしない）。
+      // `getRun`・`getFindings`・`getRunUnits`（決定 5。PR12b Task 5）は並行に投げる（決定 3）。
+      // `findingsPromise`・`unitsPromise` の拒否は下の then/catch のどちらかで必ず読むが、
+      // `getRun` が先に失敗した経路では読まれないまま終わることがあるため、ここで空の catch を
+      // 挟んで未処理拒否（unhandled rejection）を防ぐ（実際のエラー処理は下の分岐で行うので、
+      // ここでは何もしない）。
       const findingsPromise = apiClient.getFindings(id);
       findingsPromise.catch(() => {});
+      const unitsPromise = apiClient.getRunUnits(id);
+      unitsPromise.catch(() => {});
 
-      apiClient.getRun(id).then(
+      return apiClient.getRun(id).then(
         (detail) => {
           if (requestGenerationRef.current !== generation) return; // 古い応答
 
           // `getManuscript` は `run.manuscriptVersionId` が要るため `getRun` の応答が届いてから
-          // 呼ぶ（決定 3）。3 つそろうまで setState しない（部分描画をしない）。
-          Promise.all([apiClient.getManuscript(detail.run.manuscriptVersionId), findingsPromise])
-            .then(([manuscript, findings]) => {
+          // 呼ぶ（決定 3）。4 つそろうまで setState しない（部分描画をしない）。
+          return Promise.all([
+            apiClient.getManuscript(detail.run.manuscriptVersionId),
+            findingsPromise,
+            unitsPromise,
+          ])
+            .then(([manuscript, findings, units]) => {
               if (requestGenerationRef.current !== generation) return;
               setState({
                 kind: "loaded",
                 run: detail.run,
                 targets: detail.targets,
+                progress: detail.progress,
+                units,
                 manuscript,
                 findings,
               });
@@ -269,9 +304,9 @@ export function ResultsPage() {
                 setRefreshError(errorMessageFrom(cause));
                 return;
               }
-              // 初回取得の失敗（`getManuscript`・`getFindings`）は 404 でも「その実行はありません」
-              // にしない（実行自体は取得できているため）。取得の失敗はエラーとして見せる
-              // （空として見せない。本文だけ描いて黙らない）。
+              // 初回取得の失敗（`getManuscript`・`getFindings`・`getRunUnits`）は 404 でも
+              // 「その実行はありません」にしない（実行自体は取得できているため）。取得の失敗は
+              // エラーとして見せる（空として見せない。本文だけ描いて黙らない）。
               setState({ kind: "error", message: errorMessageFrom(cause) });
             });
         },
@@ -308,6 +343,56 @@ export function ResultsPage() {
   const handleRefresh = useCallback(() => {
     fetchAll("refresh");
   }, [fetchAll]);
+
+  // 実行制御（決定 6・7・8。PR12b Task 5）。停止・再開・失敗単位の再試行・復旧確認の 4 操作は
+  // すべてこの 1 つに集約する：API を呼び、成功・失敗にかかわらず `fetchAll("refresh")` の完了を
+  // 待ってから `pending` を戻す（202 の応答の `RunDto` を画面の状態へ直接継ぎ当てない——
+  // `RunDetailDto` と違って進捗も対象も持たないため）。`pending !== null` の間に別の操作を
+  // 呼ばれても無視する（`RunControl` 側もすべてのボタンを disabled にするが、二重の防御として
+  // ここでも防ぐ）。
+  const [pending, setPending] = useState<PendingControlAction>(null);
+  const [controlFailure, setControlFailure] = useState<ControlFailure | null>(null);
+
+  const runControlAction = useCallback(
+    (kind: Exclude<PendingControlAction, null>, action: (runId: string) => Promise<unknown>) => {
+      if (id === undefined || pending !== null) return;
+      const runId = id;
+      setPending(kind);
+      setControlFailure(null);
+      action(runId)
+        .then(
+          () => {},
+          (cause: unknown) => {
+            setControlFailure(controlFailureOf(cause));
+          },
+        )
+        .then(() => fetchAll("refresh"))
+        .finally(() => {
+          setPending(null);
+        });
+    },
+    [id, pending, fetchAll],
+  );
+
+  const handleStop = useCallback(() => {
+    runControlAction("stop", (runId) => apiClient.stopRun(runId));
+  }, [runControlAction, apiClient]);
+
+  const handleResume = useCallback(() => {
+    runControlAction("resume", (runId) => apiClient.resumeRun(runId));
+  }, [runControlAction, apiClient]);
+
+  const handleRetryFailed = useCallback(() => {
+    runControlAction("retry", (runId) => apiClient.retryFailedUnits(runId));
+  }, [runControlAction, apiClient]);
+
+  const handleConfirmRecovery = useCallback(() => {
+    runControlAction("confirm", (runId) => apiClient.confirmRecovery(runId));
+  }, [runControlAction, apiClient]);
+
+  // 決定 10：遅延通知（`generation-slow`）の対象単位 ID。SSE 購読を足す後続 Task が埋める。
+  // この Task では常に空集合のまま。
+  const [slowUnitIds] = useState<ReadonlySet<string>>(() => new Set());
 
   // 初回取得の失敗（`state.kind === "error"`）からの再試行（最終レビュー Important 1）。
   // "refresh" ではなく "initial" を使う——まだ何も `loaded` になっていないので、絞り込み・選択を
@@ -510,8 +595,17 @@ export function ResultsPage() {
           <RunHeader
             run={state.run}
             manuscriptName={state.manuscript.name}
+            progress={state.progress}
+            units={state.units}
+            slowUnitCount={slowUnitIds.size}
             onRefresh={handleRefresh}
             refreshing={refreshing}
+            onStop={handleStop}
+            onResume={handleResume}
+            onRetryFailed={handleRetryFailed}
+            onConfirmRecovery={handleConfirmRecovery}
+            pending={pending}
+            failure={controlFailure}
           />
 
           {/* 更新（再取得）の失敗（最終レビュー Important 1）：`loaded` の内容は残したまま、

@@ -1,9 +1,10 @@
 /**
  * `/runs/:id` — 結果画面の骨組み（Task 5、決定 1・2・3。R7）。
  *
- * 3 つの取得（`getRun`・`getManuscript`・`getFindings`）がそろうまで部分描画をしないこと、
- * 世代番号による古い応答の破棄、404・取得失敗・`settings` 停止の扱い、指摘 0 件の文言分岐
- * （決定 2）、「最新の状態を取得」での再取得を確認する。
+ * 4 つの取得（`getRun`・`getManuscript`・`getFindings`・`getRunUnits`。`getRunUnits` は
+ * PR12b Task 5 で追加）がそろうまで部分描画をしないこと、世代番号による古い応答の破棄、
+ * 404・取得失敗・`settings` 停止の扱い、指摘 0 件の文言分岐（決定 2）、
+ * 「最新の状態を取得」での再取得を確認する。
  *
  * 採否の操作は Task 8 が作る。ここでは `BodyView` が正しい段落数で描けること、右側の
  * 指摘一覧と絞り込み（決定 7・8・10。`finding-filter.ts`・`finding-filter.tsx`・
@@ -14,21 +15,27 @@
  * 決定 9 の `paragraphId` 非表示など）は `finding-detail.test.ts`・`finding-detail.test.tsx` の役割。
  * ここでは選択と `getFinding` の配線（1 回だけ呼ばれること、取得前でも一覧が持つ情報から
  * 引用・理由が出ること、関連する他の指摘のリンクで選択が移ること）だけを見る。
+ *
+ * 実行制御（停止・再開・失敗単位の再試行・復旧確認。PR12b Task 5、決定 6・7・8）の配線
+ * （操作後に必ず取り直すこと、`pending` の間ボタンが disabled になること、409 の `code` ごとに
+ * 案内が変わり `error.message` が画面に出ないこと）は末尾の `describe` ブロックで見る。
  */
 
 import type {
   CandidateDto,
+  CheckUnitDto,
   FindingDetailDto,
   FindingDto,
   JudgmentDto,
   ManuscriptVersionDto,
   RunDetailDto,
   RunDto,
+  RunUnitsDto,
 } from "@shuten/shared";
 import { splitParagraphs } from "@shuten/shared";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
@@ -82,6 +89,28 @@ function makeRunDetail(overrides: Partial<RunDto> = {}): RunDetailDto {
     progress: { checkUnits: { ...counts }, recheckUnits: { ...counts } },
     targets: [],
   };
+}
+
+function makeCheckUnit(overrides: Partial<CheckUnitDto> = {}): CheckUnitDto {
+  return {
+    id: "check-1",
+    targetId: "target-1",
+    targetIndex: 0,
+    perspective: "typo",
+    status: "pending",
+    attempts: 0,
+    failure: null,
+    pendingNote: null,
+    elapsedMs: null,
+    startedAt: null,
+    finishedAt: null,
+    ...overrides,
+  };
+}
+
+/** `GET /api/runs/:id/units` の応答（PR12b Task 5 で追加）。既定は空（失敗単位なし）。 */
+function makeUnits(overrides: Partial<RunUnitsDto> = {}): RunUnitsDto {
+  return { checkUnits: [], recheckUnits: [], ...overrides };
 }
 
 function makeManuscript(overrides: Partial<ManuscriptVersionDto> = {}): ManuscriptVersionDto {
@@ -146,7 +175,9 @@ function makeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     startRun: notImplemented("startRun"),
     getRun: notImplemented("getRun"),
     getRuns: notImplemented("getRuns"),
-    getRunUnits: notImplemented("getRunUnits"),
+    // 既定は空の units を即座に返す（PR12b Task 5 で `fetchAll` に足した第 4 の取得）。
+    // 呼ばれ方そのものを検査するテストは明示的に上書きする。
+    getRunUnits: () => Promise.resolve(makeUnits()),
     stopRun: notImplemented("stopRun"),
     resumeRun: notImplemented("resumeRun"),
     retryFailedUnits: notImplemented("retryFailedUnits"),
@@ -333,8 +364,12 @@ describe("ResultsPage: R7 指摘 0 件の文言（決定 2）", () => {
 // 実装が誤って progress / targets の値をどこかに埋め込んだら検出できるよう、
 // 現実にはありえない値（進捗件数・対象 ID）を仕込んでおく。`progress` は PR12b の担当、
 // `targets` は Task 9 が使うため、本タスクではどちらも読み捨てるだけで画面に出さない。
-describe("ResultsPage: RunDetailDto の progress と targets を画面に出さない", () => {
-  it("進捗件数・対象 ID が document.body.textContent に出ない", async () => {
+// PR12b Task 5 より前は `progress`・`targets` をどちらも読み捨てるだけだったため、このテストは
+// 「どちらも画面に出ない」ことを検査していた。Task 5 で `progress` は `RunHeader`（実体は
+// `RunProgress`）へ渡して意図的に表示するようになったため、`targets`（`RunTargetDto.id` などの
+// 内部 ID）だけが「出ない」対象として残る——進捗件数はむしろ「出ること」を検査する。
+describe("ResultsPage: RunDetailDto の progress を表示し、targets の内部 ID は出さない", () => {
+  it("進捗件数（run.progress）は表示され、対象 ID（targets）は document.body.textContent に出ない", async () => {
     const detail: RunDetailDto = {
       run: makeRun({ status: "completed" }),
       progress: {
@@ -361,18 +396,21 @@ describe("ResultsPage: RunDetailDto の progress と targets を画面に出さ�
     renderPage(client);
 
     await waitFor(() => expect(screen.getByText("指摘はありません")).toBeInTheDocument());
-    expect(document.body.textContent ?? "").not.toContain("12345");
+    // 進捗件数は `RunHeader`（`RunProgress`）が意図して表示する（Task 5）。
+    expect(screen.getByText(/完了 12345 \/ 全 12345 件/)).toBeInTheDocument();
+    // `targets`（`RunTargetDto.id` などの内部 ID）はどこにも出さない。
     expect(document.body.textContent ?? "").not.toContain("target-6789");
   });
 });
 
 describe("ResultsPage: R7 最新の状態を取得", () => {
-  it("クリックで 3 つとも再取得される", async () => {
+  it("クリックで 4 つとも再取得される（`getRunUnits` は PR12b Task 5 で追加）", async () => {
     const user = userEvent.setup();
     const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
     const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
     const getFindings = vi.fn(() => Promise.resolve([]));
-    const client = makeClient({ getRun, getManuscript, getFindings });
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits });
 
     renderPage(client);
 
@@ -380,12 +418,14 @@ describe("ResultsPage: R7 最新の状態を取得", () => {
     expect(getRun).toHaveBeenCalledTimes(1);
     expect(getManuscript).toHaveBeenCalledTimes(1);
     expect(getFindings).toHaveBeenCalledTimes(1);
+    expect(getRunUnits).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
 
     await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
     expect(getManuscript).toHaveBeenCalledTimes(2);
     expect(getFindings).toHaveBeenCalledTimes(2);
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1193,5 +1233,236 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
 
     expect(screen.queryByRole("button", { name: "本文の該当箇所へ移動" })).not.toBeInTheDocument();
+  });
+});
+
+// 実行制御（PR12b Task 5、決定 6・7・8）：停止・再開・失敗単位の再試行の配線。ボタンの出し分け
+// そのもの（`controlAvailability`）は `run-control.test.ts`・`run-control.test.tsx` が単体で
+// 検査済み。ここでは「操作後に必ず状態を取り直すこと」「202 の応答をそのまま画面の状態へ
+// 継ぎ当てないこと」「409 の `code` ごとの案内と `error.message` を画面に出さないこと」
+// 「取り直しが終わるまでボタンが disabled のままであること（二重送信の窓を開けない）」を見る。
+describe("ResultsPage: 実行制御（決定 6・7・8）", () => {
+  it("停止を押すと stopRun を呼び、202 の応答を継ぎ当てず必ず状態を取り直す", async () => {
+    const user = userEvent.setup();
+    const getRun = vi
+      .fn<() => Promise<RunDetailDto>>()
+      .mockResolvedValueOnce(makeRunDetail({ status: "running" }))
+      .mockResolvedValueOnce(makeRunDetail({ status: "stopped", stopReason: "aborted" }));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    // stopRun の 202 応答はわざと "running" のまま返す——画面がこれを直接状態へ継ぎ当てていたら
+    // 誤って「実行中」のまま表示されてしまう（`RunDto` であって `RunDetailDto` ではないため、
+    // そもそも進捗も持たない）。
+    const stopRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, stopRun });
+
+    renderPage(client);
+
+    const stopButton = await screen.findByRole("button", { name: "停止" });
+    await waitFor(() => expect(stopButton).toBeEnabled());
+    await user.click(stopButton);
+
+    await waitFor(() => expect(screen.getByText("状態: 停止中")).toBeInTheDocument());
+    expect(stopRun).toHaveBeenCalledTimes(1);
+    expect(getRun).toHaveBeenCalledTimes(2);
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
+    expect(getFindings).toHaveBeenCalledTimes(2);
+  });
+
+  it("409 で拒否されても、code ごとの案内が出て必ず状態を取り直す。error.message は出ない", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn(() =>
+      Promise.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" })),
+    );
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const resumeRun = vi.fn(() =>
+      Promise.reject(
+        new ApiRequestError(
+          409,
+          "run-rejected-running",
+          "実行中のため受け付けられません: secret-run-id",
+        ),
+      ),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, resumeRun });
+
+    renderPage(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await waitFor(() => expect(resumeButton).toBeEnabled());
+    await user.click(resumeButton);
+
+    await waitFor(() =>
+      expect(screen.getByText("すでに実行中です。最新の状態を取得しました。")).toBeInTheDocument(),
+    );
+    expect(resumeRun).toHaveBeenCalledTimes(1);
+    // 失敗でも必ず状態を取り直す（決定 8）。
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    expect(getRunUnits).toHaveBeenCalledTimes(2);
+    expect(getFindings).toHaveBeenCalledTimes(2);
+    // サーバーの `error.message`（実行 ID を含む）は画面に出さない。
+    expect(document.body.textContent ?? "").not.toContain("secret-run-id");
+  });
+
+  it("操作が終わっても、状態の取り直しが終わるまでボタンは disabled のまま（二重送信の窓を開けない）", async () => {
+    const user = userEvent.setup();
+    let getRunCalls = 0;
+    const refetchDeferred = deferred<RunDetailDto>();
+    const getRun = vi.fn(() => {
+      getRunCalls += 1;
+      if (getRunCalls === 1) {
+        return Promise.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" }));
+      }
+      return refetchDeferred.promise;
+    });
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const resumeRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, resumeRun });
+
+    renderPage(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await waitFor(() => expect(resumeButton).toBeEnabled());
+    await user.click(resumeButton);
+
+    // resumeRun はすぐ解決するが、取り直し（2 回目の getRun）はまだ終わっていない。
+    // ここで `pending` を戻してしまうと、古い（"stopped" のままの）状態に対して再開ボタンが
+    // 再び押せてしまい、二重送信の窓が開く。
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+    expect(resumeButton).toBeDisabled();
+
+    refetchDeferred.resolve(makeRunDetail({ status: "stopped", stopReason: "connection-lost" }));
+
+    await waitFor(() => expect(resumeButton).toBeEnabled());
+  });
+
+  it("『失敗単位を再試行』を押すと retryFailedUnits を本文なし（全件対象）で呼ぶ", async () => {
+    const user = userEvent.setup();
+    const failedUnits = makeUnits({
+      checkUnits: [
+        makeCheckUnit({
+          status: "failed",
+          failure: { reason: "timeout", message: "", finishReason: null, origin: "chat" },
+        }),
+      ],
+    });
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "partially-failed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(failedUnits));
+    const retryFailedUnits = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript,
+      getFindings,
+      getRunUnits,
+      retryFailedUnits,
+    });
+
+    renderPage(client);
+
+    const retryButton = await screen.findByRole("button", { name: "失敗単位を再試行" });
+    await user.click(retryButton);
+
+    await waitFor(() => expect(retryFailedUnits).toHaveBeenCalledTimes(1));
+    expect(retryFailedUnits).toHaveBeenCalledWith(RUN_ID);
+  });
+});
+
+describe("ResultsPage: 実行制御（決定 6・7・8）別の実行への遷移", () => {
+  const OTHER_RUN_ID = "run-2";
+
+  /** `RUN_ID` から `OTHER_RUN_ID` へ直リンク遷移するボタンを持つ、`ResultsPage` を包む木。 */
+  function NavigationProbe() {
+    const navigate = useNavigate();
+    return (
+      <button type="button" onClick={() => navigate(runPath(OTHER_RUN_ID))}>
+        検査用ナビゲーション：別の実行へ
+      </button>
+    );
+  }
+
+  function renderPageWithNavigation(client: ApiClient) {
+    return render(
+      <MemoryRouter initialEntries={[runPath(RUN_ID)]}>
+        <ApiClientProvider client={client}>
+          <NavigationProbe />
+          <Routes>
+            <Route path={ROUTES.run} element={<ResultsPage />} />
+          </Routes>
+        </ApiClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("復旧を確認ボタンを押すと confirmRecovery を呼ぶ（resumeRun は呼ばない）", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn(() =>
+      Promise.resolve(makeRunDetail({ status: "recovery-waiting", recoveryConfirmedAt: null })),
+    );
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const confirmRecovery = vi.fn(() => Promise.resolve({ blocked: false, runIds: [] }));
+    const resumeRun = vi.fn(() => Promise.resolve(makeRun({ status: "running" })));
+    const client = makeClient({
+      getRun,
+      getManuscript,
+      getFindings,
+      getRunUnits,
+      confirmRecovery,
+      resumeRun,
+    });
+
+    renderPage(client);
+
+    const confirmButton = await screen.findByRole("button", { name: "復旧を確認" });
+    await user.click(confirmButton);
+
+    await waitFor(() => expect(confirmRecovery).toHaveBeenCalledTimes(1));
+    expect(confirmRecovery).toHaveBeenCalledWith(RUN_ID);
+    expect(resumeRun).not.toHaveBeenCalled();
+    // 操作後は必ず状態を取り直す（決定 8）。
+    await waitFor(() => expect(getRun).toHaveBeenCalledTimes(2));
+  });
+
+  it("別の実行へ直リンクで移ると、前の実行の実行制御の失敗案内は残らない", async () => {
+    const user = userEvent.setup();
+    const getRun = vi.fn((id: string) =>
+      Promise.resolve(
+        id === RUN_ID
+          ? makeRunDetail({ status: "stopped", stopReason: "connection-lost" })
+          : makeRunDetail({ id: OTHER_RUN_ID, status: "running" }),
+      ),
+    );
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve([]));
+    const getRunUnits = vi.fn(() => Promise.resolve(makeUnits()));
+    const resumeRun = vi.fn(() =>
+      Promise.reject(
+        new ApiRequestError(409, "run-rejected-running", "実行中のため受け付けられません"),
+      ),
+    );
+    const client = makeClient({ getRun, getManuscript, getFindings, getRunUnits, resumeRun });
+
+    renderPageWithNavigation(client);
+
+    const resumeButton = await screen.findByRole("button", { name: "再開" });
+    await user.click(resumeButton);
+    await waitFor(() =>
+      expect(screen.getByText("すでに実行中です。最新の状態を取得しました。")).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole("button", { name: "検査用ナビゲーション：別の実行へ" }));
+
+    await waitFor(() => expect(screen.getByText("状態: 実行中")).toBeInTheDocument());
+    expect(
+      screen.queryByText("すでに実行中です。最新の状態を取得しました。"),
+    ).not.toBeInTheDocument();
   });
 });

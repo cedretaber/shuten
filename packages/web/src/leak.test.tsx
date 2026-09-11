@@ -47,6 +47,7 @@ import type {
   ModelInfoDto,
   RunDetailDto,
   RunSummaryDto,
+  RunUnitsDto,
 } from "@shuten/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -135,6 +136,14 @@ function makeFindings(): FindingDto[] {
   return [];
 }
 
+/**
+ * `/runs/:id/units` の応答（PR12b Task 5 で `ResultsPage` の初回取得に追加）。
+ * 空（失敗単位なし）で十分——ここでは実行制御のボタン出し分けではなく漏えいの有無だけを見る。
+ */
+function makeUnits(): RunUnitsDto {
+  return { checkUnits: [], recheckUnits: [] };
+}
+
 /** `/runs`（実行一覧）の描画に要る 1 件。`RunSummaryDto` は `endpointUrl` を持たない。 */
 function makeRunSummary(): RunSummaryDto {
   return {
@@ -218,6 +227,9 @@ function createFakeFetch(requests: RecordedRequest[]): typeof globalThis.fetch {
     }
     if (url === `/api/runs/${SETTLED_RUN_ID}/findings` && method === "GET") {
       return jsonResponse(200, makeFindings());
+    }
+    if (url === `/api/runs/${SETTLED_RUN_ID}/units` && method === "GET") {
+      return jsonResponse(200, makeUnits());
     }
 
     throw new Error(`fake fetch: 想定していない要求 ${method} ${url}`);

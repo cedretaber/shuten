@@ -1,0 +1,127 @@
+/**
+ * 実行制御の操作（停止・再開・失敗単位の再試行・復旧確認）と操作結果の案内（Task 5、決定 6・7・8）。
+ *
+ * ボタンの出し分けは `controlAvailability`（`run-control.ts`）にそのまま従う——条件をここで
+ * 書き写さない。停止ボタンだけは表示条件を別にする：`canStop` は「押せるか」の判断であって
+ * 「停止要求が済んだあと」は false になるが、ボタン自体は消さず `disabled` にして
+ * `run.stopRequestedAt !== null` の間ずっと出し続ける（決定 9 の案内文は `RunHeader` が
+ * `statusNotice` で表示する）。`canStop` をそのまま表示条件にすると、停止要求後にボタンが
+ * 消えてしまい「押せなくなった理由」が伝わらない。
+ *
+ * `pending !== null`（送信中の操作がある）の間はすべてのボタンを `disabled` にする（決定 8）。
+ * `recovery-waiting` では「再開」「復旧を確認」の 2 つのボタンが同時に出るため、当該ボタンだけの
+ * 制御では足りない（一方を送信中でももう一方が押せてしまう）。
+ */
+
+import type { RunDto, RunUnitsDto } from "@shuten/shared";
+import { Link } from "react-router";
+import { ROUTES } from "../../app/routes.ts";
+import styles from "./results-page.module.css";
+import { type ControlFailure, controlAvailability } from "./run-control.ts";
+
+export interface RunControlProps {
+  readonly run: RunDto;
+  /** `GET /api/runs/:id/units` の応答（決定 5）。未取得・失敗なら null。 */
+  readonly units: RunUnitsDto | null;
+  /** 押されたら親が API を呼び、終わったら必ず取り直す（決定 8）。 */
+  readonly onStop: () => void;
+  readonly onResume: () => void;
+  readonly onRetryFailed: () => void;
+  readonly onConfirmRecovery: () => void;
+  /** 送信中の操作（重複送信を防ぐ。null なら送信していない）。 */
+  readonly pending: "stop" | "resume" | "retry" | "confirm" | null;
+  readonly failure: ControlFailure | null;
+}
+
+export function RunControl(props: RunControlProps) {
+  const { run, units, onStop, onResume, onRetryFailed, onConfirmRecovery, pending, failure } =
+    props;
+  const availability = controlAvailability(run, units);
+  const busy = pending !== null;
+
+  // 停止ボタンは `running` の間ずっと表示する（上記コメントのとおり `canStop` は表示条件にしない）。
+  const showStop = run.status === "running";
+  const hasAnyControl =
+    showStop ||
+    availability.canResume ||
+    availability.canRetryFailed ||
+    availability.canConfirmRecovery;
+
+  if (!hasAnyControl && failure === null) {
+    return null;
+  }
+
+  return (
+    <div className={styles.controlPanel}>
+      {hasAnyControl && (
+        <div className={styles.controlButtons}>
+          {showStop && (
+            <button
+              type="button"
+              className={styles.controlButton}
+              onClick={onStop}
+              disabled={busy || !availability.canStop}
+            >
+              停止
+            </button>
+          )}
+
+          {availability.canResume && (
+            <div className={styles.controlAction}>
+              <button
+                type="button"
+                className={styles.controlButton}
+                onClick={onResume}
+                disabled={busy}
+              >
+                再開
+              </button>
+              {/* 仕様 8.2「『再開』と『新規検査の開始』を区別する」。 */}
+              <p className={styles.controlNote}>
+                同じ検査の続きから再開します（実行 ID は変わりません）
+              </p>
+            </div>
+          )}
+
+          {availability.canConfirmRecovery && (
+            <button
+              type="button"
+              className={styles.controlButton}
+              onClick={onConfirmRecovery}
+              disabled={busy}
+            >
+              復旧を確認
+            </button>
+          )}
+
+          {availability.canRetryFailed && (
+            <button
+              type="button"
+              className={styles.controlButton}
+              onClick={onRetryFailed}
+              disabled={busy}
+            >
+              失敗単位を再試行
+            </button>
+          )}
+        </div>
+      )}
+
+      {failure !== null && (
+        <div className={styles.controlFailure}>
+          {/* `failure.message` は `controlFailureOf` の定型文だけ（サーバーの `error.message` は
+              画面に出さない。決定 8）。 */}
+          <p className={styles.controlFailureMessage}>{failure.message}</p>
+          {failure.links.length > 0 && (
+            <p className={styles.controlFailureLinks}>
+              {failure.links.includes("settings") && (
+                <Link to={ROUTES.settings}>接続設定を確認する</Link>
+              )}
+              {failure.links.includes("home") && <Link to={ROUTES.home}>新しい検査を開始する</Link>}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
