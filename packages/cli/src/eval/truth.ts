@@ -2,6 +2,8 @@ import type { GraphemeIndex, Perspective, Range } from "@shuten/shared";
 import { buildGraphemeIndex, isGraphemeBoundary, splitParagraphs } from "@shuten/shared";
 import { z } from "zod";
 
+import { formatIssuePath } from "./issue-path.ts";
+
 /**
  * 正解ファイルの読み込みと位置解決（仕様書 10 節、決定 2・4）。
  *
@@ -193,11 +195,7 @@ const truthFileSchema: z.ZodType<TruthFile> = z
 function formatIssues(
   issues: readonly { path: readonly PropertyKey[]; message: string }[],
 ): string[] {
-  return issues.map((issue) => {
-    const path =
-      issue.path.length === 0 ? "(root)" : issue.path.map((part) => String(part)).join(".");
-    return `${path}: ${issue.message}`;
-  });
+  return issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.message}`);
 }
 
 /** 正解ファイルの JSON（`JSON.parse` の戻り値）を検証する。 */

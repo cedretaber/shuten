@@ -34,6 +34,8 @@ import {
 } from "@shuten/shared";
 import { z } from "zod";
 
+import { formatIssuePath } from "./issue-path.ts";
+
 /**
  * 結果 JSON の検証（決定 18）。
  *
@@ -341,11 +343,7 @@ export type ResultValidateResult =
  * （受け取った JSON の内容、とくに原稿の断片が混ざりうるため。決定 9）。
  */
 function formatIssues(issues: readonly { path: readonly PropertyKey[]; code: string }[]): string[] {
-  return issues.map((issue) => {
-    const path =
-      issue.path.length === 0 ? "(root)" : issue.path.map((part) => String(part)).join(".");
-    return `${path}: ${issue.code}`;
-  });
+  return issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.code}`);
 }
 
 /** 結果 JSON（`JSON.parse` の戻り値）を検証する。`versions.result` の照合を含む。 */

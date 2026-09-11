@@ -139,6 +139,30 @@ function validPipelineResult(): PipelineResult {
   };
 }
 
+/**
+ * `stop` が非 null（`failure` も非 null）の実際の形。`status: "stopped"` はこの評価ツールが
+ * 扱う中心的な結果状態の 1 つ（実行が途中で止まった結果を採点する場面）なので、`stop` を
+ * まるごと読む経路（`runStopSchema` / `unitFailureSchema`、`STOP_REASONS` / `FAILURE_REASONS` /
+ * `UNIT_FAILURE_ORIGINS`）を実際にパースするテストを持つ。
+ */
+function stoppedPipelineResult(): PipelineResult {
+  return {
+    ...validPipelineResult(),
+    status: "stopped",
+    stop: {
+      reason: "connection-lost",
+      message: "LM Studio への接続が失われました",
+      failure: {
+        reason: "connection",
+        message: "接続エラー",
+        finishReason: null,
+        origin: "chat",
+      },
+      generationUnconfirmed: true,
+    },
+  };
+}
+
 /** JSON をネストしたパスで書き換えるための小道具（テスト用。値の型は問わない）。 */
 function withPatch(json: unknown, path: readonly (string | number)[], value: unknown): unknown {
   const clone = structuredClone(json) as Record<string, unknown>;
@@ -182,6 +206,8 @@ describe("parseResultJson", () => {
       expect(result.value.findings).toHaveLength(1);
       expect(result.value.unlocated).toHaveLength(1);
       expect(result.value.conditions.versions.result).toBe(RESULT_VERSION);
+      // sources[] は id / perspective / llm だけを読む。locate は現れない。
+      expect(result.value.findings[0]?.finding.sources[0]).not.toHaveProperty("locate");
     });
 
     it("recheck が done のとき output を読む", () => {
@@ -210,6 +236,24 @@ describe("parseResultJson", () => {
       // attempts・usage・inputRange など評価が読まない項目は EvaluationResultInput に現れない。
       expect(recheck).not.toHaveProperty("attempts");
       expect(recheck).not.toHaveProperty("usage");
+    });
+
+    it("stop が非 null（failure を含む）の結果 JSON を検証できる", () => {
+      const result = parseResultJson(JSON.parse(JSON.stringify(stoppedPipelineResult())));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.status).toBe("stopped");
+      expect(result.value.stop).toEqual({
+        reason: "connection-lost",
+        message: "LM Studio への接続が失われました",
+        failure: {
+          reason: "connection",
+          message: "接続エラー",
+          finishReason: null,
+          origin: "chat",
+        },
+        generationUnconfirmed: true,
+      });
     });
   });
 
@@ -260,6 +304,28 @@ describe("parseResultJson", () => {
       if (result.ok) return;
       expect(result.errors.some((e) => e.startsWith("conditions.versions.result:"))).toBe(true);
       expect(result.errors.join(" ")).not.toContain("999");
+    });
+
+    it("stop.reason が未知の値なら拒否する", () => {
+      const json = withPatch(stoppedPipelineResult(), ["stop", "reason"], "not-a-reason");
+      const result = parseResultJson(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.startsWith("stop.reason:"))).toBe(true);
+      expect(result.errors.join(" ")).not.toContain("not-a-reason");
+    });
+
+    it("stop.failure.origin が未知の値なら拒否する", () => {
+      const json = withPatch(
+        stoppedPipelineResult(),
+        ["stop", "failure", "origin"],
+        "not-an-origin",
+      );
+      const result = parseResultJson(json);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.some((e) => e.startsWith("stop.failure.origin:"))).toBe(true);
+      expect(result.errors.join(" ")).not.toContain("not-an-origin");
     });
 
     it("エラー文言に path と code だけを出し、値そのものを出さない", () => {
