@@ -1221,38 +1221,21 @@ describe("db/repositories/findings", () => {
     // ID の辞書順を candidate_index の順とは指摘ごとに逆にする（各指摘内で "-z" が先、"-a" が後の
     // candidate_index を持つ）。orderBy を asc(candidates.id) に取り違えても、この逆転がなければ
     // 偶然一致してテストが通ってしまうため（R18b と同じ姿勢）。
+    //
+    // さらに、insert の順序（したがって SQLite の rowid 順）を candidate_index の昇順とは
+    // 逆にする（candidate_index 4 → 3 → 2 → 1 → 0 の順で insert する）。挿入順のままだと
+    // orderBy を丸ごと外す取り違えでも SQLite が偶然 rowid 順（≒挿入順）で返し、たまたま
+    // candidate_index の昇順と一致して見分けられなくなるため（レビュー Minor 2）。
     insertCandidate(db, {
-      id: "c-a-z",
+      id: "c-a-a",
       runId: run.id,
       checkUnitId: typoUnit.id,
       findingId: findingA.id,
-      candidateIndex: 0,
-      llm: makeLlm({ reason: "A-0" }),
+      candidateIndex: 4,
+      llm: makeLlm({ reason: "A-4" }),
       locateStatus: "located",
       range: { start: 0, end: 2 },
       mergeKey: "key-a",
-    });
-    insertCandidate(db, {
-      id: "c-b-z",
-      runId: run.id,
-      checkUnitId: typoUnit.id,
-      findingId: findingB.id,
-      candidateIndex: 1,
-      llm: makeLlm({ reason: "B-1" }),
-      locateStatus: "located",
-      range: { start: 3, end: 5 },
-      mergeKey: "key-b",
-    });
-    insertCandidate(db, {
-      id: "c-b-a",
-      runId: run.id,
-      checkUnitId: typoUnit.id,
-      findingId: findingB.id,
-      candidateIndex: 2,
-      llm: makeLlm({ reason: "B-2" }),
-      locateStatus: "located",
-      range: { start: 3, end: 5 },
-      mergeKey: "key-b",
     });
     insertCandidate(db, {
       id: "c-c3",
@@ -1266,12 +1249,34 @@ describe("db/repositories/findings", () => {
       mergeKey: "key-c",
     });
     insertCandidate(db, {
-      id: "c-a-a",
+      id: "c-b-a",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingB.id,
+      candidateIndex: 2,
+      llm: makeLlm({ reason: "B-2" }),
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      mergeKey: "key-b",
+    });
+    insertCandidate(db, {
+      id: "c-b-z",
+      runId: run.id,
+      checkUnitId: typoUnit.id,
+      findingId: findingB.id,
+      candidateIndex: 1,
+      llm: makeLlm({ reason: "B-1" }),
+      locateStatus: "located",
+      range: { start: 3, end: 5 },
+      mergeKey: "key-b",
+    });
+    insertCandidate(db, {
+      id: "c-a-z",
       runId: run.id,
       checkUnitId: typoUnit.id,
       findingId: findingA.id,
-      candidateIndex: 4,
-      llm: makeLlm({ reason: "A-4" }),
+      candidateIndex: 0,
+      llm: makeLlm({ reason: "A-0" }),
       locateStatus: "located",
       range: { start: 0, end: 2 },
       mergeKey: "key-a",

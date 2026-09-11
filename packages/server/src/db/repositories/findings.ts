@@ -162,6 +162,26 @@ export type FindingWithReasons = FindingRecord & {
 };
 
 /**
+ * `FindingReason` の組み立てに要る最小限の列。`listReasons` と `listReasonsByRun` は
+ * select する列（後者は `Map` のキー用に `findingId` も含む）が違うため、両方の行型を
+ * 構造的に満たすこの型で受ける。
+ */
+interface FindingReasonSourceRow {
+  readonly candidateId: string;
+  readonly perspective: Perspective;
+  readonly llm: unknown;
+}
+
+/** 1 行から `FindingReason` を組み立てる（`listReasons` と `listReasonsByRun` の共通部分）。 */
+function toFindingReason(row: FindingReasonSourceRow): FindingReason {
+  return {
+    candidateId: row.candidateId,
+    perspective: row.perspective,
+    reason: parseJsonColumn(candidateLlmSchema, row.llm, "llm").reason,
+  };
+}
+
+/**
  * 指摘に統合された元候補から `reasons` を組み立てる（決定 18）。
  * `candidates` を `check_units` と結合して観点を導き（候補側に観点の列はない。決定 19）、
  * `candidate_index` の昇順に並べる。
@@ -178,11 +198,7 @@ function listReasons(db: AppDatabaseLike, findingId: string): readonly FindingRe
     .where(eq(candidates.findingId, findingId))
     .orderBy(asc(candidates.candidateIndex))
     .all();
-  return rows.map((row) => ({
-    candidateId: row.candidateId,
-    perspective: row.perspective,
-    reason: parseJsonColumn(candidateLlmSchema, row.llm, "llm").reason,
-  }));
+  return rows.map(toFindingReason);
 }
 
 function toFindingWithReasons(
@@ -225,11 +241,7 @@ function listReasonsByRun(db: AppDatabaseLike, runId: string): Map<string, Findi
     if (row.findingId === null) {
       continue;
     }
-    const reason: FindingReason = {
-      candidateId: row.candidateId,
-      perspective: row.perspective,
-      reason: parseJsonColumn(candidateLlmSchema, row.llm, "llm").reason,
-    };
+    const reason = toFindingReason(row);
     const existing = reasonsByFindingId.get(row.findingId);
     if (existing) {
       existing.push(reason);
