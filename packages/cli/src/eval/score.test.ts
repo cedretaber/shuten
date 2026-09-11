@@ -253,8 +253,8 @@ describe("T5 検出と誤検出", () => {
   });
 
   it("1 つの項目に 2 件重なっても検出は 1 件ぶんで、余剰は duplicateFindings に出る", () => {
-    // 変異：検出率を項目単位でなく指摘単位で数えると detected が 2/1 になって落ちる。
     // 変異：duplicateFindings を引かずに重なり件数そのものにすると 2 になって落ちる。
+    // （検出を項目単位でなく指摘単位で数える変異は、T18 の「段落まるごと」の固定データで落ちる。）
     const entries = [errorEntry("e1", "typo", 10, 14)];
     const metrics = scoreRun(entries, makeResult([finding("f1", 10, 14), finding("f2", 12, 20)]));
 
@@ -297,7 +297,7 @@ describe("T6 観点", () => {
   });
 
   it("誤検出は指摘側の観点で分類する（正解項目の観点ではない）", () => {
-    // 変異：誤検出の観点別分類を正解項目側の観点で行うと落ちる。
+    // 変異：観点別の誤検出の分母を指摘側の観点で絞らず全指摘にすると、typo の分母が 0 でなくなって落ちる。
     const entries = [errorEntry("e1", "typo", 10, 14)];
     const metrics = scoreRun(
       entries,
@@ -495,7 +495,7 @@ describe("T8 抑制", () => {
   });
 
   it('抑制された指摘の recheck.status === "suppressed" は recheckFailed などに数えない', () => {
-    // 変異：recheck の件数を全指摘（抑制を含む）で数える → 抑制側の status が混ざって落ちる。
+    // 変異：recheckFailed などを totals.rechecks から転記する → 抑制ぶんを含む別勘定になって落ちる。
     const metrics = scoreRun(
       [],
       makeResult([
@@ -551,6 +551,7 @@ describe("T9 位置特定失敗", () => {
   });
 
   it("実行性能は conditions と totals からの転記だけ", () => {
+    // 変異：checkUnits の failed と pending を取り違える → 落ちる。
     const metrics = scoreRun([], makeResult([]));
     expect(metrics.performance).toEqual({
       startedAt: "2026-01-01T00:00:00.000Z",
