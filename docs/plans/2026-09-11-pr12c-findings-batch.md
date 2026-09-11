@@ -82,7 +82,7 @@ PR12a 決定 14 の計測で、指摘 800 件・各件に理由 1・再確認 1�
 ### 決定 2：理由は `candidates.run_id` で 1 本にまとめる
 
 ```sql
-select candidates.id, check_units.perspective, candidates.llm
+select candidates.id, candidates.finding_id, check_units.perspective, candidates.llm
   from candidates
   inner join check_units on candidates.check_unit_id = check_units.id
  where candidates.run_id = ? and candidates.finding_id is not null
@@ -96,8 +96,12 @@ select candidates.id, check_units.perspective, candidates.llm
 - **索引**：`candidates_run_id_candidate_index_key`（`run_id`, `candidate_index`）が
   そのまま where と order by を満たす。走査ではなく索引順の読み取りになるので、本数が減るだけでなく
   1 本あたりも速くなる。
-- **`finding_id is not null`** は `outside-target` の候補（統合先を持たない。PR8 決定 4）を除く。
-  これを忘れると `Map` のキーに null が混ざる。テスト C3 が見分ける。
+- **`finding_id` を必ず SELECT する。** これが `Map` のキーである。
+- **`finding_id is not null` は効率と意図の明示のための条件であって、応答を変える条件ではない。**
+  `outside-target` の候補（統合先を持たない。PR8 決定 4）はキーが null の組に入るだけで、指摘は
+  自分の ID（文字列）で引くので応答には混ざらない。**つまりこの 1 行を外しても応答は変わらず、
+  テストでは見分けられない**（レビュー Important 2）。それでも書く理由は、読む側に「統合先の無い
+  候補は理由にならない」と示すことと、無関係な行の `llm` を解析しないで済むことである。
 - 畳み込みは `Map<findingId, FindingReason[]>` に `push` するだけでよい。読み取りが
   `candidate_index` 昇順なので、各配列の中も `candidate_index` 昇順になる（現状と同じ並び）。
 
@@ -170,9 +174,13 @@ select candidates.id, check_units.perspective, candidates.llm
 ### 決定 9：詳細（`GET /api/findings/:id`）は対象外
 
 詳細が出す問い合わせは、指摘 1 件・理由 1 本・再確認 1 本・採否 1 本・候補 1 本に加えて、
-候補ごとの `findDiagnostic` である。候補の数は 1 指摘に統合された候補の数（観点の数が上限。
-現状 4 つ）で抑えられ、応答も 1 件しか返さない。一覧のような件数比例の増え方はしないので、
-本 PR では触らない。**持ち越しとしても立てない**（規模が定数で抑えられているため）。
+候補ごとの `findDiagnostic` である。**指摘 1 件ぶんの取得であり、本 PR が計測した一覧の遅さ
+（指摘の件数に比例して増える問い合わせ）とは別の話**なので対象外にする。
+
+候補の数に上限があるとは書かない（レビュー Minor 4）。観点は `typo` と `naturalness` の 2 つだが、
+1 回の応答が同じ統合キーの候補を複数返せるため、1 指摘に統合される候補の数は 2 件に制限されない。
+ここを「定数で抑えられている」と断定するには実測がいる。本 PR では計測していないので、
+**恒久的に触らないとまでは決めない**。一覧と同じ遅さが実際に観測されたら、そのときに測って判断する。
 
 ### 決定 10：グルーピングの正しさは「見分けられるテスト」で守る
 
@@ -183,8 +191,10 @@ select candidates.id, check_units.perspective, candidates.llm
 - 指摘 A に `candidate_index` 0 と 4、指摘 B に 1 と 2、指摘 C に 3 を与える（**飛び番かつ交互**）。
   A の `reasons` は `candidate_index` 0 → 4 の順、B は 1 → 2 の順になること。
 - 同じ実行に `outside-target`（`finding_id` が null）の候補を 1 件混ぜ、どの指摘の `reasons` にも
-  現れないこと。
-- 観点が異なる候補（`typo` と `consistency`）を 1 つの指摘に統合し、`perspective` が候補ごとに
+  現れないこと。**これが見分けるのは「候補を実行単位でひとまとめにして全指摘に配る」ような
+  取り違えであって、`finding_id is not null` の有無ではない**（決定 2）。
+- 観点が異なる候補（`typo` と `naturalness`。`Perspective` はこの 2 つだけである。
+  `packages/shared/src/llm/schema.ts`）を 1 つの指摘に統合し、`perspective` が候補ごとに
   正しく付くこと（`check_units` との結合が指摘単位に潰れていないこと）。
 
 ## テスト
@@ -193,7 +203,7 @@ select candidates.id, check_units.perspective, candidates.llm
 | --- | --- | --- |
 | C1 | `listFindings` が飛び番・交互の `candidate_index` でも各指摘の `reasons` を昇順で返す（決定 10） | `db/repositories/findings.test.ts` |
 | C2 | `listFindings` が観点の違う複数候補を 1 指摘の `reasons` に正しく並べる（決定 10） | `db/repositories/findings.test.ts` |
-| C3 | `outside-target`（`finding_id` が null）の候補がどの `reasons` にも混ざらない（決定 2） | `db/repositories/findings.test.ts` |
+| C3 | `outside-target`（`finding_id` が null）の候補がどの `reasons` にも混ざらない。見分けるのは「候補を実行単位で全指摘に配る」取り違えで、`finding_id is not null` の有無ではない（決定 2） | `db/repositories/findings.test.ts` |
 | C4 | 一覧の応答が理由 2 件・再確認あり／なし・採否ありの指摘で従来どおりであること（決定 6） | `api/findings.test.ts` |
 | C5 | `judgments` の行が無い指摘の一覧が 500 `internal`（既存テストをそのまま通す。決定 4） | `api/findings.test.ts`（既存） |
 | C6 | 指摘 3 件と 30 件で、`GET /api/runs/:id/findings` が実行する SQL 文の本数が等しく、上限以下（決定 7） | `api/findings.query-count.test.ts`（新規） |
@@ -235,9 +245,13 @@ test）なので、現状の実装でも通る。通ることに意味がある�
 2. `listFindings` の内部を、`findings` の列挙 1 本＋理由 1 本（決定 2 の SQL）に変える。
    `toFindingWithReasons` は `Map` から引く形にし、`listReasons` は `findFinding` 専用として残す。
 3. C1〜C3 と既存の `findings.test.ts`（リポジトリ）が通ることを確認する。
-4. **確かめ方**：バッチ化を意図的に壊して（`order by` を `candidates.id` にする、
-   `finding_id is not null` を外す）、C1・C3 がそれぞれ落ちることを実測する。落ちなければ
-   テストが弱いので直す。
+4. **確かめ方**：バッチ化を意図的に壊して、C1〜C3 が落ちることを 1 件ずつ実測する。
+   - `order by` を `candidates.id` にする → C1 が落ちる
+   - `Map` のキーを `finding_id` ではなく `run_id` にして全候補を全指摘に配る → C3 が落ちる
+   - `perspective` を指摘の先頭候補の値で埋める → C2 が落ちる
+
+   **`finding_id is not null` を外す変異は使わない。** それでは応答が変わらないのでどのテストも
+   落ちない（決定 2。レビュー Important 2）。落ちない変異を「守れている証拠」に数えないこと。
 5. コミット。
 
 ### Task 2：一覧ハンドラーの再確認・採否を `Map` にする（決定 4・6）
