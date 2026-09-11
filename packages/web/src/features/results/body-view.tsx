@@ -120,9 +120,11 @@ function renderSegment(
     : styles.highlight;
 
   return (
-    // 強調は Task 4 のブリーフどおり素の <span> + onClick で描く。キーボード操作・
-    // フォーカス管理（role / tabIndex / onKeyDown）は本文中の移動を実装する Task 9 が
-    // 選択操作全体の設計と合わせて決める（Task 4 のブリーフは対象外）。
+    // 強調 <span> にはキーボード操作（tabIndex / role / onKeyDown）を与えない（決定 6）。
+    // 1 万字の原稿で指摘が 800 件になりうる。強調ごとにタブ止まりを作るとキーボードだけの
+    // 利用者にはかえって使えなくなるため、キーボードの経路は指摘一覧（Task 6。行はボタン）が
+    // 担い、すべての指摘はそちらから選べる。本文の強調はポインタ用の近道という位置づけなので、
+    // クリックのみ受け付ける。
     // biome-ignore lint/a11y/noStaticElementInteractions: 上記の理由
     // biome-ignore lint/a11y/useKeyWithClickEvents: 上記の理由
     <span

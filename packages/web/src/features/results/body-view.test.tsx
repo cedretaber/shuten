@@ -18,6 +18,9 @@ import styles from "./results.module.css";
 // 段落 0: 素のセグメントと、f1・f2 が重なる強調、また別の素のセグメント。
 // 段落 1: 空段落（segments が空）。
 // 段落 2: f3 だけの強調。
+// 段落 3: f4・f5 という別々の指摘の強調 <span> を 2 つ持つ（同じ段落内で選択を絞り込めることの検査用。
+//         Minor 2：段落内に強調が 1 個しか無いと、selectedIdHere !== null だけで class を付ける
+//         誤実装でも通ってしまうため、2 個以上のフィクスチャを用意する）。
 const paragraphs: readonly BodyParagraph[] = [
   {
     id: 0,
@@ -31,6 +34,14 @@ const paragraphs: readonly BodyParagraph[] = [
   {
     id: 2,
     segments: [{ start: 6, end: 8, text: "かき", findingIds: ["f3"] }],
+  },
+  {
+    id: 3,
+    segments: [
+      { start: 9, end: 10, text: "さ", findingIds: ["f4"] },
+      { start: 10, end: 11, text: "し", findingIds: [] },
+      { start: 11, end: 12, text: "す", findingIds: ["f5"] },
+    ],
   },
 ];
 
@@ -129,6 +140,24 @@ describe("BodyView", () => {
     const spanF3After = container.querySelector('[data-findings~="f3"]') as HTMLElement;
     expect(spanF1After.className).not.toContain(styles.highlightSelected);
     expect(spanF3After.className).toContain(styles.highlightSelected);
+  });
+
+  it("R2-9b: 同じ段落内に強調が複数あっても、選択中の 1 つにだけ class が付く（Minor 2）", () => {
+    // 段落 3 は f4・f5 という別々の指摘の強調 <span> を 2 つ持つ。selectedIdHere !== null
+    // だけで class を付ける誤実装だと、f4 を選んだときに f5 の <span> にも class が付いてしまう。
+    const { container, rerender } = render(
+      <BodyView paragraphs={paragraphs} selectedFindingId="f4" onSelectFinding={vi.fn()} />,
+    );
+    const spanF4 = container.querySelector('[data-findings~="f4"]') as HTMLElement;
+    const spanF5 = container.querySelector('[data-findings~="f5"]') as HTMLElement;
+    expect(spanF4.className).toContain(styles.highlightSelected);
+    expect(spanF5.className).not.toContain(styles.highlightSelected);
+
+    rerender(<BodyView paragraphs={paragraphs} selectedFindingId="f5" onSelectFinding={vi.fn()} />);
+    const spanF4After = container.querySelector('[data-findings~="f4"]') as HTMLElement;
+    const spanF5After = container.querySelector('[data-findings~="f5"]') as HTMLElement;
+    expect(spanF4After.className).not.toContain(styles.highlightSelected);
+    expect(spanF5After.className).toContain(styles.highlightSelected);
   });
 
   it("R2-10: 空段落は <p> として残る（消えない）", () => {

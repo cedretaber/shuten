@@ -10,7 +10,7 @@
   /* 段落内の空白・全角字下げを保つ。改行文字自体は DOM に入れず、段落ブロック（<p>）が
      改行を担う。white-space は継承されるので <p> 側では指定しない。 */
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   font-family: inherit;
   line-height: 1.7;
 }
