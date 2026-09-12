@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | **PR13a-1** | 正解ファイルの形式、本文ハッシュ、**結果 JSON の検証**、突き合わせと集計、複数回実行の集計、CLI のサブコマンド化 | `packages/cli`、`packages/server`（ハッシュのみ） |
 | **PR13a-2** | `GET /api/runs/:id/export` と形式、エクスポート JSON を評価の入力に加えるアダプター | `packages/server`、`packages/cli` |
-| **PR13a-3** | 全文チャット方式（自由形式プロンプト）の CLI モード | `packages/cli`、`packages/server`（生成の呼び出しのみ） |
+| **PR13a-3** | 全文チャット方式（自由形式プロンプト）の CLI モード | `packages/cli` のみ（決定 34 で `packages/server` に足さないことにした） |
 
 本書は 5 つすべての設計を含む。タスク分解は PR13a-1 を全量、13a-2 と 13a-3 は骨子まで書く
 （PR13a-1 の実装で分かることが後続の細部に効くため、着手時に本書へ追記する）。
@@ -341,7 +341,7 @@ LLM に接続しない）。加えて、3 方向照合の不一致エラーに�
 | `evaluate` | 13a-1 | 正解と結果 1 本を突き合わせて指標を出す |
 | `aggregate` | 13a-1 | 同条件の結果 N 本のぶれを集計する |
 | `hash` | 13a-1 | 原稿の `bodyHash` を 1 行出す（決定 3。LLM に接続しない） |
-| `full-chat` | 13a-2 | 全文チャット方式（自由形式プロンプト）で 1 回生成する |
+| `full-chat` | 13a-3 | 全文チャット方式（自由形式プロンプト）で 1 回生成する |
 
 - 未知のサブコマンドはエラー（終了コード 1）。
 - 引数が 1 つも無いときは `run` に振られ、既存の「必須オプションがありません: --manuscript, --model」
@@ -1067,6 +1067,122 @@ CLI 経路では常に 0 になる項目でもある。
 - `--result` どうし、および `--result` と `--export` の間では見ない（手がかりが無い）。
 
 
+## PR13a-3 の設計（着手時の追記）
+
+決定 15 で形は決めてある。ここでは実装に入る前に残っていた穴を埋める。
+**PR13b の前に実施することがユーザーの決定で確定した**ため（`docs/plans/2026-09-12-pr13b-real-manuscript-evaluation.md` Q4）、
+PR13b の 4 方式比較の 1 つとして使える状態にする。
+
+### 決定 34：`FullChatResult` と実行の本体は `packages/cli` に置く
+
+`full-chat` は評価ハーネス専用で、server・web からは呼ばない。`runPipeline` も経由しない
+（決定 15）。したがって型も実行も `packages/cli/src/full-chat.ts` に置き、
+**`packages/server` には何も足さない**。
+
+- server に置くと、製品の実行経路に「分割も検査単位も持たない実行」という別の形が増える。
+  仕様書 5 節の検査処理はそれを知らないので、`PipelineResult` と `RunRecord` の両方に
+  「全文チャットのときは意味を持たない項目」が生えることになる
+- server から使うのは `createLmStudioClient`（既に `main.ts` が使っている）と
+  `isGenerationCapable`（`@shuten/shared`）だけで、どちらも既存の import である
+
+### 決定 35：`{{manuscript}}` の差し込みは置換関数で行う
+
+`prompt.replaceAll("{{manuscript}}", text)` と書いてはならない。`String.prototype.replaceAll` は
+**置換文字列の `$&` / `$'` / `` $` `` / `$$` を特殊な指示として解釈する**ので、原稿本文に
+`$&` や `` $` `` が含まれていると**本文が壊れて差し込まれる**。校正ツールが原稿を静かに
+書き換えるのは、この PR で最も避けたい事故である。
+
+```ts
+const filled = prompt.replaceAll("{{manuscript}}", () => text);
+```
+
+関数を渡せば戻り値はそのまま使われ、`$` の解釈は起きない。**テストで `$&` を含む原稿を
+通す**（変異：関数を文字列に戻す → 落ちる）。
+
+### 決定 36：結果 JSON に原稿本文と差し込み後のプロンプトを入れない。プロンプトはハッシュで記録する
+
+記録するのは決定 15 の列挙（応答本文・`reasoningContent`・`finishReason`・`usage`・所要時間・
+実行条件・`manuscript.bodyHash`）に限る。これに **`promptHash`**（差し込み**前**の生のプロンプトの
+`hashBody` 値）を足す。
+
+- 差し込み後のプロンプトは原稿本文をまるごと含むので入れない。原稿の複製を増やさない
+  （リポジトリ外に置く運用でも、複製が増えれば取り違えと流出の面が増える）
+- 差し込み前のプロンプトも入れない。ユーザーの運用上の指示そのもので、結果 JSON の
+  用途（人が応答を読む）には要らない
+- ハッシュだけは入れる。**「どのプロンプトで取った結果か」を後から照合できないと、
+  方式比較の条件が揃っていたことを示せない**（仕様書 10 節が実行条件の保存を求めている）。
+  `bodyHash` と同じ一方向の値なので、本文は復元できない
+- `ChatResult.raw`（応答 JSON 全体）は入れない。決定 15 の列挙に無く、応答本文と
+  `finishReason`・`usage` で足りる
+
+### 決定 37：失敗の扱いと終了コード
+
+`status` は `"completed" | "failed"` の 2 値。`partially-failed` も `stopped` も無い
+（単位が 1 つしかないので、部分的な失敗も途中停止も定義できない）。
+
+| 事象 | `status` | `failure.origin` | 終了コード |
+| --- | --- | --- | --- |
+| 生成が成功した | `completed` | — | 0 |
+| 打ち切り（`truncated`） | `failed` | `chat` | 2 |
+| 生成要求の失敗（`timeout` / `connection` / `malformed` など） | `failed` | `chat` | 2 |
+| `ensureLoaded` の失敗（`model-not-loaded`） | `failed` | `ensure-loaded` | 2 |
+| 生成できない種別のモデル（決定 15） | `failed` | `ensure-loaded` | 2 |
+
+- `failure` は `UnitFailure`（`packages/server/src/run/result.ts`）をそのまま使う。
+  形を変えると、結果を読む人が 2 つの失敗の形を覚えることになる
+- 種別違いの `reason` と `origin` は `run/executor.ts:303` と**同じ値**にする
+  （`reason: "model-not-loaded"`、`origin: "ensure-loaded"`）。同じ事象に 2 つの記録の仕方を作らない
+- **失敗でも結果 JSON は書く。** 書かずに終了コードだけ返すと、何が起きたかが記録に残らない
+  （`run` と同じ方針）。打ち切られた本文を `content` に成功として入れないことは決定 15 のとおりで、
+  `failure.finishReason` に `"length"` が入る
+- 終了コードは `run` の規則（0 完了 / 2 部分失敗 / 3 停止）と衝突しない値にする。
+  失敗は 2 を使う（3 は「停止」で、全文チャットには停止の概念が無い）
+
+### 決定 38：入出力の扱いは `run` にそろえる
+
+- `--out` が `--manuscript` / `--prompt-file` と同じ実体を指していたら拒否する（決定 21）。
+  検査は**生成要求を送る前**に行う（`run` と同じ。原稿を結果で潰さないため）
+- 標準出力・標準エラーに**原稿本文・プロンプト・パス・接続先 URL を出さない**（決定 9）。
+  プロンプトファイルを読めないときのメッセージも固定文言にする
+- プロンプトファイルは UTF-8 として読む（`ingestUtf8Bytes`）。BOM と改行の扱いは原稿と同じ
+- 進捗行は出さない（1 要求しかないのでイベントが無い）
+- **`client.close()` を `finally` で呼ぶ。** `run` は呼んでいない（`runPipeline` も呼んでいない）が、
+  あちらは `process.exitCode` を設定するだけで終わるのに実害が出ていないという実績があるだけで、
+  閉じるのが正しい。`full-chat` は新しい経路なので最初から閉じる。既存の `run` の挙動は
+  この PR では変えない（別の経路の修正を混ぜない）
+
+### 決定 39：`evaluate` / `aggregate` は `FullChatResult` を受け付けない
+
+自動採点しない（決定 15）ので、`FullChatResult` は `--result` にも `--export` にも渡せない。
+
+- `FullChatResult` は**根に `formatVersion: "full-chat/1"` を持つ**。他の成果物
+  （エクスポート・正解ファイル・指標 JSON）と同じ置き方にそろえる。
+  `conditions.versions` は持たない（決定 40 で全項目が × になるため、空の器を残さない）
+- したがって `evaluate --result` に渡しても `versions.result` の一致検査には届かず、
+  zod の必須項目欠落で落ちる。それでは「形式が違う」ことが読み取れないので、
+  **`parseResultJson`（`packages/cli/src/eval/result-schema.ts`）に前置きの検査を足す**。
+  根の `formatVersion` が文字列で `"full-chat/"` で始まるなら、固定文言
+  （全文チャット方式の結果は自動採点しないので `evaluate` には渡せない旨）で拒否する。
+  この検査は `--export` 経路（`parseExportJson`）には要らない（エクスポートは
+  `GET /api/runs/:id/export` の出力しか入らない）
+
+### 決定 40：記録する実行条件
+
+`RunConditions`（`packages/server/src/run/result.ts`）のうち、分割・観点・許容語・再確認に
+関わらない項目だけを持つ。
+
+| 項目 | 入れる | 理由 |
+| --- | --- | --- |
+| `startedAt` / `finishedAt` | ○ | 所要時間（仕様書 10 節の実行性能） |
+| `model`（`ModelInfo`） | ○ | モデル ID・量子化・ロード時コンテキスト長（仕様書 10 節） |
+| `generation` | ○ | 生成設定（同上） |
+| `timeouts.checkMs` | ○ | この要求のハード上限（決定 15） |
+| `versions`（4 項目とも） | × | プロンプト版はユーザーのもの（`promptHash` で代える）。許容語も位置特定も通らない。形式の版は根の `formatVersion`（決定 39） |
+| `mode` / `perspectives` / `chunkSettings` / `allowedWords` | × | 分割も観点も許容語も無い |
+| `manuscript`（字数・段落数・`bodyHash`） | ○ | ただし `targetCount` は入れない（検査対象が無い） |
+
+
+
 ## テスト
 
 `packages/cli` は Vitest。実 LLM・実原稿・実ファイルには触れない（既存 `main.test.ts` と同じく
@@ -1220,12 +1336,31 @@ CLI 経路では常に 0 になる項目でもある。
 ### PR13a-3（全文チャット方式）
 
 - **T12 全文チャット**：`{{manuscript}}` が無いプロンプトはエラー。2 つあればすべて置換。
-  `responseFormat` を渡していないこと（モックの `chat` が受けた引数を見る）。
-  `truncated` 例外が `status: "failed"` として結果に残る（成功として保存しない。変異：例外を
-  握りつぶして本文を保存する → 落ちる）。`reasoningContent` が別項目に入る。
+  `responseFormat` を渡していないこと、`messages` が user 1 通だけで system を含まないこと
+  （モックの `chat` が受けた引数を見る）。`truncated` 例外が `status: "failed"` として結果に残る
+  （成功として保存しない。変異：例外を握りつぶして本文を保存する → 落ちる）。
+  `reasoningContent` が別項目に入る。
 - **T21 モデル種別**（決定 15）：`type` が `llm` / `vlm` のモデルには送信する。
   **`embeddings` と、種別が取れない（`null`）モデルには生成要求を送らない**
   （変異：`isGenerationCapable` の検査を外す → 落ちる。モックの `chat` が呼ばれたかで見る）。
+- **T29 `$` を含む原稿の差し込み**（決定 35）：`$&` ・`` $` `` ・`$$` ・`$'` を含む原稿を
+  `{{manuscript}}` に差し込み、`chat` が受けた `messages[0].content` に**原稿がそのまま**
+  入っていることを確かめる（変異：置換関数を文字列に戻す → 落ちる）。
+- **T30 結果に入れないもの**（決定 36）：結果 JSON を文字列化し、**原稿本文の断片・差し込み後の
+  プロンプト・差し込み前のプロンプトが含まれない**ことを確かめる。`promptHash` が
+  差し込み前のプロンプトの `hashBody` と一致する（変異：`promptHash` を差し込み後から取る → 落ちる）。
+  **モックの `chat` が返す応答本文に原稿の断片を含めない**こと（含めると、道具が原稿を写したのか
+  モデルが引用したのかを区別できず、テストが正しい理由で落ちなくなる）。
+- **T31 失敗の記録と終了コード**（決定 37）：`ensureLoaded` の失敗・`chat` の失敗・種別違いの
+  3 経路それぞれで `status: "failed"`・`failure.origin` が表の値・終了コード 2 になり、
+  **結果 JSON が書かれる**（変異：失敗時に結果を書かない → 落ちる）。
+- **T32 出力先の衝突**（決定 38）：`--out` が `--manuscript` と、`--out` が `--prompt-file` と
+  同じ実体を指すとき、**`chat` を呼ぶ前に**拒否する（変異：検査を `chat` の後に移す → 落ちる）。
+- **T33 露出しない**（決定 38）：プロンプトファイルを読めないとき・UTF-8 でないとき・
+  引数エラーのとき、標準エラーにパスも本文も出ない。
+- **T34 `evaluate` に渡せない**（決定 39）：`FullChatResult` を `evaluate --result` に渡すと
+  拒否され、メッセージから**全文チャット方式の結果であること**が読み取れる（変異：
+  `parseResultJson` の前置き検査を外す → zod の必須項目欠落のメッセージになり落ちる）。
 
 ## 完了条件
 
@@ -1366,6 +1501,19 @@ CLI 経路では常に 0 になる項目でもある。
 
 ### PR13a-3（全文チャット方式）
 
-- **Task 13**：`full-chat` サブコマンドと `FullChatResult`（決定 15）。`isGenerationCapable` の検査を
-  含む。T12・T21。
-- **Task 14**：ロードマップと README の更新。
+- **Task 13**：引数の解釈（`packages/cli/src/args/full-chat.ts`）と差し込み（決定 35）。
+  `parseFullChatArgs` は `--manuscript` / `--model` / `--prompt-file` を必須にし、
+  `--out` / `--max-tokens` / `--temperature` / `--seed` / `--reasoning-effort` /
+  `--check-timeout-ms` を受ける。`{{manuscript}}` を含まないプロンプトの拒否は
+  引数の解釈ではなく差し込み側（プロンプトの中身を見るため）。T12 の前半・T29。
+- **Task 14**：実行の本体（`packages/cli/src/full-chat.ts`）。`FullChatResult` の型、
+  `ensureLoaded` → `isGenerationCapable` → `chat` の順、失敗の記録（決定 37）、
+  記録する実行条件（決定 40）。T12 の後半・T21・T30・T31。
+- **Task 15**：`main.ts` への接続。サブコマンドの分岐、`MainIO` への
+  `readPromptBytes` の追加、出力先の衝突検査（決定 38）、終了コード。
+  **`packages/cli/src/eval/result-schema.ts` の `parseResultJson` に、根の `formatVersion` が
+  `"full-chat/"` で始まるときの固定文言の拒否を足す**（決定 39。これが無いと T34 は
+  zod の必須項目欠落を見るだけになる）。T32・T33・T34。
+- **Task 16**：ドキュメント。`README.md` の評価ハーネスの節に `full-chat` を足し
+  （自動採点しないこと、既定のタイムアウトでは足りない可能性があること）、ロードマップの
+  PR13a-3 の節を「完了」にし、PR13b の前提を満たしたことを書く。
