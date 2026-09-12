@@ -78,7 +78,7 @@ describe("formatAggregateReport", () => {
     const result = baseAggregateResult({
       notices: ["実行2は完走していません（status: partially-failed）"],
     });
-    const report = formatAggregateReport(result);
+    const report = formatAggregateReport(result, "result");
     const noticeIndex = report.indexOf("実行2は完走していません");
     const metricsIndex = report.indexOf("## 指標");
     expect(noticeIndex).toBeGreaterThan(-1);
@@ -87,13 +87,27 @@ describe("formatAggregateReport", () => {
   });
 
   it("notices が無ければ「（なし）」と出る", () => {
-    const report = formatAggregateReport(baseAggregateResult({ notices: [] }));
+    const report = formatAggregateReport(baseAggregateResult({ notices: [] }), "result");
     expect(report).toContain("（なし）");
   });
 
   it("全実行が null（availableRuns:0）の率は — で示し、パーセント表示にしない", () => {
     const result = baseAggregateResult({ detected: rateAggregate(null, null, null) });
-    const report = formatAggregateReport(result);
+    const report = formatAggregateReport(result, "result");
     expect(report).toContain("—（有効な実行なし。unavailableRuns=2）");
+  });
+
+  // --- T28：決定28(c)。--export を含む集計のレポートに出どころの行が出て、--result だけの集計
+  // では出ない（評価レポート側 `eval/report.ts` の `source: "export"` の行と文言を揃える）。
+  it("source が export のとき、入力の出どころと timeouts が実効上限である旨が出る", () => {
+    const report = formatAggregateReport(baseAggregateResult(), "export");
+    expect(report).toContain("入力：エクスポート JSON（サーバー経由の実行）");
+    expect(report).toContain("timeouts は recoveryConfirmMs を含む実効上限（決定 31）");
+  });
+
+  it("source が result のときは出どころの行が出ない", () => {
+    const report = formatAggregateReport(baseAggregateResult(), "result");
+    expect(report).not.toContain("入力：エクスポート JSON");
+    expect(report).not.toContain("recoveryConfirmMs");
   });
 });

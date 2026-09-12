@@ -636,6 +636,7 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   // 5. 各入力を1本ずつ読み込み・検証する（形の検証だけ。意味の検証は7で行う）。--result は
   //    parseResultJson、--export は（--export が1本目なら3で読んだ値を再利用し）
   //    adaptExportToResult。以降のエラーメッセージ・ハッシュ照合に使うラベルを添えて保持する。
+  //    --export どうしは run.id の重複も拒否する（決定33。T27）。
   interface LabeledResult {
     readonly label: string;
     readonly result: EvaluationResultInput;
@@ -664,6 +665,13 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     labeledResults.push({ label, result: parsedResult.value });
   }
 
+  // --export の run.id の重複検査（決定 33）。同じ実行を2回エクスポートした2ファイルは、
+  // 実体（決定21のファイル識別）としては別物（exportedAt だけ違う）でも、内容はほぼ同じで
+  // 条件の一致検査（決定12）もすべて通るため、ぶれ0の「2回実行」として集計されてしまう。
+  // --export は run.id を運ぶので、ここで安く確実に拒否できる。--result どうし・--result と
+  // --export の間では見ない（手がかりが無いため。決定33の対象は --export どうしだけ）。
+  const seenExportRunIds = new Map<string, number>();
+
   for (const [index, exportPath] of args.exportPaths.entries()) {
     const label = `エクスポート ${String(index + 1)} 本目`;
     let exportedValue: RunExportDto;
@@ -677,6 +685,20 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
       }
       exportedValue = exportResult.value;
     }
+
+    const runId = exportedValue.run.id;
+    const previousIndex = seenExportRunIds.get(runId);
+    if (previousIndex !== undefined) {
+      // メッセージには重複した実行 ID を出してよい（原稿の内容でも接続先でもない。決定33）。
+      // パスは出さない。
+      io.writeErrorLine(
+        `引数エラー: --export に同じ実行（実行 ID: ${runId}）が重複して指定されています` +
+          `（${String(previousIndex + 1)} 本目と ${String(index + 1)} 本目）`,
+      );
+      return 1;
+    }
+    seenExportRunIds.set(runId, index);
+
     const adapted = adaptExportToResult(exportedValue);
     if (!adapted.ok) {
       io.writeErrorLine(
@@ -760,7 +782,13 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   // 12. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。両方の文字列を先に組み立てて
   //     から書き出す（M-2 修正。理由は runEvaluate と同じ）。
   const json = JSON.stringify(outcome.value, null, 2);
-  const report = args.reportPath === null ? null : formatAggregateReport(outcome.value);
+  // 決定28(c)：出どころは AggregateResult には持たせず、ここで --export の有無から決める
+  // （--result と --export を混ぜた集計は versions.result の不一致で 8 の条件検査に既に
+  // 拒否されているため、ここに来る時点ではどちらか一方に揃っている）。
+  const report =
+    args.reportPath === null
+      ? null
+      : formatAggregateReport(outcome.value, args.exportPaths.length > 0 ? "export" : "result");
 
   const written = await writeResultOrFixedError(io, args.outPath, json, "集計");
   if (!written.ok) {
