@@ -179,7 +179,7 @@ Windows 環境では未確認**（`docs/guides/windows-verification.md` のチ�
 ## 評価ハーネス（`packages/cli`）
 
 原稿ファイルに検査パイプラインを回して結果 JSON を出し、正解データと突き合わせて仕様書 10 節の指標を
-出す評価用の CLI。サブコマンドは `run`（既定）／`evaluate`／`aggregate`／`hash`／`full-chat`。
+出す評価用の CLI。サブコマンドは `run`（既定）／`evaluate`／`aggregate`／`hash`／`full-chat`／`check-truth`。
 先頭の引数が `--` で始まる場合と引数が無い場合は `run` に振られるので、旧来の起動
 （`... --manuscript x --model y`）もそのまま動く。ルートの `pnpm eval` はこの CLI のショートカットで、
 次の 2 つはどちらも同じように動く。
@@ -293,6 +293,33 @@ pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロン�
 
 1 万字を 1 要求で投げるので、既定のタイムアウト（300 秒）では足りない場合がある。
 `--check-timeout-ms` で伸ばすこと。
+
+### `check-truth`：正解ファイルを検証する
+
+```sh
+pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失敗レポート.md>]
+```
+
+利用者が手で書く正解ファイル（20〜40 件、多いと 40〜80 件になる誤り項目）を、LLM を回さず・
+結果 JSON も無しで検証する。検査するのは次の 4 点。
+
+- 正解ファイルの形式（zod 検証。`docs/reference/truth-format.md`）
+- 原稿との `bodyHash` 照合（`hash` で取った値と正解ファイルの `manuscript.bodyHash` が一致するか）
+- `paragraphId` が原稿の段落数の範囲内か
+- `quote` が該当する段落の本文に存在し、`occurrence` 番目の出現まで足りているか
+
+LM Studio には接続しない。
+
+終了コードは 0 = 検証を通った、1 = 引数・入出力の誤り（読み込めない、出力先の衝突、レポートの
+書き出し失敗を含む）、2 = 正解ファイルの内容の誤り（JSON 構文、zod 検証、`bodyHash` 不一致、
+位置解決の失敗）。両方が起きたとき（内容に誤りがあり、かつレポートを書けなかったとき）は 1 を返す。
+
+標準エラーに出るのは失敗した項目の `id`・段落番号・件数だけ。**本文の該当箇所を添えた詳細は
+`--report` を指定したときだけ**そのファイルに出す（引用や原稿本文を標準出力・標準エラーに出さない
+ため）。
+
+`evaluate` は結果 JSON が無いと使えない（LLM を回す必要がある）ため、正解ファイルを書きながら
+繰り返し検証したいときはこちらを使う。
 
 ### `hash`：原稿の本文ハッシュを出す
 

@@ -201,18 +201,28 @@ export async function readExportFile(
   return { ok: true, value: parsedExport.value };
 }
 
+/** `reportTruthResolveFailure` の戻り値（Task 0）。 */
+export interface TruthResolveFailureReport {
+  /** `reportPath` が null、またはレポートを書けたら true。書き出しに失敗したときだけ false。 */
+  readonly reportWritten: boolean;
+}
+
 /**
  * `resolveTruthEntries`（決定 4）の失敗を報告する。失敗メッセージを標準エラーへ全件書き、
  * `reportPath` があれば失敗レポート（段落本文つき）も書く。`evaluate`・`aggregate` の両方が
  * 一字一句同じ手順を踏んでいたため、ここに 1 か所へまとめた（レビュー指摘。Task 7）。
- * 呼び出し側は、この関数を呼んだ後に常に終了コード 1 で返る。
+ * 呼び出し側は、この関数を呼んだ後に常に終了コード 1 で返る（`evaluate`・`aggregate` は
+ * 戻り値を使わない。従来の振る舞いのまま）。
+ *
+ * `check-truth`（Task 0）は戻り値の `reportWritten` を使い、レポートの書き出しにも失敗したとき
+ * だけ終了コード 1（それ以外の内容の誤りは 2）に区別する。
  */
 export async function reportTruthResolveFailure(
   io: ErrorLineWriter & ResultWriter,
   failures: readonly TruthResolveFailure[],
   text: string,
   reportPath: string | null,
-): Promise<void> {
+): Promise<TruthResolveFailureReport> {
   for (const failure of failures) {
     io.writeErrorLine(failure.message);
   }
@@ -221,8 +231,10 @@ export async function reportTruthResolveFailure(
     const writtenReport = await writeResultOrFixedError(io, reportPath, failureReport, "レポート");
     if (!writtenReport.ok) {
       io.writeErrorLine(writtenReport.error);
+      return { reportWritten: false };
     }
   }
+  return { reportWritten: true };
 }
 
 // --- 出力先の衝突検査（決定 21） ---------------------------------------------------------------

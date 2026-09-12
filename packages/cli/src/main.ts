@@ -12,6 +12,7 @@ import type { RunExportDto } from "@shuten/shared";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
 import { parseAggregateArgs } from "./args/aggregate.ts";
+import { parseCheckTruthArgs } from "./args/check-truth.ts";
 import { parseEvaluateArgs } from "./args/evaluate.ts";
 import { parseFullChatArgs } from "./args/full-chat.ts";
 import { parseHashArgs } from "./args/hash.ts";
@@ -23,7 +24,8 @@ import { formatEvaluationReport } from "./eval/report.ts";
 import type { EvaluationResultInput } from "./eval/result-schema.ts";
 import { parseResultJson, validateFindingRanges } from "./eval/result-schema.ts";
 import { scoreRun } from "./eval/score.ts";
-import { resolveTruthEntries } from "./eval/truth.ts";
+import type { TruthFile } from "./eval/truth.ts";
+import { parseTruthFile, resolveTruthEntries } from "./eval/truth.ts";
 import type { FullChatRunResult } from "./full-chat.ts";
 import { runFullChat } from "./full-chat.ts";
 import type { FileIdentity, NamedPath } from "./io.ts";
@@ -35,6 +37,7 @@ import {
   readManuscriptText,
   readPromptText,
   readTruthFile,
+  readTruthText,
   reportTruthResolveFailure,
   writeResultOrFixedError,
 } from "./io.ts";
@@ -946,12 +949,132 @@ async function runFullChatCommand(
   return runResult.value.status === "completed" ? 0 : 2;
 }
 
+/**
+ * 正解項目の件数を要約 3 行にする（Task 0 ブリーフ 3 節）。引用・本文・パス・原稿名は含めない
+ * （決定 3・PR13a-1 決定 9）。件数だけを見せる。
+ */
+function formatCheckTruthSummary(truth: TruthFile): string {
+  const errorEntries = truth.entries.filter((entry) => entry.kind === "error");
+  const typoCount = errorEntries.filter((entry) => entry.perspective === "typo").length;
+  const naturalnessCount = errorEntries.filter(
+    (entry) => entry.perspective === "naturalness",
+  ).length;
+  const normalCount = truth.entries.length - errorEntries.length;
+  return [
+    `正解項目 ${String(truth.entries.length)} 件`,
+    `  error ${String(errorEntries.length)}（typo ${String(typoCount)} / naturalness ${String(naturalnessCount)}）`,
+    `  normal ${String(normalCount)}`,
+  ].join("\n");
+}
+
+/**
+ * `check-truth` サブコマンドの本体（Task 0 ブリーフ）。利用者が手で書く正解ファイルを、
+ * LLM を回さず・結果 JSON も無しで検証する（zod 検証、原稿との `bodyHash` 照合、位置解決）。
+ *
+ * 処理の順序（ブリーフ 3 節の指定どおり。順序そのものが仕様）：
+ * 1. 引数の解釈
+ * 2. 出力先の衝突検査（読み込みより前。`--report` が正解ファイルを指していたら、利用者が
+ *    手で書いた項目を失敗レポートで上書きして消してしまうため）
+ * 3. 原稿読み込み
+ * 4. 正解ファイル読み込み（`readTruthText`）
+ * 5. `JSON.parse`
+ * 6. `parseTruthFile`
+ * 7. 3 方向ではなく 2 方向のハッシュ照合（原稿対正解ファイル。`evaluate` と同じ文言）
+ * 8. `resolveTruthEntries`
+ * 9. 成功したら件数の要約を標準出力に書く
+ *
+ * 4〜7 で `readTruthFile` は使わない。あれは入出力の失敗と内容の誤りを同じ `{ ok: false, error }`
+ * にまとめてしまい、終了コード 1（入出力）と 2（内容）を分けられないため（`readTruthText` →
+ * `JSON.parse` → `parseTruthFile` を自分で並べる。中身は `readTruthFile` と同じ並び）。
+ *
+ * 終了コード：0 = 検証を通った、1 = 引数・入出力の誤り（レポートの書き出し失敗を含む）、
+ * 2 = 正解ファイルの内容の誤り（JSON 構文・zod 検証・bodyHash 不一致・解決の失敗）。
+ * 両方起きたとき（内容に誤りがあり、かつレポートを書けなかったとき）は 1 を返す
+ * （2 が出たのにレポートが無いと、利用者が存在しないファイルを探すことになるため）。
+ */
+async function runCheckTruth(argv: readonly string[], io: MainIO): Promise<number> {
+  const parsed = parseCheckTruthArgs(argv);
+  if (!parsed.ok) {
+    io.writeErrorLine(`引数エラー: ${parsed.error}`);
+    return 1;
+  }
+  const args = parsed.value;
+
+  // 2. 出力先の衝突検査。読み込みより前に行う（--report が --manuscript/--truth と同じ実体を
+  //    指していたら、利用者が手で書いた 40〜80 件の項目を失敗レポートで上書きして消してしまう）。
+  const conflictCheck = await checkOutputConflict(io, null, args.reportPath, [
+    { name: "--manuscript", path: args.manuscriptPath },
+    { name: "--truth", path: args.truthPath },
+  ]);
+  if (conflictCheck.handled) {
+    return 1;
+  }
+
+  // 3. 原稿読み込み。
+  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+  if (!manuscriptText.ok) {
+    io.writeErrorLine(manuscriptText.error);
+    return 1;
+  }
+  const text = manuscriptText.value;
+
+  // 4〜6. 正解ファイルを読む → JSON.parse → parseTruthFile（`readTruthFile` は使わない。
+  //    入出力の失敗（1）と内容の誤り（2）を終了コードで分けるため、ここで自分で並べる）。
+  const truthText = await readTruthText(io, args.truthPath);
+  if (!truthText.ok) {
+    io.writeErrorLine(truthText.error);
+    return 1;
+  }
+  let truthJson: unknown;
+  try {
+    truthJson = JSON.parse(truthText.value);
+  } catch {
+    io.writeErrorLine("正解ファイルの JSON 構文が不正です");
+    return 2;
+  }
+  const parsedTruth = parseTruthFile(truthJson);
+  if (!parsedTruth.ok) {
+    io.writeErrorLine(`正解ファイルの検証に失敗しました: ${parsedTruth.errors.join("; ")}`);
+    return 2;
+  }
+  const truth = parsedTruth.value;
+
+  // 7. 原稿と正解ファイルの bodyHash 照合（`runEvaluate` の同じ検査と同一の文言）。
+  const manuscriptHash = hashBody(text);
+  if (manuscriptHash !== truth.manuscript.bodyHash) {
+    io.writeErrorLine(
+      `原稿と正解ファイルの bodyHash が一致しません（原稿: ${manuscriptHash}、正解ファイル: ${truth.manuscript.bodyHash}）`,
+    );
+    return 2;
+  }
+
+  // 8. resolveTruthEntries。失敗は --report があるときだけ詳細を書く（reportTruthResolveFailure）。
+  //    レポートの書き出しにも失敗したときは 1（2 ではない。レポートが無いのに「2 だから
+  //    レポートを見よう」として存在しないファイルを探すことになるため）。
+  const resolved = resolveTruthEntries(truth, text);
+  if (!resolved.ok) {
+    const report = await reportTruthResolveFailure(io, resolved.failures, text, args.reportPath);
+    return report.reportWritten ? 2 : 1;
+  }
+
+  // 9. 成功。件数の要約だけを標準出力に書く（引用・本文・パス・原稿名は出さない）。
+  const summary = formatCheckTruthSummary(truth);
+  const written = await writeResultOrFixedError(io, null, summary);
+  if (!written.ok) {
+    io.writeErrorLine(written.error);
+    return 1;
+  }
+
+  return 0;
+}
+
 type SubcommandDispatch =
   | { readonly subcommand: "run"; readonly rest: readonly string[] }
   | { readonly subcommand: "hash"; readonly rest: readonly string[] }
   | { readonly subcommand: "evaluate"; readonly rest: readonly string[] }
   | { readonly subcommand: "aggregate"; readonly rest: readonly string[] }
   | { readonly subcommand: "full-chat"; readonly rest: readonly string[] }
+  | { readonly subcommand: "check-truth"; readonly rest: readonly string[] }
   | { readonly subcommand: "unknown" };
 
 /**
@@ -978,6 +1101,9 @@ function dispatchSubcommand(argv: readonly string[]): SubcommandDispatch {
   if (first === "full-chat") {
     return { subcommand: "full-chat", rest: argv.slice(1) };
   }
+  if (first === "check-truth") {
+    return { subcommand: "check-truth", rest: argv.slice(1) };
+  }
   return { subcommand: "unknown" };
 }
 
@@ -1002,11 +1128,13 @@ export async function main(
       return runAggregate(dispatch.rest, io);
     case "full-chat":
       return runFullChatCommand(dispatch.rest, env, io);
+    case "check-truth":
+      return runCheckTruth(dispatch.rest, io);
     case "unknown":
       // 先頭トークンが `--` で始まらなければ何でもサブコマンド名扱いなので、打ち間違えた
       // パス（例：原稿ファイルのパス）がそのまま入りうる。固定文言のみを返す（決定 9。M-1 修正）。
       io.writeErrorLine(
-        "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat）",
+        "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat / check-truth）",
       );
       return 1;
   }
