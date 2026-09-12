@@ -270,6 +270,7 @@ curl http://localhost:<ポート>/api/runs/<実行ID>/export -o export.json
 
 ```sh
 pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプト.txt> \
+                    [--system-prompt-file <system.txt>] \
                     [--out <結果.json>] [--max-tokens N] [--temperature X] [--seed N] \
                     [--reasoning-effort none|low|medium|high] [--check-timeout-ms N]
 ```
@@ -278,17 +279,19 @@ pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロン�
 プロンプトになる）。プロンプトファイルには原稿を差し込む位置を `{{manuscript}}` で示す。
 1 つも無ければエラーになり、2 つ以上あればすべて置換される。
 
-- 構造化出力を使わず、`system` も付けない（`user` 1 通だけを送る）。分割も参考文脈も許容語の抑制も
-  位置特定も通らない
+- 構造化出力は使わない。分割も参考文脈も許容語の抑制も位置特定も通らない
+- 既定では `user` 1 通だけ。`--system-prompt-file` を渡すとその内容をそのまま `system` として
+  先頭に付ける（差し込みはしない）。普段 system に指示を置いて原稿を user で貼っている運用を
+  再現するには、`--prompt-file` に `{{manuscript}}` だけを書いたファイルを渡す
 - 生成は **1 回だけ**。`run` と違って再試行しない
 - `finish_reason` が `stop` 以外（打ち切り `length`、`tool_calls` など）はすべて失敗として記録し、
   打ち切られた本文を成功として保存しない
 - 結果 JSON に**原稿本文もプロンプトも入れない**。どのプロンプトで取ったかは `promptHash`
-  （差し込み前のプロンプトのハッシュ）で照合する
+  （差し込み前のプロンプトのハッシュ）で照合する。`systemPromptHash`（未指定なら `null`）も同様
 - 終了コードは 0 = 成功、1 = 引数・入出力の誤り、2 = 生成の失敗。失敗でも結果 JSON は書く
 
 **`evaluate` / `aggregate` には渡せない。**自由形式の応答から指摘を機械的に取り出すことはできないため
-自動採点しない（結果 JSON の `formatVersion` は `"full-chat/1"` で、渡すと拒否される）。
+自動採点しない（結果 JSON の `formatVersion` は `"full-chat/2"` で、`"full-chat/"` 始まりはすべて拒否される）。
 応答は人が読んで正解ファイルと突き合わせる。
 
 1 万字を 1 要求で投げるので、既定のタイムアウト（300 秒）では足りない場合がある。

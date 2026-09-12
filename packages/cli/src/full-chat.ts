@@ -1,10 +1,13 @@
 /**
- * `full-chat`（全文チャット方式）の実行本体（決定 15・34・36・37・40）。
+ * `full-chat`（全文チャット方式）の実行本体（決定 15・19・34・36・37・40）。
  *
  * LM Studio へ生成要求を 1 回だけ送る。分割・観点・許容語・再確認・再試行は持たない
  * （`packages/server/src/run/executor.ts` の `runOne` を「再試行なしの 1 回だけ」に
  * 簡略化したもの）。`packages/server` には何も足さない（決定 34）。
  * `main.ts` の `runFullChatCommand` から呼ばれる。
+ *
+ * `systemPrompt` が指定されていれば、その内容をそのまま（差し込みをせず）先頭の system
+ * メッセージとして messages の先頭に付ける。未指定なら従来どおり user 1 通だけを送る（決定 19）。
  */
 import { hashBody } from "@shuten/server/hash.ts";
 import { LmStudioError } from "@shuten/server/lmstudio/errors.ts";
@@ -21,7 +24,12 @@ import { countGraphemes, isGenerationCapable, splitParagraphs } from "@shuten/sh
 
 import { fillManuscript } from "./full-chat-prompt.ts";
 
-export const FULL_CHAT_FORMAT_VERSION = "full-chat/1";
+/**
+ * 結果 JSON の版。"full-chat/2"：実行条件に必須項目 `systemPromptHash` を足した（決定 19。
+ * レビュー指摘：必須項目の追加は形式の変更なので版を上げる）。`parseResultJson` は
+ * `"full-chat/"` 始まりをすべて拒否するので、版を上げても `evaluate` への誤投入は防げる。
+ */
+export const FULL_CHAT_FORMAT_VERSION = "full-chat/2";
 
 /** 記録する実行条件（決定 40）。分割・観点・許容語・再確認に関わる項目は持たない。 */
 export interface FullChatConditions {
@@ -40,6 +48,8 @@ export interface FullChatConditions {
   };
   /** 差し込み「前」の生のプロンプトの hashBody 値（決定 36）。 */
   readonly promptHash: string;
+  /** system プロンプトの hashBody 値。未指定なら null（決定 19）。 */
+  readonly systemPromptHash: string | null;
 }
 
 export interface FullChatResult {
@@ -63,6 +73,8 @@ export interface FullChatRunArgs {
   readonly text: string;
   /** 差し込み「前」の生のプロンプト。 */
   readonly prompt: string;
+  /** system プロンプト。指定時は差し込みをせずそのまま送る。未指定なら null（決定 19）。 */
+  readonly systemPrompt: string | null;
   readonly generation: GenerationSettings;
   readonly timeoutMs: number;
   readonly client: LmStudioClient;
@@ -84,6 +96,12 @@ export async function runFullChat(args: FullChatRunArgs): Promise<FullChatRunRes
   const now = args.now ?? (() => new Date());
   const startedAt = now().toISOString();
 
+  // 空（空白・改行だけを含む）の system は拒否する（レビュー指摘）。空の system メッセージを
+  // 送ると「system 無し」と区別できない実行になり、`systemPromptHash` だけが違う結果が残る。
+  if (args.systemPrompt !== null && args.systemPrompt.trim() === "") {
+    return { ok: false, error: "system プロンプトファイルが空です" };
+  }
+
   const filled = fillManuscript(args.prompt, args.text);
   if (!filled.ok) {
     return { ok: false, error: filled.error };
@@ -96,6 +114,7 @@ export async function runFullChat(args: FullChatRunArgs): Promise<FullChatRunRes
     bodyHash: hashBody(args.text),
   };
   const promptHash = hashBody(args.prompt);
+  const systemPromptHash = args.systemPrompt !== null ? hashBody(args.systemPrompt) : null;
 
   /** 届いた範囲の conditions を組み立てる。model は取れていなければ null。 */
   const buildConditions = (model: ModelInfo | null): FullChatConditions => ({
@@ -106,6 +125,7 @@ export async function runFullChat(args: FullChatRunArgs): Promise<FullChatRunRes
     timeouts: { checkMs: args.timeoutMs },
     manuscript: manuscriptConditions,
     promptHash,
+    systemPromptHash,
   });
 
   const failed = (model: ModelInfo | null, failure: UnitFailure): FullChatResult => ({
@@ -144,9 +164,17 @@ export async function runFullChat(args: FullChatRunArgs): Promise<FullChatRunRes
     return { ok: true, value: failed(modelInfo, failure) };
   }
 
+  // system メッセージには fillManuscript を適用しない。差し込みは user メッセージ（原稿の
+  // 貼り付け先）だけに行う（決定 19）。
   const request: ChatRequest = {
     model: args.generation.model,
-    messages: [{ role: "user", content: filled.value }],
+    messages:
+      args.systemPrompt !== null
+        ? [
+            { role: "system", content: args.systemPrompt },
+            { role: "user", content: filled.value },
+          ]
+        : [{ role: "user", content: filled.value }],
     maxTokens: args.generation.maxTokens,
     temperature: args.generation.temperature,
     ...(args.generation.seed !== undefined ? { seed: args.generation.seed } : {}),

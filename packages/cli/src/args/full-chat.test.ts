@@ -26,6 +26,23 @@ describe("parseFullChatArgs: 既定値", () => {
     expect(result.value.seed).toBeUndefined();
     expect(result.value.reasoningEffort).toBe(RUN_SETTINGS_DEFAULTS.generation.reasoningEffort);
     expect(result.value.checkTimeoutMs).toBe(RUN_SETTINGS_DEFAULTS.timeouts.checkMs);
+    expect(result.value.systemPromptPath).toBeNull();
+  });
+});
+
+describe("parseFullChatArgs: --system-prompt-file（決定 19）", () => {
+  it("--system-prompt-file を渡すと systemPromptPath に入る", () => {
+    const result = parseFullChatArgs([...REQUIRED, "--system-prompt-file", "system.txt"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.systemPromptPath).toBe("system.txt");
+  });
+
+  it("--system-prompt-file を渡さないと systemPromptPath は null", () => {
+    const result = parseFullChatArgs(REQUIRED);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.systemPromptPath).toBeNull();
   });
 });
 

@@ -104,6 +104,7 @@ function buildIO(overrides: Partial<MainIO> = {}): CapturedIO {
     readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode("dummy")),
     readAllowedWordsBytes: () => Promise.resolve(new TextEncoder().encode("")),
     readPromptBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
+    readSystemPromptBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readTruthBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readResultBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readExportBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
@@ -2245,6 +2246,8 @@ const FULL_CHAT_ARGS = [
 
 const FULL_CHAT_PROMPT = "指示。\n{{manuscript}}\n以上。";
 const FULL_CHAT_TEXT = "これは合成の原稿です。";
+// system プロンプトには {{manuscript}} を含めても差し込まれないことを確かめられるようにしておく（決定 19）。
+const FULL_CHAT_SYSTEM_PROMPT = "システム指示。{{manuscript}} はここでは差し込まれない。";
 
 function fullChatModelInfo(): ModelInfo {
   return {
@@ -2310,6 +2313,7 @@ function buildFullChatIO(
   const captured = buildIO({
     readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode(FULL_CHAT_TEXT)),
     readPromptBytes: () => Promise.resolve(new TextEncoder().encode(FULL_CHAT_PROMPT)),
+    readSystemPromptBytes: () => Promise.resolve(new TextEncoder().encode(FULL_CHAT_SYSTEM_PROMPT)),
     createClient: (options) => {
       receivedClientOptions.push(options);
       return fullChatClient.client;
@@ -2349,6 +2353,27 @@ describe("main full-chat T32: 出力先の衝突（決定38）", () => {
     expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
     expect(captured.writtenFiles).toHaveLength(0);
   });
+
+  it("--out と --system-prompt-file が同じ実体のとき、終了コード1で拒否され client を作らない（決定19）", async () => {
+    const captured = buildFullChatIO({
+      statFile: (path) =>
+        Promise.resolve(path === "out.json" || path === "system.txt" ? { dev: 3, ino: 3 } : null),
+    });
+    const code = await main(
+      [...FULL_CHAT_ARGS, "--out", "out.json", "--system-prompt-file", "system.txt"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain(
+      "引数エラー: --out が --system-prompt-file と同じファイルを指しています",
+    );
+    expect(captured.receivedClientOptions).toHaveLength(0);
+    expect(captured.fullChatClient.ensureLoaded).not.toHaveBeenCalled();
+    expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
+    expect(captured.writtenFiles).toHaveLength(0);
+  });
 });
 
 describe("main full-chat T33: パスの漏えいを防ぐ（決定9・38）", () => {
@@ -2361,8 +2386,10 @@ describe("main full-chat T33: パスの漏えいを防ぐ（決定9・38）", ()
     expect(all).not.toContain(SENTINEL_PATH);
     expect(all).not.toContain("manuscript.txt");
     expect(all).not.toContain("prompt.txt");
+    expect(all).not.toContain("system.txt");
     expect(all).not.toContain(FULL_CHAT_PROMPT);
     expect(all).not.toContain(FULL_CHAT_TEXT);
+    expect(all).not.toContain(FULL_CHAT_SYSTEM_PROMPT);
   }
 
   it("プロンプトファイルが読めないとき、標準エラーにパス・原稿・プロンプトを含めない", async () => {
@@ -2381,6 +2408,37 @@ describe("main full-chat T33: パスの漏えいを防ぐ（決定9・38）", ()
     const code = await main(FULL_CHAT_ARGS, {}, captured.io);
     expect(code).toBe(1);
     expectNoLeak(captured.stderr);
+  });
+
+  it("system プロンプトファイルが読めないとき、終了コード1で標準エラーにパスを含めない（決定19）", async () => {
+    const captured = buildFullChatIO({
+      readSystemPromptBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(
+      [...FULL_CHAT_ARGS, "--system-prompt-file", "system.txt"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expectNoLeak(captured.stderr);
+    expect(captured.fullChatClient.ensureLoaded).not.toHaveBeenCalled();
+    expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
+  });
+
+  it("system プロンプトファイルが空白だけのとき、終了コード1で生成要求を送らず結果 JSON も書かない（レビュー指摘）", async () => {
+    const captured = buildFullChatIO({
+      readSystemPromptBytes: () => Promise.resolve(new TextEncoder().encode(" \n\n")),
+    });
+    const code = await main(
+      [...FULL_CHAT_ARGS, "--system-prompt-file", "system.txt"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expectNoLeak(captured.stderr);
+    expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
   });
 
   it("SHUTEN_LM_STUDIO_URL が不正なとき、標準エラーにその値を含めない", async () => {
@@ -2437,7 +2495,7 @@ describe("main evaluate T34: full-chat 方式の結果は evaluate に渡せな�
 });
 
 describe("main full-chat: 通し", () => {
-  it("成功時、終了コード0で書かれたJSONのformatVersionがfull-chat/1になる", async () => {
+  it("成功時、終了コード0で書かれたJSONのformatVersionがFULL_CHAT_FORMAT_VERSIONになる", async () => {
     const captured = buildFullChatIO();
     const code = await main(FULL_CHAT_ARGS, {}, captured.io);
 
@@ -2449,6 +2507,38 @@ describe("main full-chat: 通し", () => {
     };
     expect(parsed.formatVersion).toBe(FULL_CHAT_FORMAT_VERSION);
     expect(parsed.status).toBe("completed");
+  });
+
+  it("--system-prompt-file 指定時、messages が [system, user] になり結果 JSON の systemPromptHash が一致する（決定19）", async () => {
+    const captured = buildFullChatIO();
+    const code = await main(
+      [...FULL_CHAT_ARGS, "--system-prompt-file", "system.txt"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+    const [request] = captured.fullChatClient.chat.mock.calls[0] as [ChatRequest];
+    expect(request.messages).toEqual([
+      { role: "system", content: FULL_CHAT_SYSTEM_PROMPT },
+      { role: "user", content: "指示。\nこれは合成の原稿です。\n以上。" },
+    ]);
+
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      conditions: { systemPromptHash: string | null };
+    };
+    expect(parsed.conditions.systemPromptHash).toBe(hashBody(FULL_CHAT_SYSTEM_PROMPT));
+  });
+
+  it("--system-prompt-file 未指定時、結果 JSON の systemPromptHash が null になる（決定19）", async () => {
+    const captured = buildFullChatIO();
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      conditions: { systemPromptHash: string | null };
+    };
+    expect(parsed.conditions.systemPromptHash).toBeNull();
   });
 
   it("引数の生成設定とタイムアウトが、要求にも結果の実行条件にも写る", async () => {

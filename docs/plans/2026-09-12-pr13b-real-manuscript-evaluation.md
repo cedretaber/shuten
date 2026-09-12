@@ -521,6 +521,29 @@ pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失
 作れてしまう。誤検出率の分子は従来どおり（判定を問わず）とし、内訳として並べる。確認事項の多さの
 重さは、人間の確認負担（1 万字の確認時間）と一緒に読む。仕様書 10 節の指標の定義は変えない。
 
+### 決定 19：`full-chat` に system プロンプトの口を足し、普段の使い方をそのまま再現する
+
+ユーザーの「現在の全文チャット方式」は、**指示文を LM Studio の system プロンプトに置き、原稿を
+user メッセージとして貼る**形である（2026-09-13 確認）。PR13a-3 の `full-chat` は user メッセージ 1 通しか
+送らず system 役を持たないため、このままでは段階 C の比較相手が「現在の方式」にならない。
+指示と原稿を 1 通の user にまとめる案（方式を変える）は採らず、**CLI 側に口を足す**（ユーザー決定）。
+
+- `pnpm eval full-chat` に任意の `--system-prompt-file <path>` を足す。指定時はファイルの内容を
+  **そのまま**（差し込み無しで）system メッセージとして user メッセージの前に送る
+- `--prompt-file` は必須のまま。普段の使い方を再現するときは、`{{manuscript}}` だけを書いたファイルを渡す
+  （user の中身は原稿そのもの）。これは指示ではないので決定 15（プロンプトをこちらで書かない）に反しない
+- 実行条件（決定 40）に `systemPromptHash: string | null` を足す（system の生の内容の `hashBody`。未指定なら
+  `null`）。`formatVersion` は `"full-chat/2"` に上げる（必須項目の追加は形式の変更。レビュー指摘）。
+  空（空白だけ）の system プロンプトファイルは引数エラーとして拒否する（レビュー指摘）
+- `--out` の衝突検査（決定 38）の対象に `--system-prompt-file` を加える。標準出力・標準エラーにパスを出さない
+- `packages/server` の LM Studio クライアントは既に system 役を送れる（アプリの分割検査が使っている）ので、
+  server には触れない
+- 決定 6 のやり直し規則：system プロンプトファイルが変わったら（`systemPromptHash` が変わる）、
+  プロンプトファイルが変わったときと同じく段階 C の `full-chat` だけを取り直す
+
+システムプロンプト自体は**現行のまま使う**（ユーザー決定、2026-09-13）。改訂版を第 2 の `full-chat`
+条件として測る案は出したが、採らない。
+
 ---
 
 ## ユーザーの準備物
@@ -532,7 +555,7 @@ pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失
 | 3 | 命令文を含む原稿（決定 12） | 既存実験と同じ性質のもの |
 | 4 | LM Studio の版・ランタイムの版（モデルは Q3 で確定） | 手で控える。結果 JSON に入らない |
 | 5 | **2 本目の評価原稿と、その正解ファイル** | 段階 F で使う（Q1） |
-| 6 | **全文チャット方式のプロンプトファイル** | ユーザーが普段 LM Studio のチャットで使っている指示そのもの。`{{manuscript}}` を含める（PR13a 決定 15） |
+| 6 | **全文チャット方式のプロンプトファイル** | ユーザーが普段 LM Studio のチャットで使っている指示そのもの。system に置いている場合は `--system-prompt-file` で渡し、`--prompt-file` には `{{manuscript}}` だけを書く（決定 19） |
 
 6 は**こちらで書いてはならない**。書いた時点で「現在の全文チャット方式」ではなく別のアプリの
 プロンプトになり、比較が成立しない（PR13a 決定 15）。
@@ -541,7 +564,7 @@ pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失
 
 ## タスク分解
 
-コードの変更は Task 0・Task 0b・Task 6 だけである。他は測定と記録で、実施の主体はユーザーと Claude の共同になる。
+コードの変更は Task 0・Task 0b・Task 0c・Task 6 だけである。他は測定と記録で、実施の主体はユーザーと Claude の共同になる。
 
 ### Task 0：`check-truth` サブコマンドを作る（Claude、測定の前）
 
@@ -579,6 +602,21 @@ pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失
   分子から**外れない**こと（変異：確認事項を分子から除く → 落ちる）。観点別の内訳が観点で絞られていること。
   レポートに 2 列が出ること。`aggregate` が 3 本の最小・中央値・最大を出すこと
 - `docs/reference/` に評価レポートの形式を書いた文書があれば追随する
+
+### Task 0c：`full-chat` の `--system-prompt-file`（Claude、段階 C の前）
+
+決定 19。独立した小さい PR にする。
+
+- `packages/cli/src/args/full-chat.ts`：`KNOWN_OPTIONS` に `--system-prompt-file` を足し、
+  `FullChatArgs.systemPromptPath: string | null` を返す
+- `packages/cli/src/full-chat.ts`：`FullChatRunArgs.systemPrompt: string | null` を受け、非 null なら
+  `messages` の先頭に `{ role: "system", content }` を置く。`FullChatConditions.systemPromptHash` を足す
+- `packages/cli/src/main.ts`：読み込み（`readPromptText` と同じ扱い。BOM 除外・空なら拒否）、
+  `findFullChatOutPathConflict` の対象に追加、`runFullChat` へ渡す
+- テスト：指定時に system → user の順で 2 通送られ、system の内容が無変換であること。未指定時は従来どおり
+  user 1 通で `systemPromptHash: null`。`--out` が `--system-prompt-file` と同じ実体なら読み込む前に 1。
+  読めないファイルなら 1 で、パスを出さない。`systemPromptHash` が `hashBody(内容)` に等しいこと
+- README の `full-chat` 節に 1 段落足す
 
 ### Task 1：準備物の受け取りと検証（Claude）
 
