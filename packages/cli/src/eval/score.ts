@@ -1,4 +1,4 @@
-import type { DiagnosticTransform, Perspective, Range } from "@shuten/shared";
+import type { DiagnosticTransform, InitialVerdict, Perspective, Range } from "@shuten/shared";
 
 import type { MatchEdge } from "./matching.ts";
 import { maximumMatching } from "./matching.ts";
@@ -43,11 +43,22 @@ export interface FalsePositiveMetrics {
   readonly falsePositives: Rate;
   readonly onNormal: number;
   readonly other: number;
+  /**
+   * 誤検出の初回判定別の内訳（決定 18(b)）。`likelyError + confirmWithAuthor === falsePositives.numerator`
+   * が全体・観点別のどちらでも成り立つ。**`confirm-with-author`（確認事項）は誤検出の分子から
+   * 除外しない**——再確認前の初回判定にすぎず、誤検出の定義（決定 5：どの error 項目とも重ならない
+   * 指摘）を初回判定で変えないため。この内訳は「確認事項が誤検出のうちどれだけを占めるか」を
+   * 読み手に見せるための参考情報であり、分子・分母の定義を変えるものではない。
+   */
+  readonly likelyError: number;
+  readonly confirmWithAuthor: number;
 }
 
 export interface FalsePositiveFinding {
   readonly findingId: string;
   readonly kind: "on-normal" | "other";
+  /** 指摘の初回判定（決定 18(b)）。`toScoredFinding` が `input.finding.verdict` から運ぶ。 */
+  readonly verdict: InitialVerdict;
 }
 
 /** 1 つの指摘集合（再確認前／再確認後）についての指標。 */
@@ -175,6 +186,8 @@ interface ScoredFinding {
   readonly id: string;
   readonly range: Range;
   readonly perspectives: readonly Perspective[];
+  /** 初回判定（決定 18(b)）。誤検出の内訳（`FalsePositiveFinding.verdict`）に使う。 */
+  readonly verdict: InitialVerdict;
 }
 
 /**
@@ -389,7 +402,10 @@ function scoreFindingSet(
   // 誤検出＝どの error 項目とも重ならない指摘（決定 5）。error と normal の両方に重なる指摘は
   // 検出として数え、誤検出には数えない（誤りの隣に意図した口語があるだけで誤検出が増えないように）。
   const falsePositiveFindings: FalsePositiveFinding[] = [];
-  const falsePositiveKindByIndex = new Map<number, "on-normal" | "other">();
+  const falsePositiveInfoByIndex = new Map<
+    number,
+    { readonly kind: "on-normal" | "other"; readonly verdict: InitialVerdict }
+  >();
   findings.forEach((finding, index) => {
     // 判定は `overlapsAnyErrorEntry` だけを通す（`errorOverlapCount` を使っても同じ結果になるが、
     // 「正しい指摘か」の定義をこのファイルで 1 か所に保つため。決定 5・7 で共通の定義）。
@@ -399,14 +415,18 @@ function scoreFindingSet(
     const kind = normalEntries.some((entry) => overlaps(finding.range, entry.range))
       ? "on-normal"
       : "other";
-    falsePositiveFindings.push({ findingId: finding.id, kind });
-    falsePositiveKindByIndex.set(index, kind);
+    falsePositiveFindings.push({ findingId: finding.id, kind, verdict: finding.verdict });
+    falsePositiveInfoByIndex.set(index, { kind, verdict: finding.verdict });
   });
 
   const falsePositive: FalsePositiveMetrics = {
     falsePositives: makeRate(falsePositiveFindings.length, findings.length),
     onNormal: falsePositiveFindings.filter((item) => item.kind === "on-normal").length,
     other: falsePositiveFindings.filter((item) => item.kind === "other").length,
+    likelyError: falsePositiveFindings.filter((item) => item.verdict === "likely-error").length,
+    confirmWithAuthor: falsePositiveFindings.filter(
+      (item) => item.verdict === "confirm-with-author",
+    ).length,
   };
 
   return {
@@ -428,14 +448,17 @@ function scoreFindingSet(
       const indexes = findings.flatMap((finding, index) =>
         finding.perspectives.includes(perspective) ? [index] : [],
       );
-      const kinds = indexes.flatMap((index) => {
-        const kind = falsePositiveKindByIndex.get(index);
-        return kind === undefined ? [] : [kind];
+      // その観点を持つ指摘だけに絞ってから内訳を数える（決定 6 と同じ考え方）。
+      const infos = indexes.flatMap((index) => {
+        const info = falsePositiveInfoByIndex.get(index);
+        return info === undefined ? [] : [info];
       });
       return {
-        falsePositives: makeRate(kinds.length, indexes.length),
-        onNormal: kinds.filter((kind) => kind === "on-normal").length,
-        other: kinds.filter((kind) => kind === "other").length,
+        falsePositives: makeRate(infos.length, indexes.length),
+        onNormal: infos.filter((info) => info.kind === "on-normal").length,
+        other: infos.filter((info) => info.kind === "other").length,
+        likelyError: infos.filter((info) => info.verdict === "likely-error").length,
+        confirmWithAuthor: infos.filter((info) => info.verdict === "confirm-with-author").length,
       };
     }),
     overlapKinds,
@@ -460,7 +483,12 @@ function toScoredFinding(input: EvaluationResultInput["findings"][number]): Scor
       perspectives.push(source.perspective);
     }
   }
-  return { id: input.finding.id, range: input.finding.range, perspectives };
+  return {
+    id: input.finding.id,
+    range: input.finding.range,
+    perspectives,
+    verdict: input.finding.verdict,
+  };
 }
 
 /** 再確認が撤回したか（決定 7）。`confirm-with-author` は撤回ではない。 */

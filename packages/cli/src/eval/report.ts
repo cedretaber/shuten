@@ -117,12 +117,15 @@ function formatHumanJudgedTable(): string[] {
     "| 指標（仕様 10 節） | 誰が | 出し方 |",
     "| --- | --- | --- |",
     "| 誤りの検出率 | 自動 | 決定 5・6 |",
-    "| 誤検出 | 自動 | 決定 5（`on-normal` と `other` に分ける） |",
+    "| 誤検出 | 自動 | 決定 5（`on-normal` と `other` に分ける）。決定 18(b)：初回判定" +
+      "（`likely-error` / `confirm-with-author`）別の内訳も出す（`confirm-with-author` は分子から除外しない） |",
     "| 位置特定失敗 | 自動（内訳まで） | 決定 8 |",
     "| 許容語の抑制 | 自動 | 決定 8 |",
     "| 実行性能 | 自動（転記） | 決定 8 |",
     "| 位置の正確さ | 自動（重なりの関係のみ） | 決定 5 の `exact` / `partial` などの内訳。最終判断は人 |",
     "| **修正案の妥当性** | **人** | レポートの誤検出・検出一覧に空欄の列を置く |",
+    "| **理由の参考価値** | **人** | 誤検出一覧の初回判定列（決定 18(b)）を手がかりに、" +
+      "指摘の理由が確認の役に立つかをレポートの空欄の列に判定する |",
     "| **人間の確認負担** | **人** | ツールは測らない（`docs/experiments/` に記録する） |",
     "| **診断候補の正誤** | **人** | 参考値のみ自動（決定 8）。正誤は `docs/experiments/` に記録する |",
     "",
@@ -169,7 +172,7 @@ function formatFindingSetSection(title: string, set: FindingSetMetrics): string[
   );
   lines.push("");
   lines.push(
-    `- 誤検出率: ${formatRate(set.falsePositive.falsePositives)}（on-normal: ${String(set.falsePositive.onNormal)}、other: ${String(set.falsePositive.other)}）`,
+    `- 誤検出率: ${formatRate(set.falsePositive.falsePositives)}（on-normal: ${String(set.falsePositive.onNormal)}、other: ${String(set.falsePositive.other)}；初回判定 likely-error: ${String(set.falsePositive.likelyError)}、confirm-with-author: ${String(set.falsePositive.confirmWithAuthor)}）`,
   );
   lines.push("");
   lines.push(
@@ -178,12 +181,14 @@ function formatFindingSetSection(title: string, set: FindingSetMetrics): string[
   lines.push("");
   lines.push(
     ...mdTable(
-      ["観点", "誤検出率", "on-normal", "other"],
+      ["観点", "誤検出率", "on-normal", "other", "likely-error", "confirm-with-author"],
       PERSPECTIVE_LABELS.map((p) => [
         p,
         formatRate(set.falsePositiveByPerspective[p].falsePositives),
         String(set.falsePositiveByPerspective[p].onNormal),
         String(set.falsePositiveByPerspective[p].other),
+        String(set.falsePositiveByPerspective[p].likelyError),
+        String(set.falsePositiveByPerspective[p].confirmWithAuthor),
       ]),
     ),
   );
@@ -364,8 +369,9 @@ function formatFalsePositiveRow(
     finding === undefined
       ? ""
       : finding.finding.sources.map((s) => `[${s.perspective}] ${s.llm.reason}`).join("; ");
-  // 最後の空欄は「修正案の妥当性」（決定 11。人が埋める列）。
-  return [fp.findingId, quote, suggestion, reasons, ""];
+  // 最後の 2 列は「初回判定」（そのまま）と「理由の参考価値」（決定 18(b)。人が埋める空欄）。
+  // その手前は「修正案の妥当性」（決定 11。人が埋める空欄）。
+  return [fp.findingId, quote, suggestion, reasons, fp.verdict, "", ""];
 }
 
 function formatFalsePositivesSection(
@@ -374,7 +380,15 @@ function formatFalsePositivesSection(
 ): string[] {
   const onNormal = findings.filter((f) => f.kind === "on-normal");
   const other = findings.filter((f) => f.kind === "other");
-  const headers = ["id", "引用", "修正案", "理由", "修正案の妥当性（人）"];
+  const headers = [
+    "id",
+    "引用",
+    "修正案",
+    "理由",
+    "初回判定",
+    "修正案の妥当性（人）",
+    "理由の参考価値（人）",
+  ];
   return [
     "## 誤検出の指摘（再確認後）",
     "",

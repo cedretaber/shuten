@@ -53,6 +53,9 @@ export interface FindingSetAggregate {
   readonly findingCount: NumberAggregate;
   readonly duplicateFindings: NumberAggregate;
   readonly detectionByPerspective: Readonly<Record<Perspective, DetectionByPerspectiveAggregate>>;
+  /** 誤検出の初回判定別の内訳（決定 18(b)）の実行間ぶれ。 */
+  readonly falsePositiveLikelyError: NumberAggregate;
+  readonly falsePositiveConfirmWithAuthor: NumberAggregate;
 }
 
 export interface RecheckEffectAggregate {
@@ -421,6 +424,10 @@ function aggregateFindingSet(sets: readonly FindingSetMetrics[]): FindingSetAggr
         detected: aggregateRate(sets.map((s) => s.detectionByPerspective.naturalness.detected)),
       },
     },
+    falsePositiveLikelyError: aggregateNumber(sets.map((s) => s.falsePositive.likelyError)),
+    falsePositiveConfirmWithAuthor: aggregateNumber(
+      sets.map((s) => s.falsePositive.confirmWithAuthor),
+    ),
   };
 }
 
