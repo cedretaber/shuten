@@ -429,6 +429,28 @@ describe("parseResultJson", () => {
       const result = parseResultJson(JSON.parse(JSON.stringify(validPipelineResult())));
       expect(result.ok).toBe(true);
     });
+
+    it("full-chat/2 のように版が上がっても拒否する", () => {
+      // 接頭辞で見る理由。=== "full-chat/1" にすると、版を上げた結果 JSON が
+      // 黙って zod の必須項目欠落として落ち、「形式が違う」ことが読めなくなる（レビュー指摘）。
+      const result = parseResultJson({ formatVersion: "full-chat/2", status: "completed" });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.join(";")).toContain("全文チャット方式");
+    });
+
+    it("zod として正しくても formatVersion が full-chat/ なら拒否する（前置き検査が先に効く）", () => {
+      // 結果スキーマは未知のキーを許すので、正しい結果 JSON に formatVersion を足したものは
+      // zod を通ってしまう。前置き検査を zod の後ろに移す変異を捕まえるための一件（レビュー指摘）。
+      const disguised = {
+        ...JSON.parse(JSON.stringify(validPipelineResult())),
+        formatVersion: "full-chat/1",
+      };
+      const result = parseResultJson(disguised);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.errors.join(";")).toContain("全文チャット方式");
+    });
   });
 });
 
