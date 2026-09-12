@@ -557,7 +557,7 @@ describe("main T2: サブコマンドの振り分け（決定9）", () => {
     // パスがそのまま入りうる（決定9）。固定文言だけを出し、受け取った文字列は出さない。
     expect(captured.stderr.join("\n")).not.toContain("frobnicate");
     expect(captured.stderr.join("\n")).toContain(
-      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate）",
+      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat）",
     );
   });
 

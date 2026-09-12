@@ -1003,7 +1003,7 @@ export async function main(
       // 先頭トークンが `--` で始まらなければ何でもサブコマンド名扱いなので、打ち間違えた
       // パス（例：原稿ファイルのパス）がそのまま入りうる。固定文言のみを返す（決定 9。M-1 修正）。
       io.writeErrorLine(
-        "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate）",
+        "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat）",
       );
       return 1;
   }
