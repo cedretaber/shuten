@@ -2608,7 +2608,8 @@ const CT_ARGS = ["check-truth", "--manuscript", "manuscript.txt", "--truth", "tr
 function checkTruthJson(overrides: { bodyHash?: string; entries?: unknown[] } = {}): unknown {
   return {
     formatVersion: "1",
-    manuscript: { name: "テスト原稿", bodyHash: overrides.bodyHash ?? CT_HASH },
+    // 原稿名も漏えい検査の対象にするため、他と混ざらない目印にする（レビュー指摘）。
+    manuscript: { name: "ゲンコウメイZZ", bodyHash: overrides.bodyHash ?? CT_HASH },
     entries: overrides.entries ?? [
       {
         id: "e1",
@@ -2883,6 +2884,9 @@ describe("main check-truth T16: 原稿本文・quote・パス文字列を漏ら�
     expect(output).not.toContain(CT_TEXT);
     expect(output).not.toContain("ヒミツ");
     expect(output).not.toContain("ナイヨウ");
+    // 正解ファイルの manuscript.name。利用者が自由に付ける名前なので、原稿の題名がそのまま
+    // 入りうる（レビュー指摘）。
+    expect(output).not.toContain("ゲンコウメイZZ");
     expect(output).not.toContain("manuscript.txt");
     expect(output).not.toContain("truth.json");
     expect(output).not.toContain("report.md");
@@ -2894,6 +2898,21 @@ describe("main check-truth T16: 原稿本文・quote・パス文字列を漏ら�
     expect(code).toBe(0);
 
     assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+  });
+
+  it("要約の書き出しに失敗したら 1 を返し、例外のパスを標準エラーに出さない", async () => {
+    // レビュー指摘：成功経路の writeResultOrFixedError の失敗を誰も見ておらず、
+    // 「書けなくても 0 を返す」変異が 141 件のテストを通り抜けていた。
+    // run / hash には同じ対のテストがある（main.test.ts の T9 群）。
+    const leakPath = "/private/leak-should-not-appear/summary.txt";
+    const captured = buildCheckTruthIO({
+      writeResult: () => Promise.reject(new Error(`EACCES: permission denied, open '${leakPath}'`)),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(leakPath);
+    expect(captured.stdout).toHaveLength(0);
   });
 
   it("解決の失敗（--report 無し）でも、標準エラーに quote・原稿本文・パス文字列が含まれない", async () => {
