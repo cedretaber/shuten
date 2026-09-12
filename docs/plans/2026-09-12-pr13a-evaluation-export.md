@@ -506,6 +506,7 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
 - **出力打ち切りは失敗として残す。** `ChatResult` は `finish_reason: "length"` を例外
   （`truncated`）にする（PR5 決定 6）ので、その例外を捕まえて `status: "failed"` と
   `UnitFailure` を結果 JSON に書く。打ち切られた本文を成功として保存しない。
+  **`length` 以外の `stop` でない終了理由も同じ扱いにする**（決定 37）。
 - **自動採点しない。** 自由形式の応答から指摘を機械的に取り出すことはできない。
   結果 JSON は人が読んで正解と突き合わせるためのもので、`evaluate` の入力にはしない。
   その旨を結果 JSON のコメント欄ではなくレポート（決定 11 の表）と本書に書く。
@@ -1123,7 +1124,8 @@ const filled = prompt.replaceAll("{{manuscript}}", () => text);
 | 事象 | `status` | `failure.origin` | 終了コード |
 | --- | --- | --- | --- |
 | 生成が成功した | `completed` | — | 0 |
-| 打ち切り（`truncated`） | `failed` | `chat` | 2 |
+| 打ち切り（`truncated` の例外） | `failed` | `chat` | 2 |
+| **`stop` 以外の終了理由で正常に返った**（`tool_calls`・`content_filter` など） | `failed` | `chat` | 2 |
 | 生成要求の失敗（`timeout` / `connection` / `malformed` など） | `failed` | `chat` | 2 |
 | `ensureLoaded` の失敗（`model-not-loaded`） | `failed` | `ensure-loaded` | 2 |
 | 生成できない種別のモデル（決定 15） | `failed` | `ensure-loaded` | 2 |
@@ -1137,6 +1139,16 @@ const filled = prompt.replaceAll("{{manuscript}}", () => text);
   `failure.finishReason` に `"length"` が入る
 - 終了コードは `run` の規則（0 完了 / 2 部分失敗 / 3 停止）と衝突しない値にする。
   失敗は 2 を使う（3 は「停止」で、全文チャットには停止の概念が無い）
+- **`finishReason !== "stop"` の検査を `full-chat` にも置く。** `client.chat` が例外にするのは
+  `finish_reason: "length"` **だけ**で（`lmstudio/client.ts:285`）、`tool_calls` や
+  `content_filter` はそのまま `ChatResult` として返る。通常の実行経路はこれを
+  `run/executor.ts:359` で `truncated` に変換しているが、`full-chat` は executor を通らない
+  （決定 15）ので、**同じ検査を書かないと `tool_calls` の応答を `completed` として記録する**。
+  `LmStudioError("truncated", …)` を組み立てるところまで executor と同じにし、
+  `failure.finishReason` に実際の値（`"tool_calls"` など）を残す
+- **再試行はしない。** executor は `truncated` を 1 回だけ再試行するが、`full-chat` は
+  「ユーザーのプロンプトで 1 回生成する」ものである（決定 15）。2 回送ると、
+  仕様書 10 節の比較対象である「現在の全文チャット方式」の 1 回の運用と違うものになる
 
 ### 決定 38：入出力の扱いは `run` にそろえる
 
@@ -1354,6 +1366,12 @@ const filled = prompt.replaceAll("{{manuscript}}", () => text);
 - **T31 失敗の記録と終了コード**（決定 37）：`ensureLoaded` の失敗・`chat` の失敗・種別違いの
   3 経路それぞれで `status: "failed"`・`failure.origin` が表の値・終了コード 2 になり、
   **結果 JSON が書かれる**（変異：失敗時に結果を書かない → 落ちる）。
+  加えて、**モックの `chat` が例外を投げずに `finishReason: "tool_calls"` の `ChatResult` を
+  返すケース**で `status: "failed"`・`failure.reason: "truncated"`・
+  `failure.finishReason: "tool_calls"` になり、`content` が結果に残らないことを確かめる
+  （変異：`finishReason !== "stop"` の検査を外す → `completed` になって落ちる）。
+  同じケースで `chat` が **1 回しか呼ばれない**ことも見る（変異：executor をまねて
+  再試行を入れる → 落ちる）。
 - **T32 出力先の衝突**（決定 38）：`--out` が `--manuscript` と、`--out` が `--prompt-file` と
   同じ実体を指すとき、**`chat` を呼ぶ前に**拒否する（変異：検査を `chat` の後に移す → 落ちる）。
 - **T33 露出しない**（決定 38）：プロンプトファイルを読めないとき・UTF-8 でないとき・
