@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
+import type { RunExportDto } from "@shuten/shared";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
+import { parseExportJson } from "./eval/export-adapter.ts";
 import { formatTruthResolveFailureReport } from "./eval/report.ts";
 import type { TruthFile, TruthResolveFailure } from "./eval/truth.ts";
 import { parseTruthFile } from "./eval/truth.ts";
@@ -8,10 +10,10 @@ import { parseTruthFile } from "./eval/truth.ts";
 /**
  * `main.ts` のサブコマンド間で共通の入出力ヘルパー（決定 9）。`run` と `hash` の両方が使う
  * 「原稿読み込み＋UTF-8 取り込み」と「結果書き出し」に加え、`evaluate` / `aggregate` が使う
- * 「正解・結果ファイルの読み込み」「出力先の衝突検査（決定 21）」「正解の解決に失敗したときの
- * 報告（決定 4）」をここに 1 か所へまとめる。パス漏えい対策（固定文言のみを返す）を
- * 複数箇所で同期させ忘れる事故を避けるためと、`evaluate`/`aggregate` の間でこれらの手順が
- * 一字一句同じになることをコードでも保証するため（レビュー指摘。Task 7）。
+ * 「正解・結果・エクスポートファイルの読み込み」「出力先の衝突検査（決定 21）」「正解の解決に
+ * 失敗したときの報告（決定 4）」をここに 1 か所へまとめる。パス漏えい対策（固定文言のみを
+ * 返す）を複数箇所で同期させ忘れる事故を避けるためと、`evaluate`/`aggregate` の間でこれらの
+ * 手順が一字一句同じになることをコードでも保証するため（レビュー指摘。Task 7）。
  */
 
 /** 呼び出し側の `writeErrorLine` にそのまま渡せる、固定文言のエラー値。 */
@@ -32,6 +34,11 @@ export interface TruthReader {
 /** `readEvalResultText` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
 export interface EvalResultReader {
   readonly readResultBytes: (path: string) => Promise<Uint8Array>;
+}
+
+/** `readExportText` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
+export interface ExportReader {
+  readonly readExportBytes: (path: string) => Promise<Uint8Array>;
 }
 
 /** `writeResultOrFixedError` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
@@ -96,6 +103,14 @@ export async function readEvalResultText(
 }
 
 /**
+ * エクスポート JSON ファイルを読み込み UTF-8 として取り込む（`evaluate` / `aggregate` の
+ * `--export` が使う。決定 9・29）。
+ */
+export async function readExportText(io: ExportReader, path: string): Promise<IoResult<string>> {
+  return readTextOrFixedError((p) => io.readExportBytes(p), path, "エクスポートファイル");
+}
+
+/**
  * 結果を書き出す（`run` の結果 JSON、`hash` の 1 行、`evaluate` の指標 JSON・レポートの
  * すべてで共通）。`label` は失敗文言に埋め込む対象の呼び名で、省略時は従来どおり「結果」。
  *
@@ -143,6 +158,37 @@ export async function readTruthFile(io: TruthReader, path: string): Promise<IoRe
     };
   }
   return { ok: true, value: parsedTruth.value };
+}
+
+// --- エクスポート JSON の読み込み（`evaluate` / `aggregate` の `--export` 共通。決定 29） --------
+
+/**
+ * エクスポート JSON ファイルを読み込み → `JSON.parse` → `parseExportJson` までを行う（決定 9・29）。
+ * `readTruthFile` と同じ形（読めない・JSON として壊れている・スキーマ検証に失敗した、を
+ * それぞれ固定文言で返す。パスは含めない）。
+ */
+export async function readExportFile(
+  io: ExportReader,
+  path: string,
+): Promise<IoResult<RunExportDto>> {
+  const exportText = await readExportText(io, path);
+  if (!exportText.ok) {
+    return { ok: false, error: exportText.error };
+  }
+  let exportJson: unknown;
+  try {
+    exportJson = JSON.parse(exportText.value);
+  } catch {
+    return { ok: false, error: "エクスポートファイルの JSON 構文が不正です" };
+  }
+  const parsedExport = parseExportJson(exportJson);
+  if (!parsedExport.ok) {
+    return {
+      ok: false,
+      error: `エクスポートファイルの検証に失敗しました: ${parsedExport.errors.join("; ")}`,
+    };
+  }
+  return { ok: true, value: parsedExport.value };
 }
 
 /**
