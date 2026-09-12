@@ -10,15 +10,21 @@ import {
 } from "./common.ts";
 
 /**
- * `full-chat` サブコマンドが受け付ける引数（決定 15）。分割・観点・許容語・再確認は
+ * `full-chat` サブコマンドが受け付ける引数（決定 15・19）。分割・観点・許容語・再確認は
  * この方式には無いので、`args.ts`（`parseArgs`）の `CliArgs` と違い持たない
  * （`--perspectives` / `--mode` / `--allowed-words` / 分割設定 / `--recheck-timeout-ms` は
  * 未知のオプションとして拒否する）。接続先 URL と API キーを含めない理由は `CliArgs` と同じ。
+ *
+ * `--system-prompt-file` は任意（決定 19）。「現在の全文チャット方式」が指示文を LM Studio の
+ * system プロンプトに置き原稿を user メッセージで貼る運用を再現するためのもので、
+ * 未指定なら従来どおり system を付けず user 1 通だけを送る。
  */
 export interface FullChatArgs {
   readonly manuscriptPath: string;
   readonly model: string;
   readonly promptPath: string;
+  /** system プロンプトファイルのパス。未指定なら null（決定 19）。 */
+  readonly systemPromptPath: string | null;
   readonly outPath: string | null;
   readonly maxTokens: number;
   readonly temperature: number;
@@ -52,6 +58,7 @@ const KNOWN_OPTIONS = [
   "--manuscript",
   "--model",
   "--prompt-file",
+  "--system-prompt-file",
   "--out",
   "--max-tokens",
   "--temperature",
@@ -130,6 +137,7 @@ export function parseFullChatArgs(argv: readonly string[]): Result<FullChatArgs>
     manuscriptPath,
     model,
     promptPath,
+    systemPromptPath: raw.get("--system-prompt-file")?.[0] ?? null,
     outPath: raw.get("--out")?.[0] ?? DEFAULTS.outPath,
     maxTokens: maxTokens.value,
     temperature: temperature.value,

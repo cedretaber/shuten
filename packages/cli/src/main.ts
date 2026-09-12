@@ -36,6 +36,7 @@ import {
   readExportFile,
   readManuscriptText,
   readPromptText,
+  readSystemPromptText,
   readTruthFile,
   readTruthText,
   reportTruthResolveFailure,
@@ -63,6 +64,8 @@ export interface MainIO {
   readonly readAllowedWordsBytes: (path: string) => Promise<Uint8Array>;
   /** `full-chat` のプロンプトファイル読み込み（決定 15・38）。 */
   readonly readPromptBytes: (path: string) => Promise<Uint8Array>;
+  /** `full-chat` の `--system-prompt-file` の読み込み（決定 19）。未指定なら呼ばれない。 */
+  readonly readSystemPromptBytes: (path: string) => Promise<Uint8Array>;
   readonly readTruthBytes: (path: string) => Promise<Uint8Array>;
   readonly readResultBytes: (path: string) => Promise<Uint8Array>;
   readonly readExportBytes: (path: string) => Promise<Uint8Array>;
@@ -80,6 +83,7 @@ function defaultIO(): MainIO {
     readManuscriptBytes: (path) => readFile(path),
     readAllowedWordsBytes: (path) => readFile(path),
     readPromptBytes: (path) => readFile(path),
+    readSystemPromptBytes: (path) => readFile(path),
     readTruthBytes: (path) => readFile(path),
     readResultBytes: (path) => readFile(path),
     readExportBytes: (path) => readFile(path),
@@ -818,19 +822,24 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
 }
 
 /**
- * `--out` が `--manuscript`/`--prompt-file` と同じ実体を指していないか調べる（決定 38。
- * `runRun` の `findOutPathConflict` と同じ形の薄いラッパー）。
+ * `--out` が `--manuscript`/`--prompt-file`/`--system-prompt-file` と同じ実体を指していないか
+ * 調べる（決定 19・38。`runRun` の `findOutPathConflict` と同じ形の薄いラッパー）。
+ * `systemPromptPath` は指定時（`--system-prompt-file` があるとき）だけ検査対象に加える。
  */
 async function findFullChatOutPathConflict(
   io: MainIO,
   outPath: string,
   manuscriptPath: string,
   promptPath: string,
+  systemPromptPath: string | null,
 ): Promise<string | null> {
   const paths: NamedPath[] = [
     { name: "--out", path: outPath },
     { name: "--manuscript", path: manuscriptPath },
     { name: "--prompt-file", path: promptPath },
+    ...(systemPromptPath === null
+      ? []
+      : [{ name: "--system-prompt-file", path: systemPromptPath }]),
   ];
   const conflict = await findPathConflict(io, paths);
   if (conflict === null) {
@@ -842,9 +851,9 @@ async function findFullChatOutPathConflict(
 }
 
 /**
- * `full-chat` サブコマンドの本体（決定 15・34・38）。引数解釈・原稿とプロンプトの読み込み・
- * 全文チャットの実行・結果出力をつなぐだけで、実行そのものは `runFullChat` に委ねる
- * （`runRun` と同じ役割分担）。分割・観点・許容語・再確認・再試行は持たない。
+ * `full-chat` サブコマンドの本体（決定 15・19・34・38）。引数解釈・原稿とプロンプト（任意の
+ * system プロンプトを含む）の読み込み・全文チャットの実行・結果出力をつなぐだけで、実行そのもの
+ * は `runFullChat` に委ねる（`runRun` と同じ役割分担）。分割・観点・許容語・再確認・再試行は持たない。
  *
  * 戻り値は終了コード（決定 37）：0 = completed、2 = failed、1 = 引数・入出力の誤り。
  */
@@ -867,6 +876,7 @@ async function runFullChatCommand(
       args.outPath,
       args.manuscriptPath,
       args.promptPath,
+      args.systemPromptPath,
     );
     if (conflict !== null) {
       io.writeErrorLine(`引数エラー: --out が ${conflict} と同じファイルを指しています`);
@@ -900,6 +910,17 @@ async function runFullChatCommand(
   }
   const prompt = promptText.value;
 
+  // --system-prompt-file 未指定なら systemPrompt は null（従来どおり user 1 通だけを送る。決定 19）。
+  let systemPrompt: string | null = null;
+  if (args.systemPromptPath !== null) {
+    const systemPromptText = await readSystemPromptText(io, args.systemPromptPath);
+    if (!systemPromptText.ok) {
+      io.writeErrorLine(systemPromptText.error);
+      return 1;
+    }
+    systemPrompt = systemPromptText.value;
+  }
+
   const client = io.createClient({ baseUrl: lmStudioUrl, apiKey });
 
   const generation: GenerationSettings = {
@@ -915,6 +936,7 @@ async function runFullChatCommand(
     runResult = await runFullChat({
       text,
       prompt,
+      systemPrompt,
       generation,
       timeoutMs: args.checkTimeoutMs,
       client,

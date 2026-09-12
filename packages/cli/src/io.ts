@@ -31,6 +31,11 @@ export interface PromptReader {
   readonly readPromptBytes: (path: string) => Promise<Uint8Array>;
 }
 
+/** `readSystemPromptText` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
+export interface SystemPromptReader {
+  readonly readSystemPromptBytes: (path: string) => Promise<Uint8Array>;
+}
+
 /** `readTruthText` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
 export interface TruthReader {
   readonly readTruthBytes: (path: string) => Promise<Uint8Array>;
@@ -102,6 +107,23 @@ export async function readTruthText(io: TruthReader, path: string): Promise<IoRe
 /** プロンプトファイルを読み込み UTF-8 として取り込む（`full-chat` が使う。決定 9・38）。 */
 export async function readPromptText(io: PromptReader, path: string): Promise<IoResult<string>> {
   return readTextOrFixedError((p) => io.readPromptBytes(p), path, "プロンプトファイル");
+}
+
+/**
+ * system プロンプトファイルを読み込み UTF-8 として取り込む（`full-chat` の
+ * `--system-prompt-file` が使う。決定 9・19・38）。`readPromptText` と同じ手順（BOM 除外・
+ * 読み込み失敗や UTF-8 デコード失敗は固定文言でエラー）で、文言だけ「system プロンプト
+ * ファイル」と分かるものにする（パスは含めない）。
+ */
+export async function readSystemPromptText(
+  io: SystemPromptReader,
+  path: string,
+): Promise<IoResult<string>> {
+  return readTextOrFixedError(
+    (p) => io.readSystemPromptBytes(p),
+    path,
+    "system プロンプトファイル",
+  );
 }
 
 /** 結果 JSON ファイルを読み込み UTF-8 として取り込む（`evaluate` / `aggregate` が使う。決定 9）。 */

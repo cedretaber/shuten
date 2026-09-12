@@ -78,6 +78,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -104,6 +105,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -124,6 +126,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: "原稿を差し込む目印を含まないプロンプト",
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -147,6 +150,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -172,6 +176,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -194,6 +199,7 @@ describe("runFullChat", () => {
         const result = await runFullChat({
           text: TEXT,
           prompt: PROMPT,
+          systemPrompt: null,
           generation: GENERATION,
           timeoutMs: 1000,
           client,
@@ -222,6 +228,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text,
         prompt,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -240,6 +247,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -259,6 +267,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: MULTI_TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -290,6 +299,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -312,6 +322,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -332,6 +343,7 @@ describe("runFullChat", () => {
       const result = await runFullChat({
         text: TEXT,
         prompt: PROMPT,
+        systemPrompt: null,
         generation: GENERATION,
         timeoutMs: 1000,
         client,
@@ -356,6 +368,7 @@ describe("runFullChat", () => {
         runFullChat({
           text: TEXT,
           prompt: PROMPT,
+          systemPrompt: null,
           generation: GENERATION,
           timeoutMs: 1000,
           client,
@@ -373,12 +386,100 @@ describe("runFullChat", () => {
         runFullChat({
           text: TEXT,
           prompt: PROMPT,
+          systemPrompt: null,
           generation: GENERATION,
           timeoutMs: 1000,
           client,
           now: FIXED_NOW,
         }),
       ).rejects.toThrow("boom-chat");
+    });
+  });
+
+  describe("system プロンプト（決定 19）", () => {
+    const SYSTEM_PROMPT = "指示を system に置く運用。{{manuscript}} はここでは差し込まれない。";
+
+    it("systemPrompt 指定時、messages が [system, user] の順で 2 通になり、system の content は完全一致する", async () => {
+      const chat = vi.fn().mockResolvedValue(makeChatResult());
+      const client = makeClient({ chat });
+
+      const result = await runFullChat({
+        text: TEXT,
+        prompt: PROMPT,
+        systemPrompt: SYSTEM_PROMPT,
+        generation: GENERATION,
+        timeoutMs: 1000,
+        client,
+        now: FIXED_NOW,
+      });
+
+      expect(result.ok).toBe(true);
+      const request = chat.mock.calls[0]?.[0] as ChatRequest;
+      expect(request.messages).toEqual([
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: "指示文。\nこれは合成のテスト原稿です。二文目もある。\n以上。" },
+      ]);
+    });
+
+    it("{{manuscript}} を含む system プロンプトを渡しても置換されない（fillManuscript を適用しない）", async () => {
+      const chat = vi.fn().mockResolvedValue(makeChatResult());
+      const client = makeClient({ chat });
+      const systemPromptWithMarker = "system 側の指示。{{manuscript}}";
+
+      const result = await runFullChat({
+        text: TEXT,
+        prompt: PROMPT,
+        systemPrompt: systemPromptWithMarker,
+        generation: GENERATION,
+        timeoutMs: 1000,
+        client,
+        now: FIXED_NOW,
+      });
+
+      expect(result.ok).toBe(true);
+      const request = chat.mock.calls[0]?.[0] as ChatRequest;
+      // 差し込まれていれば content が変わってしまうため、渡した文字列のまま残ることを見る。
+      expect(request.messages[0]).toEqual({ role: "system", content: systemPromptWithMarker });
+    });
+
+    it("systemPrompt 未指定時は user 1 通だけで、conditions.systemPromptHash が null になる", async () => {
+      const chat = vi.fn().mockResolvedValue(makeChatResult());
+      const client = makeClient({ chat });
+
+      const result = await runFullChat({
+        text: TEXT,
+        prompt: PROMPT,
+        systemPrompt: null,
+        generation: GENERATION,
+        timeoutMs: 1000,
+        client,
+        now: FIXED_NOW,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const request = chat.mock.calls[0]?.[0] as ChatRequest;
+      expect(request.messages).toHaveLength(1);
+      expect(request.messages[0]?.role).toBe("user");
+      expect(result.value.conditions.systemPromptHash).toBeNull();
+    });
+
+    it("systemPrompt 指定時は conditions.systemPromptHash が hashBody(systemPrompt) になる", async () => {
+      const client = makeClient({});
+
+      const result = await runFullChat({
+        text: TEXT,
+        prompt: PROMPT,
+        systemPrompt: SYSTEM_PROMPT,
+        generation: GENERATION,
+        timeoutMs: 1000,
+        client,
+        now: FIXED_NOW,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.conditions.systemPromptHash).toBe(hashBody(SYSTEM_PROMPT));
     });
   });
 });
