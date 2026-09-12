@@ -183,8 +183,8 @@ PR12a web    結果閲覧（完了済み実行の本文・強調・指摘一覧�
 PR12b web    実行制御（開始・進捗・停止・再開・再試行・復旧確認、SSE、再読み込み復元）
 PR12c server 指摘一覧の 3N+1 解消（PR12a の計測で決着した持ち越し）
 PR13a-1 server+cli  評価ツール（正解ファイルの形式、突き合わせと集計、複数回実行の集計、CLI のサブコマンド化）（完了）
-PR13a-2 server+cli  エクスポートの口と形式（`GET /api/runs/:id/export`）、評価入力アダプター
-PR13a-3 server+cli  全文チャット方式（自由形式プロンプト）の CLI モード
+PR13a-2 server+cli  エクスポートの口と形式（`GET /api/runs/:id/export`）、評価入力アダプター（完了）
+PR13a-3 server+cli  全文チャット方式（自由形式プロンプト）の CLI モード（未着手）
 PR13b   all         実原稿での評価の実施と、仕様書 13 節の確定
 ```
 
@@ -725,15 +725,21 @@ PR9b の完了時点（PR10 は計画済み）で残りの工程を見直した�
 - 担当：Claude が評価設計、実装はサブエージェント（Claude）、Claude がレビューと検証
 - 大きさ：中
 
-### PR13a-2 server+cli：エクスポート
+### PR13a-2 server+cli：エクスポート（完了）
 
 - PR8・PR10 からの持ち越し：一括エクスポート形式（実行 1 件 → JSON 1 ファイル、`formatVersion` 付き、接続先 URL を含めない）と
-  `GET /api/runs/:id/export`（PR10 決定 16 で PR10 から移した。**この PR で足す唯一の新しい口**で、
+  `GET /api/runs/:id/export`（PR10 決定 16 で PR10 から移した。**この PR で足した唯一の新しい口**で、
   応答は既存の DTO と同じく `api/dto.ts` の射影を通し、接続先 URL・API キーを含めない。
-  足したら `api/leak.test.ts`（A0）のエンドポイント一覧にも加える）
+  `api/leak.test.ts`（A0）のエンドポイント一覧にも追加した）
 - 仕様：8.1、8.2（エクスポート）
-- 作る：`GET /api/runs/:id/export`（実行スコープの一括取得で組み、問い合わせ本数を指摘の件数に依存させない）、
-  エクスポート JSON を `evaluate` の入力に加えるアダプター
+- 詳細計画：`docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 16〜32、Task 9〜12）
+- 作った：`GET /api/runs/:id/export`（実行スコープの一括取得で組み、問い合わせ本数を指摘の件数に依存させない。
+  `formatVersion: "1"` と `exportedAt` を持ち、`run` / `manuscript` / `targets` / `checkUnits` /
+  `recheckUnits`（全項目。決定 32） / `findings`（元候補・位置診断つき） / `unlocatedCandidates` /
+  `unlocatedDiagnostics` を返す）、エクスポート JSON を `evaluate` / `aggregate` の入力に加える
+  アダプター（`--export`。決定 29）。CLI 経由の実行とサーバー経由の実行は実行条件が異なるため、
+  `--export` 由来の評価入力は `versions.result` を `"export/1"` として区別する（決定 28）
+- 作らなかった：全文チャット方式（PR13a-3。着手前）
 - 前提：PR13a-1 の後（突き合わせ器が無いと接ぎ先がない）。PR13b の前に終える
 - 担当：Claude が API 設計、実装はサブエージェント（Claude）、Claude がレビューと検証
 - 大きさ：小〜中

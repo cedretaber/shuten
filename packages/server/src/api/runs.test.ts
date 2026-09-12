@@ -568,13 +568,18 @@ describe("GET /api/runs/:id・/units（詳細と単位）", () => {
     }
   });
 
-  it("実行が無ければ 404（詳細も単位も）", async () => {
+  it("実行が無ければ 404（詳細も単位もエクスポートも）", async () => {
     const harness = open();
 
     expect((await getJson(harness, "/api/runs/missing")).status).toBe(404);
     const units = await getJson(harness, "/api/runs/missing/units");
     expect(units.status).toBe(404);
     expect(errorCode(units.body)).toBe("not-found");
+    // エクスポートの 404 は `api/leak.test.ts` の漏えい検査にも同居しているが（PR13a-2 Task 9）、
+    // 状態コード・エラーコードの両方を見る 404 のテストはここに揃える（task-9-review.md Minor 3）。
+    const exported = await getJson(harness, "/api/runs/missing/export");
+    expect(exported.status).toBe(404);
+    expect(errorCode(exported.body)).toBe("not-found");
   });
 });
 

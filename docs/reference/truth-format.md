@@ -242,6 +242,22 @@ pnpm eval aggregate --manuscript <原稿> --truth <正解.json> \
 `--result` に渡した結果 JSON どうしで実行条件（モデル・観点・分割設定・タイムアウトなど）が
 1 つでも食い違うとエラーになる（条件が違う実行を混ぜた数字は読めないため）。
 
+### `--export`（サーバー経由の実行結果）を使う場合
+
+`--result`（CLI が書いた結果 JSON）の代わりに、サーバーの `GET /api/runs/:id/export` が返す
+エクスポート JSON を渡せる。本文がエクスポートに埋め込まれているため、**`--export` を使うときは
+`--manuscript` を渡さない**（渡すとエラーになる）。
+
+```sh
+pnpm eval evaluate --export <エクスポート.json> --truth <正解.json> \
+                   [--out <指標.json>] [--report <レポート.md>]
+```
+
+本文ハッシュの照合は 3 方向のまま変わらない。正解ファイルの `manuscript.bodyHash` ／
+エクスポートの `manuscript.bodyHash` ／ エクスポートに埋め込まれた本文から計算したハッシュ、の
+3 つを突き合わせる（前述「`bodyHash` の取り方」の 3 番目が「エクスポートの埋め込み本文」に
+置き換わるだけで、`pnpm eval hash` の使い方自体は変わらない）。
+
 ### 起動方法について
 
 `pnpm eval <サブコマンド>` はルートの `package.json` に足したショートカットで、実体は次と同じ。

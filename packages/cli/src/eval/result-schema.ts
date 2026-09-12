@@ -380,7 +380,9 @@ export type ResultValidateResult =
  * zod の issues を安全な文字列に写す。**path と code だけ**を使い、値そのものは含めない
  * （受け取った JSON の内容、とくに原稿の断片が混ざりうるため。決定 9）。
  */
-function formatIssues(issues: readonly { path: readonly PropertyKey[]; code: string }[]): string[] {
+export function formatIssues(
+  issues: readonly { path: readonly PropertyKey[]; code: string }[],
+): string[] {
   return issues.map((issue) => `${formatIssuePath(issue.path)}: ${issue.code}`);
 }
 

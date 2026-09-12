@@ -22,6 +22,7 @@ import {
   retryFailedRequestSchema,
   runDetailDtoSchema,
   runDtoSchema,
+  runExportDtoSchema,
   runSummaryDtoSchema,
   runUnitsDtoSchema,
   startRunRequestSchema,
@@ -38,6 +39,7 @@ import { validateHardTimeouts } from "../run/timeouts.ts";
 import type { ApiDeps } from "./deps.ts";
 import { toRunDto, toRunSummaryDto } from "./dto.ts";
 import { ApiError, notFound, readJson, respond } from "./errors.ts";
+import { buildRunExport } from "./run-export.ts";
 import { buildRunDetail, buildRunUnits } from "./run-view.ts";
 
 /** `GET /api/runs` の応答。 */
@@ -127,6 +129,12 @@ export function registerRunRoutes(router: Hono, deps: ApiDeps): void {
   router.get("/runs/:id/units", (c) => {
     const run = requireRun(c.req.param("id"));
     return respond(c, runUnitsDtoSchema, buildRunUnits(deps.db, run));
+  });
+
+  // 実行の状態では出し分けない。常に 1 実行ぶんの全量を返す（決定 26）。クエリパラメーターは読まない。
+  router.get("/runs/:id/export", (c) => {
+    const run = requireRun(c.req.param("id"));
+    return respond(c, runExportDtoSchema, buildRunExport(deps.db, run));
   });
 
   router.post("/runs/:id/stop", (c) => {

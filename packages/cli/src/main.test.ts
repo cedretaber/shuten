@@ -97,6 +97,7 @@ function buildIO(overrides: Partial<MainIO> = {}): CapturedIO {
     readAllowedWordsBytes: () => Promise.resolve(new TextEncoder().encode("")),
     readTruthBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readResultBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
+    readExportBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     // 既定では「どのファイルも存在しない」。実体の比較が要るテストだけ上書きする。
     statFile: () => Promise.resolve(null),
     writeResult: (outPath, json) => {
@@ -1193,6 +1194,338 @@ describe("main evaluate T22: パスの漏えいを防ぐ（決定9）", () => {
   });
 });
 
+// --- evaluate の --export（Task 11：決定 29） ---------------------------------------------------
+//
+// エクスポート JSON はすべて合成の値（実原稿・実行結果の断片を含まない）。`manuscript.body` は
+// `EVAL_TEXT` と同じにし、`--result` 系のテスト（正解ファイル `evalTruthJson()`）とハッシュ・
+// 本文の両方を揃える。
+
+const EVAL_ARGS_EXPORT = ["evaluate", "--truth", "truth.json", "--export", "export.json"];
+
+function evalExportJson(overrides: { body?: string; runId?: string } = {}): unknown {
+  const body = overrides.body ?? EVAL_TEXT;
+  return {
+    formatVersion: "1",
+    exportedAt: "2026-01-01T00:02:00.000Z",
+    run: {
+      id: overrides.runId ?? "r1",
+      manuscriptVersionId: "mv1",
+      modelId: "model-a",
+      modelInfo: null,
+      generationSettings: { maxTokens: 512, temperature: 0.2 },
+      chunkSettings: {
+        targetGraphemes: 1500,
+        contextGraphemes: 1000,
+        recheckContextGraphemes: 3000,
+        roundingTolerance: 0.2,
+        maxInputGraphemes: 8000,
+      },
+      timeouts: { checkMs: 60_000, recheckMs: 60_000 },
+      perspectives: ["typo", "naturalness"],
+      recheckEnabled: true,
+      allowedWords: [],
+      allowedWordRuleVersion: "1",
+      promptVersion: "1",
+      diagnosticTransformVersion: "1",
+      status: "completed",
+      stopReason: null,
+      stopMessage: null,
+      generationUnconfirmed: false,
+      stopRequestedAt: null,
+      recoveryConfirmedAt: null,
+      recoveryConfirmMs: 0,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:01:00.000Z",
+    },
+    manuscript: {
+      id: "mv1",
+      name: "テスト原稿",
+      body,
+      bodyHash: hashBody(body),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+    targets: [],
+    checkUnits: [],
+    recheckUnits: [],
+    findings: [],
+    unlocatedCandidates: [],
+    unlocatedDiagnostics: [],
+  };
+}
+
+/**
+ * `evalExportJson` に加えて、本文と**合わない** quote/range を持つ「located」の指摘を 1 件持つ
+ * エクスポート JSON（レビュー指摘 Important 1(a)(c)）。`adaptExportToResult` 自体は
+ * quote/range を本文と突き合わせないため（`export-adapter.ts` は `range === null` しか見ない）、
+ * この指摘は変換自体には成功する。3 方向のハッシュ照合が `validateFindingRanges` より
+ * **前**であることを検査するための素材：順序が入れ替わっていれば
+ * 「quote が本文の該当範囲と一致しません」が先に出てしまう。
+ */
+function evalExportJsonWithMismatchedFinding(
+  overrides: { body?: string; runId?: string } = {},
+): unknown {
+  const body = overrides.body ?? EVAL_TEXT;
+  const base = evalExportJson({
+    body,
+    ...(overrides.runId === undefined ? {} : { runId: overrides.runId }),
+  }) as Record<string, unknown>;
+  const rangeEnd = Math.min(5, body.length);
+  return {
+    ...base,
+    targets: [
+      {
+        id: "t1",
+        targetIndex: 0,
+        target: { start: 0, end: body.length },
+        contextBefore: null,
+        contextAfter: null,
+        input: { start: 0, end: body.length },
+        paragraphIds: [0],
+      },
+    ],
+    checkUnits: [
+      {
+        id: "cu1",
+        targetId: "t1",
+        targetIndex: 0,
+        perspective: "typo",
+        status: "done",
+        attempts: 1,
+        failure: null,
+        pendingNote: null,
+        elapsedMs: 10,
+        startedAt: null,
+        finishedAt: null,
+      },
+    ],
+    findings: [
+      {
+        id: "f-mismatch",
+        runId: "r1",
+        targetId: "t1",
+        locateStatus: "located",
+        range: { start: 0, end: rangeEnd },
+        paragraphId: 0,
+        quote: "ぜんぜんちがう",
+        suggestion: null,
+        category: "notation",
+        initialVerdict: "likely-error",
+        suppression: null,
+        reasons: [],
+        recheck: null,
+        judgment: {
+          findingId: "f-mismatch",
+          status: "undecided",
+          note: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        candidates: [
+          {
+            id: "c-mismatch",
+            checkUnitId: "cu1",
+            perspective: "typo",
+            candidateIndex: 0,
+            llm: {
+              paragraphId: 0,
+              quote: "ぜんぜんちがう",
+              before: "",
+              after: "",
+              category: "notation",
+              reason: "テスト理由",
+              suggestion: null,
+              verdict: "likely-error",
+            },
+            locateStatus: "located",
+            range: { start: 0, end: rangeEnd },
+          },
+        ],
+        diagnostics: [],
+      },
+    ],
+  };
+}
+
+function buildEvalExportIO(overrides: Partial<MainIO> = {}): CapturedIO {
+  return buildIO({
+    readTruthBytes: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(evalTruthJson()))),
+    readExportBytes: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(evalExportJson()))),
+    ...overrides,
+  });
+}
+
+describe("main evaluate T24: --export の配線（決定29）", () => {
+  it("--result と --export の両方を指定すると引数エラーになる", async () => {
+    const captured = buildEvalExportIO();
+    const code = await main(
+      ["evaluate", "--truth", "truth.json", "--result", "result.json", "--export", "export.json"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("--result と --export は同時に指定できません");
+  });
+
+  it("--result も --export も指定しないと引数エラーになる", async () => {
+    const captured = buildEvalExportIO();
+    const code = await main(["evaluate", "--truth", "truth.json"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain(
+      "--result か --export のどちらかを指定してください",
+    );
+  });
+
+  it("--export と --manuscript を併用すると引数エラーになる", async () => {
+    const captured = buildEvalExportIO();
+    const code = await main(
+      [...EVAL_ARGS_EXPORT, "--manuscript", "manuscript.txt"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain(
+      "--export を指定したときは --manuscript を指定できません",
+    );
+  });
+
+  it("--export が無く --manuscript も無いと引数エラーになる", async () => {
+    const captured = buildEvalExportIO();
+    const code = await main(
+      ["evaluate", "--truth", "truth.json", "--result", "result.json"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("--manuscript がありません");
+  });
+
+  it("--export だけで evaluate が通り、--report 未指定なら formatEvaluationReport を呼ばない", async () => {
+    const spy = vi.spyOn(reportModule, "formatEvaluationReport");
+    try {
+      const captured = buildEvalExportIO();
+      const code = await main(EVAL_ARGS_EXPORT, {}, captured.io);
+
+      expect(code).toBe(0);
+      expect(spy).not.toHaveBeenCalled(); // --report 未指定なら呼ばれない
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('--export だけで evaluate が通り、--report 指定時に formatEvaluationReport へ source: "export" が渡る', async () => {
+    const spy = vi.spyOn(reportModule, "formatEvaluationReport");
+    try {
+      const captured = buildEvalExportIO();
+      const code = await main([...EVAL_ARGS_EXPORT, "--report", "report.md"], {}, captured.io);
+
+      expect(code).toBe(0);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const call = spy.mock.calls[0]?.[0];
+      expect(call?.source).toBe("export");
+      expect(captured.writtenFiles.some((file) => file.path === "report.md")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("出力先の衝突検査に --export が入る（--out と同じパス文字列の --export → 拒否）", async () => {
+    const captured = buildEvalExportIO();
+    const code = await main([...EVAL_ARGS_EXPORT, "--out", "export.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--out");
+    expect(stderr).toContain("--export");
+  });
+});
+
+// レビュー指摘 Important 1：runEvaluate の「ハッシュ照合 → validateFindingRanges」という順序が
+// --export 経路にも --result 経路にも固定されていなかった（段 6 と段 7 を入れ替える変異が
+// main.test.ts 100 件すべてを素通りした）。ここでロックする。
+describe("main evaluate T24: 処理の順序（ハッシュ照合が validateFindingRanges より前。レビュー指摘 Important 1）", () => {
+  it("--export：正解ファイルの bodyHash が違い、かつ指摘の quote/range も本文と合わないとき、bodyHash の食い違いだけが出る", async () => {
+    const otherHash = "b".repeat(64);
+    const captured = buildEvalExportIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(evalTruthJson({ bodyHash: otherHash }))),
+        ),
+      readExportBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(evalExportJsonWithMismatchedFinding())),
+        ),
+    });
+    const code = await main(EVAL_ARGS_EXPORT, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
+  });
+
+  it("--result：結果 JSON が別原稿のもの（bodyHash も quote/range も食い違う）でも、bodyHash の食い違いだけが出る", async () => {
+    const captured = buildEvalIO({
+      readResultBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(evalResultJsonForDifferentManuscript())),
+        ),
+    });
+    const code = await main(EVAL_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
+  });
+});
+
+describe("main evaluate T24: --export の読み込み失敗（パスの漏えいを防ぐ。決定9・29）", () => {
+  const SENTINEL_PATH = "/private/leak-should-not-appear/export.json";
+  const sentinelError = (prefix: string) =>
+    new Error(`${prefix}: no such file or directory, open '${SENTINEL_PATH}'`);
+
+  it("存在しないファイル：例外にパスが含まれても標準エラーに出さない", async () => {
+    const captured = buildEvalExportIO({
+      readExportBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(EVAL_ARGS_EXPORT, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("壊れた JSON：固定文言のエラーになる", async () => {
+    const captured = buildEvalExportIO({
+      readExportBytes: () => Promise.resolve(new TextEncoder().encode("{ 壊れた json")),
+    });
+    const code = await main(EVAL_ARGS_EXPORT, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).toContain("エクスポートファイルの JSON 構文が不正です");
+  });
+
+  it("スキーマ違反（必須項目の欠落）：固定文言のエラーになりパスを含まない", async () => {
+    const invalid = evalExportJson() as Record<string, unknown>;
+    delete invalid.manuscript;
+    const captured = buildEvalExportIO({
+      readExportBytes: () => Promise.resolve(new TextEncoder().encode(JSON.stringify(invalid))),
+    });
+    const code = await main(EVAL_ARGS_EXPORT, {}, captured.io);
+
+    expect(code).toBe(1);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("エクスポートファイルの検証に失敗しました");
+    expect(stderr).not.toContain(SENTINEL_PATH);
+    expect(stderr).not.toContain("export.json");
+  });
+});
+
 // --- aggregate サブコマンド（Task 7：決定 3・4・9・10・12・13・18・21） ------------------------------
 //
 // すべて合成のテキスト・合成の JSON（実原稿の断片を含まない）。`evaluate` が使う部品
@@ -1511,6 +1844,289 @@ describe("main aggregate T19: 出力先の衝突（決定21）", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// --- aggregate の --export（Task 11：決定 29） ---------------------------------------------------
+
+describe("main aggregate T24: --export の配線（決定29）", () => {
+  it("入力（--result / --export）が合計1本だと引数エラーになる", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "export.json"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--result");
+    expect(stderr).toContain("--export");
+  });
+
+  it("--export を2本渡すと集計できる（--manuscript 不要。本文は最初の --export の埋め込み本文）", async () => {
+    // run.id をファイルごとに変える（決定33：同じ run.id を2本渡すと拒否されるため。T27）。
+    const captured = buildAggregateIO({
+      readExportBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(evalExportJson({ runId: path === "b.json" ? "r2" : "r1" })),
+          ),
+        ),
+    });
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "a.json", "--export", "b.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toHaveLength(1);
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      formatVersion?: unknown;
+      runCount?: unknown;
+    };
+    expect(parsed.formatVersion).toBe("1");
+    expect(parsed.runCount).toBe(2);
+  });
+
+  // T28（決定28(c)）：--export を含む集計のレポートに出どころの行が出て、--result だけの集計
+  // では出ない。main.ts の配線（formatAggregateReport に渡す第2引数）を確かめる。
+  it('--export を含む集計では formatAggregateReport へ "export" が渡り、レポートに出どころの行が出る', async () => {
+    const spy = vi.spyOn(aggregateReportModule, "formatAggregateReport");
+    try {
+      const captured = buildAggregateIO({
+        readExportBytes: (path) =>
+          Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify(evalExportJson({ runId: path === "b.json" ? "r2" : "r1" })),
+            ),
+          ),
+      });
+      const code = await main(
+        [
+          "aggregate",
+          "--truth",
+          "truth.json",
+          "--export",
+          "a.json",
+          "--export",
+          "b.json",
+          "--report",
+          "report.md",
+        ],
+        {},
+        captured.io,
+      );
+
+      expect(code).toBe(0);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]?.[1]).toBe("export");
+      const reportFile = captured.writtenFiles.find((file) => file.path === "report.md");
+      expect(reportFile?.content).toContain("入力：エクスポート JSON（サーバー経由の実行）");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('--result だけの集計では formatAggregateReport へ "result" が渡り、レポートに出どころの行が出ない', async () => {
+    const spy = vi.spyOn(aggregateReportModule, "formatAggregateReport");
+    try {
+      const captured = buildAggregateIO();
+      const code = await main(
+        [...AGGREGATE_ARGS, "--out", "aggregate.json", "--report", "report.md"],
+        {},
+        captured.io,
+      );
+
+      expect(code).toBe(0);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]?.[1]).toBe("result");
+      const reportFile = captured.writtenFiles.find((file) => file.path === "report.md");
+      expect(reportFile?.content).not.toContain("入力：エクスポート JSON");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // レビュー指摘 Important 1(c)：本文は「最初の --export」から採るが、2 本目以降の本文が
+  // 違っていても（かつ 2 本目の指摘の quote/range が 1 本目の本文と食い違っていても）
+  // ハッシュ照合が validateFindingRanges より先に働き、bodyHash の食い違いだけが報告される
+  // ことを検査する。
+  it("処理の順序：--export 2本の本文が違うとき、ハッシュ照合が validateFindingRanges より先に働く", async () => {
+    const secondBody = "かきくけこ";
+    // run.id をファイルごとに変える（決定33の重複検査に引っかからないようにするため。T27）。
+    const captured = buildAggregateIO({
+      readExportBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              path === "b.json"
+                ? evalExportJsonWithMismatchedFinding({ body: secondBody, runId: "r2" })
+                : evalExportJson(),
+            ),
+          ),
+        ),
+    });
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "a.json", "--export", "b.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
+  });
+
+  it("--export どうしが同じパス文字列なら重複としてエラー（--result と同じ扱い。決定21・29）", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      [
+        "aggregate",
+        "--truth",
+        "truth.json",
+        "--export",
+        "same-export.json",
+        "--export",
+        "same-export.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--export");
+    expect(stderr).not.toContain("same-export.json");
+  });
+
+  it("--export どうしが同じ実体（dev/ino 一致）なら重複としてエラー", async () => {
+    const identities: Readonly<Record<string, { dev: number; ino: number }>> = {
+      "truth.json": { dev: 1, ino: 1 },
+      "export-a.json": { dev: 1, ino: 100 },
+      "export-b-link.json": { dev: 1, ino: 100 },
+    };
+    const captured = buildAggregateIO({
+      statFile: (path) => Promise.resolve(identities[path] ?? null),
+    });
+    const code = await main(
+      [
+        "aggregate",
+        "--truth",
+        "truth.json",
+        "--export",
+        "export-a.json",
+        "--export",
+        "export-b-link.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("--export");
+  });
+
+  it("出力先の衝突検査に --export が入る（--out と同じパス文字列の --export → 拒否）", async () => {
+    const captured = buildAggregateIO();
+    const code = await main(
+      [
+        "aggregate",
+        "--truth",
+        "truth.json",
+        "--export",
+        "a.json",
+        "--export",
+        "b.json",
+        "--out",
+        "a.json",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--out");
+    expect(stderr).toContain("--export");
+  });
+
+  it("--export の読み込み失敗（存在しないファイル）：パスを出さずに固定文のエラーになる", async () => {
+    const SENTINEL_PATH = "/private/leak-should-not-appear/aggregate-export.json";
+    const captured = buildAggregateIO({
+      readExportBytes: () =>
+        Promise.reject(new Error(`ENOENT: no such file or directory, open '${SENTINEL_PATH}'`)),
+    });
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "a.json", "--export", "b.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+});
+
+// --- aggregate の --export：同じ実行の二重集計を拒否する（決定33。T27） ---------------------------
+//
+// 決定21の重複検査（ファイルの実体＝正規化パス＋dev/ino）は、同じ実行を2回エクスポートした
+// 2ファイル（内容はほぼ同じで exportedAt だけ違う）を別物と判定してしまう。--export は run.id を
+// 持つので、ここに限って run.id の重複を別途拒否する。--result どうし・--result と --export の
+// 間では見ない（決定33。手がかりが無いため）。
+
+describe("main aggregate T27: 同じ実行の二重集計を拒否する（決定33）", () => {
+  it("同じ run.id を持つ2つの --export は拒否され、メッセージに実行 ID が出てパスは出ない", async () => {
+    const captured = buildAggregateIO({
+      readExportBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            // a.json・b.json とも run.id は既定の "r1"（実体・パス文字列はどちらも異なる）。
+            JSON.stringify(evalExportJson({ body: path === "b.json" ? "かきくけこ" : EVAL_TEXT })),
+          ),
+        ),
+    });
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "a.json", "--export", "b.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("--export");
+    expect(stderr).toContain("r1");
+    expect(stderr).not.toContain("a.json");
+    expect(stderr).not.toContain("b.json");
+  });
+
+  it("run.id が異なる --export どうしは重複とみなされず、そのまま集計できる", async () => {
+    const captured = buildAggregateIO({
+      readExportBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(evalExportJson({ runId: path === "b.json" ? "r2" : "r1" })),
+          ),
+        ),
+    });
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "a.json", "--export", "b.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toHaveLength(1);
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as { runCount?: unknown };
+    expect(parsed.runCount).toBe(2);
   });
 });
 

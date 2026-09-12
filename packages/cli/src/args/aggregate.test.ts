@@ -22,6 +22,7 @@ describe("parseAggregateArgs", () => {
         manuscriptPath: "manuscript.txt",
         truthPath: "truth.json",
         resultPaths: ["a.json", "b.json"],
+        exportPaths: [],
         outPath: null,
         reportPath: null,
       },
@@ -77,11 +78,12 @@ describe("parseAggregateArgs", () => {
     expect(result.error).toContain("--truth");
   });
 
-  it("--result が無いとエラー", () => {
+  it("--result が無いとエラー（入力が合計2本に満たない）", () => {
     const result = parseAggregateArgs(["--manuscript", "manuscript.txt", "--truth", "truth.json"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("--result");
+    expect(result.error).toContain("--export");
   });
 
   it("--result が1本だけならエラー（ぶれを測れないため。決定12）", () => {
@@ -98,13 +100,11 @@ describe("parseAggregateArgs", () => {
     expect(result.error).toContain("--result");
   });
 
-  it("必須オプションがすべて無いとまとめてエラーになる", () => {
+  it("必須オプションがすべて無いと --truth 不足のエラーになる（--truth が唯一常に必須のため）", () => {
     const result = parseAggregateArgs([]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("--manuscript");
     expect(result.error).toContain("--truth");
-    expect(result.error).toContain("--result");
   });
 
   it("未知のオプションはエラー", () => {
@@ -112,5 +112,96 @@ describe("parseAggregateArgs", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("--unknown");
+  });
+
+  // --- 決定29：--export の配線（Task 11） ------------------------------------------------------
+
+  it("--result 1本 ＋ --export 1本なら通る（合計2本以上。--manuscript は不要）", () => {
+    const result = parseAggregateArgs([
+      "--truth",
+      "truth.json",
+      "--result",
+      "a.json",
+      "--export",
+      "export.json",
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        manuscriptPath: null,
+        truthPath: "truth.json",
+        resultPaths: ["a.json"],
+        exportPaths: ["export.json"],
+        outPath: null,
+        reportPath: null,
+      },
+    });
+  });
+
+  it("--export だけを2本渡しても通る（--manuscript は不要）", () => {
+    const result = parseAggregateArgs([
+      "--truth",
+      "truth.json",
+      "--export",
+      "a.json",
+      "--export",
+      "b.json",
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.exportPaths).toEqual(["a.json", "b.json"]);
+    expect(result.value.manuscriptPath).toBeNull();
+  });
+
+  it("入力（--result / --export）が合計1本ならエラー（決定12）", () => {
+    const result = parseAggregateArgs(["--truth", "truth.json", "--export", "export.json"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(
+      "入力（--result / --export）は合計 2 本以上指定してください" +
+        "（1 本では複数回実行のぶれを測れません。決定12）",
+    );
+  });
+
+  it("--export を指定したときに --manuscript も指定するとエラー", () => {
+    const result = parseAggregateArgs([
+      "--manuscript",
+      "manuscript.txt",
+      "--truth",
+      "truth.json",
+      "--export",
+      "a.json",
+      "--export",
+      "b.json",
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(
+      "--export を指定したときは --manuscript を指定できません（本文はエクスポートに含まれます）",
+    );
+  });
+
+  it("--export が無く --manuscript も無いとエラー", () => {
+    const result = parseAggregateArgs([
+      "--truth",
+      "truth.json",
+      "--result",
+      "a.json",
+      "--result",
+      "b.json",
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("--manuscript がありません（--result だけを使うときは必要です）");
+  });
+
+  it("--truth だけで入力（--result / --export）が1つも無いときは「合計2本以上」のエラーになる（--manuscriptがありませんではなく。レビュー指摘 Minor6）", () => {
+    const result = parseAggregateArgs(["--truth", "truth.json"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(
+      "入力（--result / --export）は合計 2 本以上指定してください" +
+        "（1 本では複数回実行のぶれを測れません。決定12）",
+    );
   });
 });

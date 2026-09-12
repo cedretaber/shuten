@@ -190,7 +190,12 @@ describe("formatEvaluationReport", () => {
     const result = makeResult([finding("f1", 0, 4)]);
     const metrics = scoreRun(entries, result);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("# 評価レポート");
     expect(report).toContain("formatVersion: 1");
@@ -200,12 +205,41 @@ describe("formatEvaluationReport", () => {
     expect(report).toContain("stopReason: (なし)");
   });
 
+  it("決定 28(c)：source が export のときだけ実行条件の節に 2 行を出す", () => {
+    const entries = [errorEntry("e1", "typo", 0, 4)];
+    const result = makeResult([finding("f1", 0, 4)]);
+    const metrics = scoreRun(entries, result);
+
+    const exportReport = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "export",
+    });
+    expect(exportReport).toContain("- 入力：エクスポート JSON（サーバー経由の実行）");
+    expect(exportReport).toContain("- timeouts は recoveryConfirmMs を含む実効上限（決定 31）");
+
+    const resultReport = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
+    expect(resultReport).not.toContain("エクスポート JSON（サーバー経由の実行）");
+    expect(resultReport).not.toContain("recoveryConfirmMs を含む実効上限");
+  });
+
   it("決定 11 の人が判定する指標の表をそのまま出す", () => {
     const entries = [errorEntry("e1", "typo", 0, 4)];
     const result = makeResult([finding("f1", 0, 4)]);
     const metrics = scoreRun(entries, result);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("| 指標（仕様 10 節） | 誰が | 出し方 |");
     expect(report).toContain("| 誤りの検出率 | 自動 | 決定 5・6 |");
@@ -225,7 +259,12 @@ describe("formatEvaluationReport", () => {
     const metrics = scoreRun(entries, result);
     expect(metrics.beforeRecheck.detection.detected.rate).toBeNull();
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("—（分母 0）");
   });
@@ -236,7 +275,12 @@ describe("formatEvaluationReport", () => {
     const metrics = scoreRun(entries, result);
     expect(metrics.afterRecheck.missedEntryIds).toEqual(["e1"]);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("## 検出されなかった誤り項目（再確認後）");
     expect(report).toContain("| e1 | 備考 | 直した形 |");
@@ -257,7 +301,12 @@ describe("formatEvaluationReport", () => {
     const result = makeResult([onNormalFinding, otherFinding]);
     const metrics = scoreRun(entries, result);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("### 正常な文章への誤検出（on-normal）");
     expect(report).toContain("### その他の誤検出（other）");
@@ -273,7 +322,12 @@ describe("formatEvaluationReport", () => {
     const result = makeResult([suppressed]);
     const metrics = scoreRun(entries, result);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("## 抑制された指摘の一覧（決定 8）");
     expect(report).toContain("| f-sup | 抑制対象 | notation | 許容語 | 1 |");
@@ -286,7 +340,12 @@ describe("formatEvaluationReport", () => {
     const metrics = scoreRun(entries, result);
     expect(metrics.afterRecheck.findingsOverlappingMultipleErrors).toEqual(["f-wide"]);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("## 複数の error 項目に重なった指摘（再確認後。決定 20）");
     expect(report).toContain("| f-wide | 段落まるごと |");
@@ -301,7 +360,12 @@ describe("formatEvaluationReport", () => {
       { entryId: "e1", findingId: "f1", overlapKind: "exact" },
     ]);
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("## 1 対 1 で対応した組（再確認後。決定 20）");
     // 最後の列（修正案の妥当性）が空欄（行末が `|  |` になる）。
@@ -326,7 +390,12 @@ describe("formatEvaluationReport", () => {
       "newline+nfc": 0,
     });
 
-    const report = formatEvaluationReport({ metrics, truth: truthFileOf(entries), result });
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
 
     expect(report).toContain("診断変換別の候補取得件数");
     expect(report).toContain("この合計は失敗候補数と一致するとは限らない");

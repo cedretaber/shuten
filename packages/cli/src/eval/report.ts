@@ -58,7 +58,21 @@ function formatRate(rate: Rate): string {
 
 // --- 実行条件・状態 ---------------------------------------------------------------------------
 
-function formatConditionsSection(conditions: RunConditions): string[] {
+/**
+ * `source: "export"`（サーバー経由の実行）のときだけ足す 2 行（決定 28(c)・決定 31）。
+ * 文言はブリーフ・決定記録のとおりに固定する。
+ */
+function formatSourceNotice(source: "result" | "export"): string[] {
+  if (source !== "export") {
+    return [];
+  }
+  return [
+    "- 入力：エクスポート JSON（サーバー経由の実行）",
+    "- timeouts は recoveryConfirmMs を含む実効上限（決定 31）",
+  ];
+}
+
+function formatConditionsSection(conditions: RunConditions, source: "result" | "export"): string[] {
   const modelId = conditions.model === null ? "(未取得)" : conditions.model.id;
   const seed =
     conditions.generation.seed === undefined ? "(未指定)" : String(conditions.generation.seed);
@@ -75,6 +89,7 @@ function formatConditionsSection(conditions: RunConditions): string[] {
     `- 分割設定: targetGraphemes=${String(c.targetGraphemes)}, contextGraphemes=${String(c.contextGraphemes)}, recheckContextGraphemes=${String(c.recheckContextGraphemes)}, roundingTolerance=${String(c.roundingTolerance)}, maxInputGraphemes=${String(c.maxInputGraphemes)}`,
     `- 版: 結果=${v.result}, プロンプト=${v.prompt}, 許容語規則=${v.allowedWordRule}, 診断変換=${v.diagnosticTransform}`,
     `- 実行時刻: ${conditions.startedAt} 〜 ${conditions.finishedAt}`,
+    ...formatSourceNotice(source),
     "",
   ];
 }
@@ -463,11 +478,13 @@ export interface EvaluationReportInput {
   readonly metrics: EvaluationMetrics;
   readonly truth: TruthFile;
   readonly result: EvaluationResultInput;
+  /** 入力の出どころ。既定は "result"（CLI が書いた結果 JSON）。決定 28(c)。 */
+  readonly source: "result" | "export";
 }
 
 /** 評価レポート（Markdown）を組み立てる。純粋関数。 */
 export function formatEvaluationReport(input: EvaluationReportInput): string {
-  const { metrics, truth, result } = input;
+  const { metrics, truth, result, source } = input;
   const truthIndex = buildTruthEntryIndex(truth);
   const findingIndex = buildFindingIndex(result);
 
@@ -476,7 +493,7 @@ export function formatEvaluationReport(input: EvaluationReportInput): string {
     "",
     `formatVersion: ${metrics.formatVersion}`,
     "",
-    ...formatConditionsSection(result.conditions),
+    ...formatConditionsSection(result.conditions, source),
     ...formatStatusSection(metrics.performance),
     ...formatHumanJudgedTable(),
     "## 指標",

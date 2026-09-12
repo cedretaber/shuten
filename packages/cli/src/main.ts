@@ -8,6 +8,7 @@ import type { PipelineEvent } from "@shuten/server/run/events.ts";
 import type { PipelineArgs } from "@shuten/server/run/pipeline.ts";
 import { runPipeline as runPipelineImpl } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus } from "@shuten/server/run/result.ts";
+import type { RunExportDto } from "@shuten/shared";
 import { ingestUtf8Bytes } from "@shuten/shared";
 
 import { parseAggregateArgs } from "./args/aggregate.ts";
@@ -16,6 +17,7 @@ import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
 import { aggregateRuns, checkRunConditions } from "./eval/aggregate.ts";
 import { formatAggregateReport } from "./eval/aggregate-report.ts";
+import { adaptExportToResult } from "./eval/export-adapter.ts";
 import { formatEvaluationReport } from "./eval/report.ts";
 import type { EvaluationResultInput } from "./eval/result-schema.ts";
 import { parseResultJson, validateFindingRanges } from "./eval/result-schema.ts";
@@ -26,6 +28,7 @@ import {
   checkOutputConflict,
   findPathConflict,
   readEvalResultText,
+  readExportFile,
   readManuscriptText,
   readTruthFile,
   reportTruthResolveFailure,
@@ -53,6 +56,7 @@ export interface MainIO {
   readonly readAllowedWordsBytes: (path: string) => Promise<Uint8Array>;
   readonly readTruthBytes: (path: string) => Promise<Uint8Array>;
   readonly readResultBytes: (path: string) => Promise<Uint8Array>;
+  readonly readExportBytes: (path: string) => Promise<Uint8Array>;
   /** ファイルの識別情報。存在しない・取得できないときは null（比較を諦める）。 */
   readonly statFile: (path: string) => Promise<FileIdentity | null>;
   readonly writeResult: (outPath: string | null, json: string) => Promise<void>;
@@ -68,6 +72,7 @@ function defaultIO(): MainIO {
     readAllowedWordsBytes: (path) => readFile(path),
     readTruthBytes: (path) => readFile(path),
     readResultBytes: (path) => readFile(path),
+    readExportBytes: (path) => readFile(path),
     // シンボリックリンクを追う stat を使う（リンク先が入力ファイルなら同一と判定したいため）。
     statFile: (path) =>
       stat(path).then(
@@ -309,15 +314,18 @@ async function runHash(argv: readonly string[], io: MainIO): Promise<number> {
 }
 
 /**
- * `evaluate` サブコマンドの本体（決定 3・4・9・10・13・18・21）。
+ * `evaluate` サブコマンドの本体（決定 3・4・9・10・13・18・21・29）。
  *
- * 処理の順序（Task 6 ブリーフの指定どおり）：
- * 1. 引数の解釈
- * 2. 出力先の衝突検査（決定 21。生成要求も読み込みもする前に）
- * 3. 原稿を読む
+ * 処理の順序（Task 11 ブリーフの指定どおり）：
+ * 1. 引数の解釈（`--result` / `--export` のちょうど一方。決定 29）
+ * 2. 出力先の衝突検査（決定 21。生成要求も読み込みもする前に。入力一覧は `--export` を使うときは
+ *    `--manuscript` の代わりに `--export` にする）
+ * 3. 本文の決定（`--export` ならここでエクスポートを読み、埋め込み本文を使う。`--result` なら
+ *    従来どおり `--manuscript` を読む）
  * 4. 正解ファイルを読む → JSON.parse → `parseTruthFile`
- * 5. 結果 JSON を読む → JSON.parse → `parseResultJson`
- * 6. 3 方向のハッシュ照合（決定 3）
+ * 5. 入力の読み込みと検証（`--result` なら結果 JSON を読み `parseResultJson`、`--export` なら
+ *    3 で読んだ値を `adaptExportToResult` で評価入力に変換する。決定 27・28・30・31・32）
+ * 6. 3 方向のハッシュ照合（決定 3。既存のまま。範囲の意味検証より前に行う）
  * 7. `validateFindingRanges`（決定 18 の意味の検証）
  * 8. `resolveTruthEntries`（決定 4）
  * 9. `scoreRun`
@@ -336,26 +344,50 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   }
   const args = parsed.value;
 
-  // 2. 出力先の衝突検査（決定 21）。--out/--report 対 全入力、--out と --report どうしだけを見る。
-  //    入力どうし（--manuscript と --truth が同じ実体、など）は決定 21 が挙げている組ではない。
-  //    ここでは何も言わず、後続の読み込み・検証がより的確な原因（JSON として読めない、
+  // 2. 出力先の衝突検査（決定 21・29）。--out/--report 対 全入力、--out と --report どうしだけを
+  //    見る。入力どうし（--manuscript と --truth が同じ実体、など）は決定 21 が挙げている組では
+  //    ない。ここでは何も言わず、後続の読み込み・検証がより的確な原因（JSON として読めない、
   //    ハッシュが食い違う等）を報告する（`checkOutputConflict` の絞り込み。`io.ts`）。
-  const conflictCheck = await checkOutputConflict(io, args.outPath, args.reportPath, [
-    { name: "--manuscript", path: args.manuscriptPath },
-    { name: "--truth", path: args.truthPath },
-    { name: "--result", path: args.resultPath },
-  ]);
+  const evaluateInputPaths: NamedPath[] =
+    args.input.kind === "result"
+      ? [
+          { name: "--manuscript", path: args.input.manuscriptPath },
+          { name: "--truth", path: args.truthPath },
+          { name: "--result", path: args.input.resultPath },
+        ]
+      : [
+          { name: "--truth", path: args.truthPath },
+          { name: "--export", path: args.input.exportPath },
+        ];
+  const conflictCheck = await checkOutputConflict(
+    io,
+    args.outPath,
+    args.reportPath,
+    evaluateInputPaths,
+  );
   if (conflictCheck.handled) {
     return 1;
   }
 
-  // 3. 原稿を読む。
-  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
-  if (!manuscriptText.ok) {
-    io.writeErrorLine(manuscriptText.error);
-    return 1;
+  // 3. 本文の決定（決定 29）。--export なら埋め込み本文を使うため、ここでエクスポートを先に読む。
+  let text: string;
+  let exportedForInput: RunExportDto | null = null;
+  if (args.input.kind === "export") {
+    const exportResult = await readExportFile(io, args.input.exportPath);
+    if (!exportResult.ok) {
+      io.writeErrorLine(exportResult.error);
+      return 1;
+    }
+    exportedForInput = exportResult.value;
+    text = exportedForInput.manuscript.body;
+  } else {
+    const manuscriptText = await readManuscriptText(io, args.input.manuscriptPath);
+    if (!manuscriptText.ok) {
+      io.writeErrorLine(manuscriptText.error);
+      return 1;
+    }
+    text = manuscriptText.value;
   }
-  const text = manuscriptText.value;
 
   // 4. 正解ファイルを読む → JSON.parse → parseTruthFile（`readTruthFile`。`io.ts`）。
   const truthResult = await readTruthFile(io, args.truthPath);
@@ -365,25 +397,47 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   }
   const truth = truthResult.value;
 
-  // 5. 結果 JSON を読む → JSON.parse → parseResultJson。
-  const resultText = await readEvalResultText(io, args.resultPath);
-  if (!resultText.ok) {
-    io.writeErrorLine(resultText.error);
-    return 1;
+  // 5. 入力の読み込みと検証。--result なら結果 JSON を読み parseResultJson、--export なら
+  //    3 で読んだ値（exportedForInput）を adaptExportToResult で評価入力に変換する
+  //    （決定 27・28・30・31・32）。
+  let result: EvaluationResultInput;
+  if (args.input.kind === "export") {
+    // exportedForInput は kind === "export" のとき 3 で必ず設定済み。3 と 5 の間に決定4の
+    // 正解ファイル読み込みを挟む（ブリーフが固定した順序）ため、TypeScript の型では
+    // 「args.input.kind と exportedForInput の非 null を同一の分岐として」関連付けられず、
+    // ここで一度絞り込みが要る（`noUncheckedIndexedAccess` 等と同じ理由。`as` は使わない）。
+    if (exportedForInput === null) {
+      io.writeErrorLine("想定外のエラーが発生しました（内部不整合）");
+      return 1;
+    }
+    const adapted = adaptExportToResult(exportedForInput);
+    if (!adapted.ok) {
+      io.writeErrorLine(
+        `エクスポートの内容を評価入力に変換できません: ${adapted.errors.join("; ")}`,
+      );
+      return 1;
+    }
+    result = adapted.value;
+  } else {
+    const resultText = await readEvalResultText(io, args.input.resultPath);
+    if (!resultText.ok) {
+      io.writeErrorLine(resultText.error);
+      return 1;
+    }
+    let resultJson: unknown;
+    try {
+      resultJson = JSON.parse(resultText.value);
+    } catch {
+      io.writeErrorLine("結果ファイルの JSON 構文が不正です");
+      return 1;
+    }
+    const parsedResult = parseResultJson(resultJson);
+    if (!parsedResult.ok) {
+      io.writeErrorLine(`結果ファイルの検証に失敗しました: ${parsedResult.errors.join("; ")}`);
+      return 1;
+    }
+    result = parsedResult.value;
   }
-  let resultJson: unknown;
-  try {
-    resultJson = JSON.parse(resultText.value);
-  } catch {
-    io.writeErrorLine("結果ファイルの JSON 構文が不正です");
-    return 1;
-  }
-  const parsedResult = parseResultJson(resultJson);
-  if (!parsedResult.ok) {
-    io.writeErrorLine(`結果ファイルの検証に失敗しました: ${parsedResult.errors.join("; ")}`);
-    return 1;
-  }
-  const result = parsedResult.value;
 
   // 6. 3 方向のハッシュ照合（決定 3）。ハッシュ値そのものは原稿の内容ではないので出してよいが、
   //    パス文字列は出さない。
@@ -431,7 +485,9 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   //     失敗したとき既に --out へ書き出し済みという部分的な状態になりうる）。
   const json = JSON.stringify(metrics, null, 2);
   const report =
-    args.reportPath === null ? null : formatEvaluationReport({ metrics, truth, result });
+    args.reportPath === null
+      ? null
+      : formatEvaluationReport({ metrics, truth, result, source: args.input.kind });
 
   const written = await writeResultOrFixedError(io, args.outPath, json, "指標");
   if (!written.ok) {
@@ -452,18 +508,21 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
 }
 
 /**
- * `aggregate` サブコマンドの本体（決定 3・4・9・10・12・13・18・21。Task 7 ブリーフ）。
- * `evaluate`（Task 6）と同じ部品を、`--result` の本数ぶん回して使う。
+ * `aggregate` サブコマンドの本体（決定 3・4・9・10・12・13・18・21・29。Task 7・11 ブリーフ）。
+ * `evaluate`（Task 6・11）と同じ部品を、入力（`--result` / `--export`）の本数ぶん回して使う。
  *
  * 処理の順序（`evaluate` と同じ並び：ハッシュ照合を `validateFindingRanges` より先に行う。
  * コーディネーターの指摘により、最初の実装にあった逆順を修正した）：
- * 1. 引数の解釈
- * 2. 出力先の衝突検査（決定 21。`--result` どうしの重複は、他の入力の衝突に先を越されないよう
- *    別に検査する。M-3 修正）
- * 3. 原稿を読む
+ * 1. 引数の解釈（`--result` と `--export` は混在可。合計 2 本以上。決定 29）
+ * 2. 出力先の衝突検査（決定 21。`--result` どうし・`--export` どうしの重複は、他の入力の衝突に
+ *    先を越されないよう別に検査する。M-3 修正の対象を `--export` にも広げる）
+ * 3. 本文の決定（決定 29。`--export` があれば最初の `--export` の埋め込み本文、無ければ
+ *    `--manuscript` の内容）
  * 4. 正解ファイルを読む
- * 5. 各結果 JSON を 1 本ずつ `parseResultJson`（形の検証だけ）
- * 6. 3 方向のハッシュ照合（結果は本数ぶん）。原稿の取り違えはここで「bodyHash が一致しません」
+ * 5. 各入力を 1 本ずつ読み込み・検証する（`--result` は `parseResultJson`、`--export` は
+ *    `parseExportJson` → `adaptExportToResult`。決定 27・28・30・31・32）。形の検証だけ
+ *    （意味の検証は 7 で行う）
+ * 6. 3 方向のハッシュ照合（入力は本数ぶん）。原稿の取り違えはここで「bodyHash が一致しません」
  *    という一言で分かる形にする（`validateFindingRanges` より後ろだと「quote が本文と一致しません」
  *    という分かりにくいエラーが先に出てしまう）
  * 7. 各結果に `validateFindingRanges`（決定 18 の意味の検証）
@@ -487,24 +546,26 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   }
   const args = parsed.value;
 
-  // 2. 出力先の衝突検査（決定 21）。
+  // 2. 出力先の衝突検査（決定 21・29）。
   //    --out/--report 対 全入力・--out と --report どうし（evaluate と同じ組。`checkOutputConflict`。
-  //    `io.ts`）に加えて、--result どうしの重複（決定 21 の追加分。aggregate 固有）を見る。
-  //    --manuscript・--truth・--result が互いに衝突していてもここでは何も言わない
+  //    `io.ts`）に加えて、--result どうし・--export どうしの重複（決定 21 の追加分。aggregate 固有）
+  //    を見る。--manuscript は指定されているときだけ含める（--export を使うときは無い）。
+  //    --manuscript・--truth・--result・--export が互いに衝突していてもここでは何も言わない
   //    （決定 21 が挙げている組ではない。evaluate と同じ絞り込み）。
   const conflictCheck = await checkOutputConflict(io, args.outPath, args.reportPath, [
-    { name: "--manuscript", path: args.manuscriptPath },
+    ...(args.manuscriptPath === null ? [] : [{ name: "--manuscript", path: args.manuscriptPath }]),
     { name: "--truth", path: args.truthPath },
     ...args.resultPaths.map((path) => ({ name: "--result", path })),
+    ...args.exportPaths.map((path) => ({ name: "--export", path })),
   ]);
   if (conflictCheck.handled) {
     return 1;
   }
   // --result どうしの重複だけを、上とは別に単独で検査する（M-3 修正）。`findPathConflict` は
-  // 最初に見つかった 1 組だけを返すため、上の検査に --manuscript・--truth・--result をまとめて
-  // 渡すと、--manuscript と --truth の衝突（決定 21 の対象外なので握りつぶす）が先に見つかった
-  // 場合、その後ろに並ぶ --result どうしの重複が一度も検査されない。「ぶれを偽装しない」という
-  // 決定 21 の要である --result の重複検査を、他の入力の衝突の有無に左右されない形にする。
+  // 最初に見つかった 1 組だけを返すため、上の検査に --manuscript・--truth・--result・--export を
+  // まとめて渡すと、決定 21 の対象外の衝突が先に見つかった場合、その後ろに並ぶ --result どうしの
+  // 重複が一度も検査されない。「ぶれを偽装しない」という決定 21 の要である --result の重複検査を、
+  // 他の入力の衝突の有無に左右されない形にする。
   const resultConflict = await findPathConflict(
     io,
     args.resultPaths.map((path) => ({ name: "--result", path })),
@@ -514,14 +575,55 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
     io.writeErrorLine("引数エラー: --result に同じファイルが重複して指定されています");
     return 1;
   }
-
-  // 3. 原稿を読む。
-  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
-  if (!manuscriptText.ok) {
-    io.writeErrorLine(manuscriptText.error);
+  // --export どうしの重複も同じ理由で別に検査する（決定 21・29）。
+  const exportConflict = await findPathConflict(
+    io,
+    args.exportPaths.map((path) => ({ name: "--export", path })),
+  );
+  if (exportConflict !== null) {
+    io.writeErrorLine("引数エラー: --export に同じファイルが重複して指定されています");
     return 1;
   }
-  const text = manuscriptText.value;
+
+  // 3. 本文の決定（決定 29）。--export があれば最初の --export の埋め込み本文を使う
+  //    （ここでその --export を先に読む）。無ければ --manuscript を読む。
+  //    複数の --export の本文どうしの一致は、ここでは検査しない。各エクスポートは
+  //    hashBody(body) === bodyHash を自身の内部整合として保証しており（決定30。
+  //    export-adapter.ts）、6 の 3 方向ハッシュ照合が「本文（1 本目）の hashBody」と
+  //    「各入力の conditions.manuscript.bodyHash」を突き合わせるため、本文が違う
+  //    --export が混ざっていれば 6 で必ず「bodyHash が一致しません」として検出される
+  //    （決定30が保証する連鎖。レビュー指摘 Minor4）。
+  let text: string;
+  let firstExportedValue: RunExportDto | null = null;
+  if (args.exportPaths.length > 0) {
+    const firstExportPath = args.exportPaths[0];
+    if (firstExportPath === undefined) {
+      // 到達しないはずの分岐（`args.exportPaths.length > 0` を確認済み）。
+      // `noUncheckedIndexedAccess` に対応するための型の絞り込み。
+      io.writeErrorLine("想定外のエラーが発生しました（内部不整合）");
+      return 1;
+    }
+    const exportResult = await readExportFile(io, firstExportPath);
+    if (!exportResult.ok) {
+      io.writeErrorLine(`エクスポート 1 本目: ${exportResult.error}`);
+      return 1;
+    }
+    firstExportedValue = exportResult.value;
+    text = firstExportedValue.manuscript.body;
+  } else {
+    if (args.manuscriptPath === null) {
+      // 到達しないはずの分岐（`parseAggregateArgs` が `exportPaths` が空なら
+      // `manuscriptPath` を必須にしている）。
+      io.writeErrorLine("想定外のエラーが発生しました（内部不整合）");
+      return 1;
+    }
+    const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+    if (!manuscriptText.ok) {
+      io.writeErrorLine(manuscriptText.error);
+      return 1;
+    }
+    text = manuscriptText.value;
+  }
 
   // 4. 正解ファイルを読む → JSON.parse → parseTruthFile（`readTruthFile`。`io.ts`）。
   const truthResult = await readTruthFile(io, args.truthPath);
@@ -531,32 +633,83 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   }
   const truth = truthResult.value;
 
-  // 5. 各結果 JSON を1本ずつ parseResultJson（形の検証だけ。意味の検証は7で行う）。
-  const results: EvaluationResultInput[] = [];
+  // 5. 各入力を1本ずつ読み込み・検証する（形の検証だけ。意味の検証は7で行う）。--result は
+  //    parseResultJson、--export は（--export が1本目なら3で読んだ値を再利用し）
+  //    adaptExportToResult。以降のエラーメッセージ・ハッシュ照合に使うラベルを添えて保持する。
+  //    --export どうしは run.id の重複も拒否する（決定33。T27）。
+  interface LabeledResult {
+    readonly label: string;
+    readonly result: EvaluationResultInput;
+  }
+  const labeledResults: LabeledResult[] = [];
+
   for (const [index, resultPath] of args.resultPaths.entries()) {
+    const label = `結果 JSON ${String(index + 1)} 本目`;
     const resultText = await readEvalResultText(io, resultPath);
     if (!resultText.ok) {
-      io.writeErrorLine(resultText.error);
+      io.writeErrorLine(`${label}: ${resultText.error}`);
       return 1;
     }
     let resultJson: unknown;
     try {
       resultJson = JSON.parse(resultText.value);
     } catch {
-      io.writeErrorLine(`結果 JSON ${String(index + 1)} 本目: JSON 構文が不正です`);
+      io.writeErrorLine(`${label}: JSON 構文が不正です`);
       return 1;
     }
     const parsedResult = parseResultJson(resultJson);
     if (!parsedResult.ok) {
+      io.writeErrorLine(`${label}: 検証に失敗しました: ${parsedResult.errors.join("; ")}`);
+      return 1;
+    }
+    labeledResults.push({ label, result: parsedResult.value });
+  }
+
+  // --export の run.id の重複検査（決定 33）。同じ実行を2回エクスポートした2ファイルは、
+  // 実体（決定21のファイル識別）としては別物（exportedAt だけ違う）でも、内容はほぼ同じで
+  // 条件の一致検査（決定12）もすべて通るため、ぶれ0の「2回実行」として集計されてしまう。
+  // --export は run.id を運ぶので、ここで安く確実に拒否できる。--result どうし・--result と
+  // --export の間では見ない（手がかりが無いため。決定33の対象は --export どうしだけ）。
+  const seenExportRunIds = new Map<string, number>();
+
+  for (const [index, exportPath] of args.exportPaths.entries()) {
+    const label = `エクスポート ${String(index + 1)} 本目`;
+    let exportedValue: RunExportDto;
+    if (index === 0 && firstExportedValue !== null) {
+      exportedValue = firstExportedValue;
+    } else {
+      const exportResult = await readExportFile(io, exportPath);
+      if (!exportResult.ok) {
+        io.writeErrorLine(`${label}: ${exportResult.error}`);
+        return 1;
+      }
+      exportedValue = exportResult.value;
+    }
+
+    const runId = exportedValue.run.id;
+    const previousIndex = seenExportRunIds.get(runId);
+    if (previousIndex !== undefined) {
+      // メッセージには重複した実行 ID を出してよい（原稿の内容でも接続先でもない。決定33）。
+      // パスは出さない。
       io.writeErrorLine(
-        `結果 JSON ${String(index + 1)} 本目: 検証に失敗しました: ${parsedResult.errors.join("; ")}`,
+        `引数エラー: --export に同じ実行（実行 ID: ${runId}）が重複して指定されています` +
+          `（${String(previousIndex + 1)} 本目と ${String(index + 1)} 本目）`,
       );
       return 1;
     }
-    results.push(parsedResult.value);
+    seenExportRunIds.set(runId, index);
+
+    const adapted = adaptExportToResult(exportedValue);
+    if (!adapted.ok) {
+      io.writeErrorLine(
+        `${label}: エクスポートの内容を評価入力に変換できません: ${adapted.errors.join("; ")}`,
+      );
+      return 1;
+    }
+    labeledResults.push({ label, result: adapted.value });
   }
 
-  // 6. 3方向のハッシュ照合（決定 3。結果は本数ぶん）。evaluate と同じく、意味の検証
+  // 6. 3方向のハッシュ照合（決定 3。入力は本数ぶん）。evaluate と同じく、意味の検証
   //    （validateFindingRanges）より先に行う。原稿の取り違えを「bodyHash が一致しません」という
   //    一言で分かる形にするため（後ろだと「quote が本文と一致しません」が先に出て分かりにくい）。
   const manuscriptHash = hashBody(text);
@@ -566,13 +719,13 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
       `原稿と正解ファイルの bodyHash が一致しません（原稿: ${manuscriptHash}、正解ファイル: ${truth.manuscript.bodyHash}）`,
     );
   }
-  results.forEach((result, index) => {
+  for (const { label, result } of labeledResults) {
     if (manuscriptHash !== result.conditions.manuscript.bodyHash) {
       hashMismatches.push(
-        `原稿と結果 JSON ${String(index + 1)} 本目の bodyHash が一致しません（原稿: ${manuscriptHash}、結果 JSON: ${result.conditions.manuscript.bodyHash}）`,
+        `原稿と${label}の bodyHash が一致しません（原稿: ${manuscriptHash}、${label}: ${result.conditions.manuscript.bodyHash}）`,
       );
     }
-  });
+  }
   if (hashMismatches.length > 0) {
     for (const message of hashMismatches) {
       io.writeErrorLine(message);
@@ -582,15 +735,17 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
 
   // 7. 各結果に validateFindingRanges（決定 18 の意味の検証）。ハッシュが一致した後なので、
   //    ここに来る不一致は「同じ原稿だが範囲が壊れている」ことを意味する。
-  for (const [index, result] of results.entries()) {
+  for (const { label, result } of labeledResults) {
     const rangeCheck = validateFindingRanges(result, text);
     if (!rangeCheck.ok) {
       for (const message of rangeCheck.errors) {
-        io.writeErrorLine(`結果 JSON ${String(index + 1)} 本目: ${message}`);
+        io.writeErrorLine(`${label}: ${message}`);
       }
       return 1;
     }
   }
+
+  const results = labeledResults.map((labeled) => labeled.result);
 
   // 8. 条件の一致検査（決定 12）。resolveTruthEntries・scoreRun という重い処理をする前に、
   //    集計不能なら先に失敗させる。
@@ -627,7 +782,13 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   // 12. 出力。--out 未指定なら標準出力へ（evaluate と同じ方針）。両方の文字列を先に組み立てて
   //     から書き出す（M-2 修正。理由は runEvaluate と同じ）。
   const json = JSON.stringify(outcome.value, null, 2);
-  const report = args.reportPath === null ? null : formatAggregateReport(outcome.value);
+  // 決定28(c)：出どころは AggregateResult には持たせず、ここで --export の有無から決める
+  // （--result と --export を混ぜた集計は versions.result の不一致で 8 の条件検査に既に
+  // 拒否されているため、ここに来る時点ではどちらか一方に揃っている）。
+  const report =
+    args.reportPath === null
+      ? null
+      : formatAggregateReport(outcome.value, args.exportPaths.length > 0 ? "export" : "result");
 
   const written = await writeResultOrFixedError(io, args.outPath, json, "集計");
   if (!written.ok) {

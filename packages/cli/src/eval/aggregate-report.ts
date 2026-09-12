@@ -18,6 +18,28 @@ import type {
 
 const PERSPECTIVE_LABELS = ["typo", "naturalness"] as const satisfies readonly Perspective[];
 
+/**
+ * 集計に使った入力の出どころ（決定 28(c)）。`AggregateResult`（純粋な集計値）には持たせず、
+ * `formatAggregateReport` の呼び出し側（`main.ts`）が `--export` を1本でも渡したかどうかから
+ * 決める。`--result` と `--export` を混ぜた集計は `versions.result` の不一致（決定 28）で
+ * 集計そのものが拒否されるため、レポートに出せる時点では常にどちらか一方に揃っている。
+ */
+export type AggregateReportSource = "result" | "export";
+
+/**
+ * `source: "export"`（サーバー経由の実行）のときだけ足す行（決定 28(c)・決定 31）。
+ * 文言は評価レポート（`eval/report.ts` の `formatSourceNotice`）と揃える。
+ */
+function formatSourceNotice(source: AggregateReportSource): string[] {
+  if (source !== "export") {
+    return [];
+  }
+  return [
+    "- 入力：エクスポート JSON（サーバー経由の実行）",
+    "- timeouts は recoveryConfirmMs を含む実効上限（決定 31）",
+  ];
+}
+
 function escapeCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
@@ -76,13 +98,17 @@ function formatFindingSetAggregateSection(title: string, set: FindingSetAggregat
 }
 
 /** 集計レポート（Markdown）を組み立てる。純粋関数。 */
-export function formatAggregateReport(result: AggregateResult): string {
+export function formatAggregateReport(
+  result: AggregateResult,
+  source: AggregateReportSource,
+): string {
   const m = result.metrics;
   const lines: string[] = [
     "# 集計レポート（複数回実行。決定 12）",
     "",
     `formatVersion: ${result.formatVersion}`,
     `実行回数: ${String(result.runCount)}`,
+    ...formatSourceNotice(source),
     "",
     "## 注意",
     "",

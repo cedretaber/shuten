@@ -105,6 +105,7 @@ const ENDPOINTS: readonly EndpointSpec[] = [
   { key: "POST /api/runs", hasErrorForm: true },
   { key: "GET /api/runs/:id", hasErrorForm: true },
   { key: "GET /api/runs/:id/units", hasErrorForm: true },
+  { key: "GET /api/runs/:id/export", hasErrorForm: true },
   { key: "POST /api/runs/:id/stop", hasErrorForm: true },
   { key: "POST /api/runs/:id/resume", hasErrorForm: true },
   { key: "POST /api/runs/:id/retry-failed", hasErrorForm: true },
@@ -670,6 +671,21 @@ beforeAll(async () => {
         { status: "held" },
       )
     ).status,
+  ).toBe(404);
+
+  /** エクスポート（原稿本文・quote に番兵が入る。正常応答なので対象外） -------- */
+
+  expect(
+    (
+      await getJson(
+        "GET /api/runs/:id/export",
+        "200（一括エクスポート）",
+        `/api/runs/${runS}/export`,
+      )
+    ).status,
+  ).toBe(200);
+  expect(
+    (await getJson("GET /api/runs/:id/export", "404", "/api/runs/run-missing/export")).status,
   ).toBe(404);
 
   /** 検査実行 T：停止・再開・失敗単位の再試行 ------------------------------ */

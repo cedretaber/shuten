@@ -85,6 +85,18 @@ PR13a-2）に回した。保存済み結果の再閲覧は `GET /api/runs/:id` �
 （`GET /api/runs/:id/export`）と全文チャット方式（現在の全文チャット方式との比較用モード）は
 PR13a-2・PR13a-3 に持ち越した。
 
+続けて**PR13a-2（エクスポート）が完了**し、`GET /api/runs/:id/export` で検査実行 1 件ぶんを
+丸ごと JSON で取り出せるようになった。応答は既存の DTO 射影だけを並べたもので、仕様書 8.1 節の
+保存単位（原稿版・検査実行・検査単位・再確認単位・位置診断・指摘・作者の判断）をすべて含み、
+検査対象は独立した配列、元候補は指摘に入れ子で（指摘を持たない候補だけ別の配列に）入る。接続先 URL と API キーは含まない（`packages/server/src/api/leak.test.ts` の
+エンドポイント一覧にも追加済み）。評価用 CLI の `evaluate` / `aggregate` は、CLI が書いた結果 JSON
+（`--result`）の代わりにこのエクスポート JSON（`--export`）も入力にできるようになり、`--export` を
+使うときは本文がエクスポートに含まれるため `--manuscript` を渡さない。`aggregate` は `--result` と
+`--export` を混ぜて渡せるが、CLI 経由の実行とサーバー経由の実行を混ぜた集計は実行条件
+（`versions.result`）が食い違うため必ず条件不一致で止まる。詳細は
+`docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 16〜32）。全文チャット方式（PR13a-3）は
+まだ着手していない。
+
 ## 技術スタック
 
 | 領域 | 選択 |
@@ -218,6 +230,28 @@ pnpm eval aggregate --manuscript <原稿> --truth <正解.json> \
 どちらも `--out` を指定しなければ指標 JSON を標準出力に書く。`--report` を指定すると Markdown の
 レポート（人手の欄を含む）を追加で書く。品質の合否は判定しない（終了コードは指標の良し悪しでは変わらない。
 数値目標は未決のまま。仕様書 10・13 節）。
+
+**`--export`（サーバー経由の実行結果）を使う場合。** `--result`（CLI が書いた結果 JSON）の代わりに、
+`GET /api/runs/:id/export` が返すエクスポート JSON を渡せる。本文がエクスポートに埋め込まれているため、
+`--export` を使うときは `--manuscript` を渡さない。
+
+```sh
+pnpm eval evaluate --export <エクスポート.json> --truth <正解.json> \
+                   [--out <指標.json>] [--report <レポート.md>]
+pnpm eval aggregate --export <エクスポート1.json> --export <エクスポート2.json> [--export ...] \
+                    --truth <正解.json> [--out <集計.json>] [--report <レポート.md>]
+```
+
+`aggregate` は `--result` と `--export` を混ぜて渡すこともできるが、CLI 経由の実行とサーバー経由の
+実行を混ぜた集計は、実行条件（`versions.result`）が異なるため必ず条件不一致で止まる。同じ種類どうし
+（`--result` どうし／`--export` どうし）なら集計できる。
+
+エクスポートは、サーバーが待ち受けているアドレスに対して次のように取得する
+（実行 ID は `GET /api/runs` などで確認する）。
+
+```sh
+curl http://localhost:<ポート>/api/runs/<実行ID>/export -o export.json
+```
 
 ### `hash`：原稿の本文ハッシュを出す
 
