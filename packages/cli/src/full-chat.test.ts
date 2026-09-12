@@ -7,6 +7,7 @@ import type {
   ModelInfo,
 } from "@shuten/server/lmstudio/types.ts";
 import type { GenerationSettings } from "@shuten/server/prompts/types.ts";
+import { countGraphemes, splitParagraphs } from "@shuten/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { runFullChat } from "./full-chat.ts";
@@ -14,6 +15,13 @@ import { runFullChat } from "./full-chat.ts";
 /** テスト用の合成原稿・プロンプト。実原稿は使わない。 */
 const PROMPT = "指示文。\n{{manuscript}}\n以上。";
 const TEXT = "これは合成のテスト原稿です。二文目もある。";
+
+/**
+ * `conditions.manuscript` の取り方を固定するための原稿。段落が 3 つ（空行も 1 段落）で、
+ * 家族絵文字（ZWJ 連結）を含むため**書記素数と UTF-16 長が食い違う**。
+ * この食い違いが無いと、graphemeCount を text.length に変える変異を捕まえられない。
+ */
+const MULTI_TEXT = "一行目。\n\n三行目に👨‍👩‍👧がいる。";
 
 const GENERATION: GenerationSettings = {
   model: "test-model",
@@ -241,6 +249,37 @@ describe("runFullChat", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.conditions.promptHash).toBe(hashBody(PROMPT));
+    });
+
+    it("conditions.manuscript が原稿そのものから取られている（差し込み後ではない）", async () => {
+      // レビュー指摘：この 4 項目を誰も検証しておらず、bodyHash を差し込み後から取る変異と
+      // graphemeCount を text.length にする変異の 2 つが生き残っていた。
+      const client = makeClient({});
+
+      const result = await runFullChat({
+        text: MULTI_TEXT,
+        prompt: PROMPT,
+        generation: GENERATION,
+        timeoutMs: 1000,
+        client,
+        now: FIXED_NOW,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const { manuscript } = result.value.conditions;
+
+      expect(manuscript.utf16Length).toBe(MULTI_TEXT.length);
+      expect(manuscript.graphemeCount).toBe(countGraphemes(MULTI_TEXT));
+      // 書記素数と UTF-16 長が食い違う原稿であること自体を確かめる（食い違わない原稿では
+      // graphemeCount を text.length に変える変異を捕まえられないため）。
+      expect(manuscript.graphemeCount).not.toBe(MULTI_TEXT.length);
+      expect(manuscript.paragraphCount).toBe(splitParagraphs(MULTI_TEXT).length);
+      expect(manuscript.paragraphCount).toBe(3);
+      expect(manuscript.bodyHash).toBe(hashBody(MULTI_TEXT));
+      // 差し込み後の文字列から取っていないこと（正解ファイル・原稿・結果の 3 者照合が
+      // 静かに壊れるため）。
+      expect(manuscript.bodyHash).not.toBe(hashBody(PROMPT.replace("{{manuscript}}", MULTI_TEXT)));
     });
 
     it("JSON.stringify(result) に raw が含まれない", async () => {
