@@ -20,7 +20,12 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { insertCheckUnit } from "../db/repositories/check-units.ts";
-import { insertCandidate, insertFinding } from "../db/repositories/findings.ts";
+import type { UnlocatedLocateResult } from "../db/repositories/findings.ts";
+import {
+  insertCandidate,
+  insertFinding,
+  saveUnlocatedCandidate,
+} from "../db/repositories/findings.ts";
 import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { insertRecheckUnit } from "../db/repositories/rechecks.ts";
 import { insertRun, insertRunTarget } from "../db/repositories/runs.ts";
@@ -117,6 +122,11 @@ function seedRun(
  * 指摘を `count` 件、理由（元候補）・再確認・採否の行をすべて添えて投入する
  * （`findings.query-count.test.ts` の `seedManyFindings` と同じ形。候補・診断・再確認・採否を
  * 指摘ごとに引く実装にすると本数が指摘数に比例して増える、という変異を検出するための材料）。
+ *
+ * あわせて `outside-target`（位置未確定）の候補も `count` 件混ぜる（task-9-review.md Minor 2）。
+ * 素材が `located` の指摘・候補だけだと、`unlocatedCandidates` / `unlocatedDiagnostics` を
+ * 候補ごとに引く実装に変えても本数が増えない（`unlocatedCandidates` が常に空のため）という
+ * 穴があり、その種類の N+1 だけこのテストをすり抜けてしまう。
  */
 function seedManyFindings(
   harness: ApiHarness,
@@ -191,6 +201,35 @@ function seedManyFindings(
         startedAt: null,
         finishedAt: new Date(),
       });
+
+      // outside-target（位置未確定）の候補を1件添える。findingId は作らない（決定23）ので、
+      // unlocatedCandidates / unlocatedDiagnostics 側の本数だけが count に比例して増える。
+      // candidateIndex は located 側（0..count-1）と衝突しないよう count だけずらす。
+      saveUnlocatedCandidate(tx, {
+        runId: args.runId,
+        checkUnitId: args.checkUnitId,
+        candidateIndex: args.count + i,
+        llm: {
+          paragraphId: 0,
+          quote: `圏外${i}`,
+          before: "",
+          after: "",
+          category: "notation",
+          reason: "参考文脈内から始まる",
+          suggestion: null,
+          verdict: "confirm-with-author",
+        },
+        manuscriptVersionId: args.manuscriptVersionId,
+        targetId: args.targetId,
+        searchRange: { start: 0, end: MANUSCRIPT_BODY.length },
+        locate: {
+          status: "failed",
+          reason: "outside-target",
+          exactMatches: [{ start: 0, end: 1 }],
+          diagnostic: null,
+        } satisfies UnlocatedLocateResult,
+        candidateId: `${findingId}-outside`,
+      });
     }
   });
 }
@@ -218,8 +257,13 @@ async function collectStatements(runId: string, findingCount: number): Promise<r
 
   const res = await harness.app.request(`/api/runs/${runId}/export`);
   expect(res.status).toBe(200);
-  const body = (await res.json()) as { readonly findings: readonly unknown[] };
+  const body = (await res.json()) as {
+    readonly findings: readonly unknown[];
+    readonly unlocatedCandidates: readonly unknown[];
+  };
   expect(body.findings).toHaveLength(findingCount);
+  // outside-target の候補も findingCount ぶん混ざっている（seedManyFindings）。
+  expect(body.unlocatedCandidates).toHaveLength(findingCount);
 
   return statements;
 }

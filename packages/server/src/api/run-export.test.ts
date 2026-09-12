@@ -6,6 +6,7 @@
  * （PR13a-2 Task 9）。
  */
 
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { createDatabase } from "../db/client.ts";
@@ -21,6 +22,7 @@ import {
 import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { insertRecheckUnit } from "../db/repositories/rechecks.ts";
 import { insertRun, insertRunTarget } from "../db/repositories/runs.ts";
+import { judgments } from "../db/schema.ts";
 import { buildRunExport } from "./run-export.ts";
 
 function setupDb() {
@@ -358,6 +360,57 @@ describe("api/run-export: buildRunExport", () => {
     expect(result.unlocatedCandidates).toEqual([]);
     expect(result.unlocatedDiagnostics).toEqual([]);
     expect(result.recheckUnits).toEqual([]);
+
+    close();
+  });
+
+  it("judgments の行を消した指摘があると buildRunExport は例外を投げる（既定値に丸めない。決定 25）", () => {
+    const { db, close } = setupDb();
+    const runId = "r-no-judgment";
+    const { run, targetId, checkUnitId, manuscriptVersionId } = seedRun(db, runId);
+
+    const finding = insertFinding(db, {
+      id: "f-no-judgment",
+      runId,
+      manuscriptVersionId,
+      targetId,
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      paragraphId: 0,
+      quote: "あい",
+      suggestion: "あい(訂正)",
+      category: "notation",
+      initialVerdict: "likely-error",
+      mergeKey: null,
+      suppression: null,
+    });
+    insertCandidate(db, {
+      id: "f-no-judgment-c1",
+      runId,
+      checkUnitId,
+      findingId: finding.id,
+      candidateIndex: 0,
+      llm: {
+        paragraphId: 0,
+        quote: "あい",
+        before: "",
+        after: "うえ",
+        category: "notation",
+        reason: "あいが誤字の可能性",
+        suggestion: "あい(訂正)",
+        verdict: "likely-error",
+      },
+      locateStatus: "located",
+      range: { start: 0, end: 2 },
+      mergeKey: null,
+    });
+
+    // insertFinding は judgments の行を undecided で同時に作る（PR8 決定 5）。ここでその行だけを
+    // 消し、「参照が壊れているのに既定値へ丸める」変異（requireJudgment を削って undecided 等に
+    // 丸める）が入ると通ってしまう穴を塞ぐ（task-9-review.md Minor 1）。
+    db.delete(judgments).where(eq(judgments.findingId, "f-no-judgment")).run();
+
+    expect(() => buildRunExport(db, run)).toThrow(/judgments の行がありません/);
 
     close();
   });

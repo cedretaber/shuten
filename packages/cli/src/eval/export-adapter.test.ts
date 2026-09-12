@@ -252,12 +252,12 @@ function makeRecheckUnit(overrides: Partial<RecheckUnitDto> = {}): RecheckUnitDt
 function makeLlm(overrides: Partial<LlmFinding> = {}): LlmFinding {
   return {
     paragraphId: 0,
-    quote: "あい",
-    before: "",
-    after: "うえ",
+    quote: "うえお",
+    before: "あい",
+    after: "",
     category: "notation",
     reason: "理由",
-    suggestion: "あい(訂正)",
+    suggestion: "うえお(訂正)",
     verdict: "likely-error",
     ...overrides,
   };
@@ -271,7 +271,7 @@ function makeCandidate(overrides: Partial<CandidateDto> = {}): CandidateDto {
     candidateIndex: 0,
     llm: makeLlm(),
     locateStatus: "located",
-    range: { start: 0, end: 2 },
+    range: { start: 2, end: 5 },
     ...overrides,
   };
 }
@@ -279,7 +279,7 @@ function makeCandidate(overrides: Partial<CandidateDto> = {}): CandidateDto {
 function makeDiagnostic(overrides: Partial<DiagnosticDto> = {}): DiagnosticDto {
   return {
     candidateId: "c1",
-    quote: "あい",
+    quote: "うえお",
     reason: "not-found",
     searchRange: { start: 0, end: 5 },
     exactMatches: [],
@@ -307,10 +307,10 @@ function makeFindingDetail(overrides: Partial<FindingDetailDto> = {}): FindingDe
     runId: "r1",
     targetId: "t1",
     locateStatus: "located",
-    range: { start: 0, end: 2 },
+    range: { start: 2, end: 5 },
     paragraphId: 0,
-    quote: "あい",
-    suggestion: "あい(訂正)",
+    quote: "うえお",
+    suggestion: "うえお(訂正)",
     category: "notation",
     initialVerdict: "likely-error",
     suppression: null,
@@ -348,11 +348,15 @@ function makeValidExport(overrides: Partial<RunExportDto> = {}): RunExportDto {
  * エラー文言にパス・接続先・原稿の断片が出ないことを確かめる（決定 9・30 の共通検査）。
  * 本文全体だけでなく、フィクスチャの引用そのもの（`makeLlm` の既定 `quote`）の断片も
  * 見る——本文まるごとが漏れることは無くても、引用の一部だけが漏れる余地は別にあるため。
+ *
+ * 番兵は本文の一部だが「うえお」を使う（`REJECT_BODY.slice(2, 5)`）。以前は「あい」だったが、
+ * これは `ambiguous` の自然な日本語訳「あいまい」の部分文字列でもあり、将来エラー文言を
+ * 日本語化した際に無関係な一致で誤って落ちる恐れがある（task-10-re-review.md Minor 3）。
  */
 function assertNoLeakedContent(errors: readonly string[]): void {
   const joined = errors.join(" ");
   expect(joined).not.toContain(REJECT_BODY);
-  expect(joined).not.toContain("あい");
+  expect(joined).not.toContain("うえお");
   expect(joined).not.toContain("http://");
   expect(joined).not.toContain(".json");
 }
@@ -729,6 +733,46 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
     expect(result.value.unlocated).toHaveLength(1);
     expect(result.value.unlocated[0]?.candidate.locate.reason).toBe("not-found");
     expect(result.value.totals.unlocated).toEqual({ notFound: 1, ambiguous: 0, outsideTarget: 0 });
+  });
+
+  it("位置未確定の候補の診断（transformCandidates 非 null）は変換候補の transform だけを写す（決定 27。locate.diagnostic の非 null 分岐）", () => {
+    // これまでのテストは診断を常に transformCandidates: null（makeDiagnostic の既定値）で
+    // 作っていたため、非 null 分岐（export-adapter.ts の lookupDiagnosticInput）は無検査だった
+    // （task-10-re-review.md Minor 2）。text/range を運ばず transform だけを写す規則を固定する。
+    const result = adaptExportToResult(
+      makeValidExport({
+        recheckUnits: [],
+        findings: [],
+        unlocatedCandidates: [
+          makeCandidate({
+            id: "c-notfound-transform",
+            checkUnitId: "cu1",
+            locateStatus: "not-found",
+            range: null,
+          }),
+        ],
+        unlocatedDiagnostics: [
+          makeDiagnostic({
+            candidateId: "c-notfound-transform",
+            reason: "not-found",
+            transformVersion: "1",
+            transformCandidates: [
+              { transform: "nfc", text: "うえお", range: { start: 2, end: 5 } },
+              { transform: "newline+nfc", text: "うえお", range: null },
+            ],
+            omitted: 0,
+            tied: false,
+          }),
+        ],
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.unlocated).toHaveLength(1);
+    expect(result.value.unlocated[0]?.candidate.locate.diagnostic).toEqual({
+      candidates: [{ transform: "nfc" }, { transform: "newline+nfc" }],
+    });
   });
 });
 
@@ -1740,6 +1784,11 @@ describe("export-adapter: adaptExportToResult（T20：runPipeline と DB 経由�
     const adapted = adaptExportToResult(exported);
     expect(adapted.ok).toBe(true);
     if (!adapted.ok) return;
+
+    // conditions.mode は recheckEnabled から決まる（"split" / "split-recheck"）。T20 が
+    // recheckEnabled: true の実行しか使わないため "split" 側がここまで無検査だった
+    // （task-10-re-review.md Minor 1。変異：mode を "split-recheck" に固定する → ここで落ちる）。
+    expect(adapted.value.conditions.mode).toBe("split");
 
     const plainFinding = adapted.value.findings.find((f) => f.finding.quote === "かきく");
     expect(plainFinding?.recheck).toEqual({ status: "disabled" });
