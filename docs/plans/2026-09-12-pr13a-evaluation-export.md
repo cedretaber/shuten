@@ -968,6 +968,10 @@ shuten aggregate (--result <結果.json> | --export <エクスポート.json>)..
 | どの候補にも紐づかない診断がある | 参照が壊れている（上と同じ理由） |
 | どの指摘にも紐づかない再確認単位がある | 参照が壊れている |
 | 同じ指摘を指す再確認単位が 2 つ以上ある | `finding_id` の一意索引が壊れている |
+| `unlocatedCandidates` に `outside-target` 以外の候補がある | この配列は `finding_id` が null の候補＝`outside-target` だけである（決定 23）。`not-found` / `ambiguous` を受理すると、**同じ候補を指摘側と二重に数えうえ**、位置特定失敗の内訳が本来と変わる |
+| 候補の `perspective` が、その候補の指す検査単位の `perspective` と違う | この値は候補の行ではなく `check_units` から導いたもの（PR8 決定 19）。食い違うエクスポートは壊れており、受理すると**観点一致の検出率（決定 6）を外から動かせる** |
+| `findings[].recheck`（要約）と、その指摘を指す `recheckUnits[]` の項目が食い違う | 決定 32 で同じ DB 行を 2 か所に載せている。評価は単位の側だけを読むので、食い違ったまま受理すると**画面の表示と評価結果が食い違う**。比較するのは両者の共通項目（`id` / `status` / `notApplicableReason` / `verdict` / `reasonKind` / `reason` / `suggestionValid` / `failure`） |
+| `findings[].recheck` が非 null なのに、その指摘を指す `recheckUnits[]` の要素が無い | 同上（要約だけがあって単位が無いのは、同じ行から作った控えとして成立しない） |
 | `locateStatus === "located"` の指摘に候補が 0 件、または `located` でない候補がある | 統合後の指摘は位置確定済みの元候補を 1 件以上持つ |
 
 上の表の後半 4 行は、**zod では書けない関連条件**である（`runExportDtoSchema` は 1 つの値の形しか
@@ -1190,6 +1194,10 @@ CLI 経路では常に 0 になる項目でもある。
   17. 位置未確定の候補に対応する診断が無い
   18. 同じ候補を指す診断が 2 行ある
   19. どの候補にも紐づかない診断がある
+  20. `unlocatedCandidates` に `not-found` の候補が混ざっている
+  21. 候補の `perspective` が検査単位の `perspective` と違う
+  22. `findings[].recheck` の `verdict` と `recheckUnits[]` の `verdict` が違う
+  23. `findings[].recheck` が非 null なのに対応する `recheckUnits[]` の要素が無い
 
   失敗は 1 件目で止めずすべて列挙する（複数の違反を 1 つのエクスポートに入れたケースで固定する）。
   エラー文にパス・本文・接続先が出ない。
