@@ -23,6 +23,24 @@ describe("collectRawOptions", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("未知のオプション名（-- 始まり）はメッセージに含める", () => {
+    const result = collectRawOptions(["--c", "1"], { known: KNOWN });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("--c");
+  });
+
+  it("オプション名以外の引数は、値をメッセージに含めない", () => {
+    // オプション名を付け忘れると値＝ファイルパスが渡ってくる。それを出すとパスが
+    // 標準エラーに漏れる（決定 9。レビュー指摘）。
+    const leakPath = "/private/leak-should-not-appear/manuscript.txt";
+    const result = collectRawOptions([leakPath, "--a", "1"], { known: KNOWN });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).not.toContain(leakPath);
+    expect(result.error).not.toContain("leak-should-not-appear");
+  });
+
   it("値のないオプションを拒否する", () => {
     const result = collectRawOptions(["--a"], { known: KNOWN });
     expect(result.ok).toBe(false);

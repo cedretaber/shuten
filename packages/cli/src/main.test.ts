@@ -616,6 +616,16 @@ describe("main T22: パスの漏えいを防ぐ（決定9）", () => {
     expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
   });
 
+  it("run: 原稿パスを位置引数で渡しても標準エラーにパスが出ない（共通の引数解釈）", async () => {
+    // 修正は `collectRawOptions` にあるのですべてのサブコマンドに効く。代表として
+    // 既定のサブコマンドである `run` でも固定する（レビュー指摘）。
+    const captured = buildIO({});
+    const code = await main([SENTINEL_PATH, "--model", "test-model"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
   it("hash: 結果の書き出し失敗の例外にパスが含まれても標準エラーに出さない", async () => {
     const captured = buildIO({
       writeResult: () => Promise.reject(sentinelError("EACCES")),
@@ -2898,6 +2908,20 @@ describe("main check-truth T16: 原稿本文・quote・パス文字列を漏ら�
     expect(code).toBe(0);
 
     assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+  });
+
+  it("オプション名を付け忘れて原稿パスを位置引数で渡しても、標準エラーにパスが出ない", async () => {
+    // レビュー指摘：`collectRawOptions` が未知のトークンをそのままメッセージに埋めていたため、
+    // `check-truth <原稿パス> --truth t.json` と打つとパスが標準エラーに出ていた。
+    // 経路は `collectRawOptions` なので、この修正はすべてのサブコマンドに効く。
+    const leakPath = "/private/leak-should-not-appear/manuscript.txt";
+    const captured = buildCheckTruthIO();
+    const code = await main(["check-truth", leakPath, "--truth", "truth.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(leakPath);
+    expect(captured.stderr.join("\n")).not.toContain("leak-should-not-appear");
+    expect(captured.stdout).toHaveLength(0);
   });
 
   it("要約の書き出しに失敗したら 1 を返し、例外のパスを標準エラーに出さない", async () => {

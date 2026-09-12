@@ -44,7 +44,15 @@ export function collectRawOptions(
       break;
     }
     if (!knownSet.has(token)) {
-      return err(`未知のオプションです: ${token}`);
+      // オプション名（`--` 始まり）はそのまま返してよいが、それ以外の値は返さない。
+      // `shuten check-truth manuscript.txt --truth t.json` のようにオプション名を付け忘れると、
+      // 値＝ファイルパスがそのまま標準エラーに出てしまう（決定 9：パスを出さない。レビュー指摘）。
+      // これは `collectRawOptions` を使うすべてのサブコマンドに共通の経路である。
+      return token.startsWith("--")
+        ? err(`未知のオプションです: ${token}`)
+        : err(
+            "オプション名以外の引数が渡されました（値は表示しません。--オプション名 値 の形で渡してください）",
+          );
     }
     const value = argv[i + 1];
     if (value === undefined) {
