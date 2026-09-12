@@ -431,7 +431,9 @@ async function runEvaluate(argv: readonly string[], io: MainIO): Promise<number>
   //     失敗したとき既に --out へ書き出し済みという部分的な状態になりうる）。
   const json = JSON.stringify(metrics, null, 2);
   const report =
-    args.reportPath === null ? null : formatEvaluationReport({ metrics, truth, result });
+    args.reportPath === null
+      ? null
+      : formatEvaluationReport({ metrics, truth, result, source: "result" });
 
   const written = await writeResultOrFixedError(io, args.outPath, json, "指標");
   if (!written.ok) {
