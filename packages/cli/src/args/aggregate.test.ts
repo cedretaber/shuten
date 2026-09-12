@@ -194,4 +194,14 @@ describe("parseAggregateArgs", () => {
     if (result.ok) return;
     expect(result.error).toBe("--manuscript がありません（--result だけを使うときは必要です）");
   });
+
+  it("--truth だけで入力（--result / --export）が1つも無いときは「合計2本以上」のエラーになる（--manuscriptがありませんではなく。レビュー指摘 Minor6）", () => {
+    const result = parseAggregateArgs(["--truth", "truth.json"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(
+      "入力（--result / --export）は合計 2 本以上指定してください" +
+        "（1 本では複数回実行のぶれを測れません。決定12）",
+    );
+  });
 });

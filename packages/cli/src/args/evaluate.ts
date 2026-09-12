@@ -53,34 +53,33 @@ export function parseEvaluateArgs(argv: readonly string[]): Result<EvaluateArgs>
   if (truthPath === undefined) {
     return err("必須オプションがありません: --truth");
   }
-  if (resultPath !== undefined && exportPath !== undefined) {
-    return err("--result と --export は同時に指定できません");
-  }
-  if (resultPath === undefined && exportPath === undefined) {
-    return err("--result か --export のどちらかを指定してください");
-  }
 
-  if (exportPath !== undefined) {
-    if (manuscriptPath !== null) {
-      return err(
-        "--export を指定したときは --manuscript を指定できません（本文はエクスポートに含まれます）",
-      );
+  // `resultPath` を先に見る（`resultPath !== undefined` の分岐内で `TypeScript` が
+  // `resultPath: string` に絞り込むため、後段で「resultPath は必ずある」ことを確かめ直す
+  // 到達しない分岐が要らない。`exportPath` 側も対称に、この分岐に来た時点で
+  // `exportPath === undefined` と分かっている）。
+  if (resultPath !== undefined) {
+    if (exportPath !== undefined) {
+      return err("--result と --export は同時に指定できません");
     }
-    return ok({ input: { kind: "export", exportPath }, truthPath, outPath, reportPath });
+    if (manuscriptPath === null) {
+      return err("--manuscript がありません（--result だけを使うときは必要です）");
+    }
+    return ok({
+      input: { kind: "result", resultPath, manuscriptPath },
+      truthPath,
+      outPath,
+      reportPath,
+    });
   }
 
-  // ここに来るのは resultPath !== undefined のとき（上の 2 つの分岐で export のみ・
-  // どちらも無しのケースは弾いている）。`noUncheckedIndexedAccess` 対応の型の絞り込みを兼ねる。
-  if (resultPath === undefined) {
+  if (exportPath === undefined) {
     return err("--result か --export のどちらかを指定してください");
   }
-  if (manuscriptPath === null) {
-    return err("--manuscript がありません（--result だけを使うときは必要です）");
+  if (manuscriptPath !== null) {
+    return err(
+      "--export を指定したときは --manuscript を指定できません（本文はエクスポートに含まれます）",
+    );
   }
-  return ok({
-    input: { kind: "result", resultPath, manuscriptPath },
-    truthPath,
-    outPath,
-    reportPath,
-  });
+  return ok({ input: { kind: "export", exportPath }, truthPath, outPath, reportPath });
 }

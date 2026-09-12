@@ -11,6 +11,13 @@ import { collectRawOptions, err, ok, type Result } from "./common.ts";
  * `--result` と `--export` は混ぜて渡せる。どちらも複数回指定できる（決定29）。合計で
  * 2 本以上必須（1 回では複数回実行のぶれを測れないため。決定12）。`--export` を 1 つでも
  * 渡したときは `--manuscript` を受け付けない（本文はエクスポートが運ぶため）。
+ *
+ * **注意**：引数としては `--result` と `--export` を混ぜて渡せるが、`--export` 由来の結果は
+ * `conditions.versions.result` が常に `"export/1"`（決定28。CLI 由来の `RESULT_VERSION` と
+ * 混ざらないようにするための意図的な区別）になるため、`--result`（`RESULT_VERSION`）と
+ * 混ぜた集計は `checkRunConditions`（`eval/aggregate.ts`）の条件一致検査で必ず不一致になり
+ * 止まる。混在を引数として受理するのは決定29の明示的な意図であり、同じ種類（`--result` どうし
+ * / `--export` どうし）ならそのまま集計できる。
  */
 export interface AggregateArgs {
   /** 0 本以上（`--export` だけでもよい。合計で 2 本以上は `parseAggregateArgs` が保証する）。 */
@@ -61,14 +68,19 @@ export function parseAggregateArgs(argv: readonly string[]): Result<AggregateArg
       "--export を指定したときは --manuscript を指定できません（本文はエクスポートに含まれます）",
     );
   }
-  if (exportPaths.length === 0 && manuscriptPath === null) {
-    return err("--manuscript がありません（--result だけを使うときは必要です）");
-  }
+  // 本数の検査を「--manuscript 必須」の検査より先に行う。入力が 1 つも無いとき
+  // （--result も --export も無い）に、本当の原因（入力が無い）ではなく
+  // 「--manuscript がありません」という分かりにくいエラーが先に出るのを防ぐ
+  // （`evaluate` は入力が無ければ「--result か --export のどちらかを…」で分かりやすい。
+  // レビュー指摘）。
   if (resultPaths.length + exportPaths.length < 2) {
     return err(
       "入力（--result / --export）は合計 2 本以上指定してください" +
         "（1 本では複数回実行のぶれを測れません。決定12）",
     );
+  }
+  if (exportPaths.length === 0 && manuscriptPath === null) {
+    return err("--manuscript がありません（--result だけを使うときは必要です）");
   }
 
   return ok({ resultPaths, exportPaths, manuscriptPath, truthPath, outPath, reportPath });

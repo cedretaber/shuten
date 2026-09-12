@@ -1202,7 +1202,8 @@ describe("main evaluate T22: パスの漏えいを防ぐ（決定9）", () => {
 
 const EVAL_ARGS_EXPORT = ["evaluate", "--truth", "truth.json", "--export", "export.json"];
 
-function evalExportJson(overrides: { bodyHash?: string } = {}): unknown {
+function evalExportJson(overrides: { body?: string } = {}): unknown {
+  const body = overrides.body ?? EVAL_TEXT;
   return {
     formatVersion: "1",
     exportedAt: "2026-01-01T00:02:00.000Z",
@@ -1239,8 +1240,8 @@ function evalExportJson(overrides: { bodyHash?: string } = {}): unknown {
     manuscript: {
       id: "mv1",
       name: "テスト原稿",
-      body: EVAL_TEXT,
-      bodyHash: overrides.bodyHash ?? EVAL_HASH,
+      body,
+      bodyHash: hashBody(body),
       createdAt: "2026-01-01T00:00:00.000Z",
     },
     targets: [],
@@ -1249,6 +1250,94 @@ function evalExportJson(overrides: { bodyHash?: string } = {}): unknown {
     findings: [],
     unlocatedCandidates: [],
     unlocatedDiagnostics: [],
+  };
+}
+
+/**
+ * `evalExportJson` に加えて、本文と**合わない** quote/range を持つ「located」の指摘を 1 件持つ
+ * エクスポート JSON（レビュー指摘 Important 1(a)(c)）。`adaptExportToResult` 自体は
+ * quote/range を本文と突き合わせないため（`export-adapter.ts` は `range === null` しか見ない）、
+ * この指摘は変換自体には成功する。3 方向のハッシュ照合が `validateFindingRanges` より
+ * **前**であることを検査するための素材：順序が入れ替わっていれば
+ * 「quote が本文の該当範囲と一致しません」が先に出てしまう。
+ */
+function evalExportJsonWithMismatchedFinding(overrides: { body?: string } = {}): unknown {
+  const body = overrides.body ?? EVAL_TEXT;
+  const base = evalExportJson({ body }) as Record<string, unknown>;
+  const rangeEnd = Math.min(5, body.length);
+  return {
+    ...base,
+    targets: [
+      {
+        id: "t1",
+        targetIndex: 0,
+        target: { start: 0, end: body.length },
+        contextBefore: null,
+        contextAfter: null,
+        input: { start: 0, end: body.length },
+        paragraphIds: [0],
+      },
+    ],
+    checkUnits: [
+      {
+        id: "cu1",
+        targetId: "t1",
+        targetIndex: 0,
+        perspective: "typo",
+        status: "done",
+        attempts: 1,
+        failure: null,
+        pendingNote: null,
+        elapsedMs: 10,
+        startedAt: null,
+        finishedAt: null,
+      },
+    ],
+    findings: [
+      {
+        id: "f-mismatch",
+        runId: "r1",
+        targetId: "t1",
+        locateStatus: "located",
+        range: { start: 0, end: rangeEnd },
+        paragraphId: 0,
+        quote: "ぜんぜんちがう",
+        suggestion: null,
+        category: "notation",
+        initialVerdict: "likely-error",
+        suppression: null,
+        reasons: [],
+        recheck: null,
+        judgment: {
+          findingId: "f-mismatch",
+          status: "undecided",
+          note: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        candidates: [
+          {
+            id: "c-mismatch",
+            checkUnitId: "cu1",
+            perspective: "typo",
+            candidateIndex: 0,
+            llm: {
+              paragraphId: 0,
+              quote: "ぜんぜんちがう",
+              before: "",
+              after: "",
+              category: "notation",
+              reason: "テスト理由",
+              suggestion: null,
+              verdict: "likely-error",
+            },
+            locateStatus: "located",
+            range: { start: 0, end: rangeEnd },
+          },
+        ],
+        diagnostics: [],
+      },
+    ],
   };
 }
 
@@ -1307,7 +1396,7 @@ describe("main evaluate T24: --export の配線（決定29）", () => {
     expect(captured.stderr.join("\n")).toContain("--manuscript がありません");
   });
 
-  it('--export だけで evaluate が通り、formatEvaluationReport に source: "export" が渡る', async () => {
+  it("--export だけで evaluate が通り、--report 未指定なら formatEvaluationReport を呼ばない", async () => {
     const spy = vi.spyOn(reportModule, "formatEvaluationReport");
     try {
       const captured = buildEvalExportIO();
@@ -1345,6 +1434,48 @@ describe("main evaluate T24: --export の配線（決定29）", () => {
     const stderr = captured.stderr.join("\n");
     expect(stderr).toContain("--out");
     expect(stderr).toContain("--export");
+  });
+});
+
+// レビュー指摘 Important 1：runEvaluate の「ハッシュ照合 → validateFindingRanges」という順序が
+// --export 経路にも --result 経路にも固定されていなかった（段 6 と段 7 を入れ替える変異が
+// main.test.ts 100 件すべてを素通りした）。ここでロックする。
+describe("main evaluate T24: 処理の順序（ハッシュ照合が validateFindingRanges より前。レビュー指摘 Important 1）", () => {
+  it("--export：正解ファイルの bodyHash が違い、かつ指摘の quote/range も本文と合わないとき、bodyHash の食い違いだけが出る", async () => {
+    const otherHash = "b".repeat(64);
+    const captured = buildEvalExportIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(evalTruthJson({ bodyHash: otherHash }))),
+        ),
+      readExportBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(evalExportJsonWithMismatchedFinding())),
+        ),
+    });
+    const code = await main(EVAL_ARGS_EXPORT, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
+  });
+
+  it("--result：結果 JSON が別原稿のもの（bodyHash も quote/range も食い違う）でも、bodyHash の食い違いだけが出る", async () => {
+    const captured = buildEvalIO({
+      readResultBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(evalResultJsonForDifferentManuscript())),
+        ),
+    });
+    const code = await main(EVAL_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
   });
 });
 
@@ -1747,6 +1878,37 @@ describe("main aggregate T24: --export の配線（決定29）", () => {
     };
     expect(parsed.formatVersion).toBe("1");
     expect(parsed.runCount).toBe(2);
+  });
+
+  // レビュー指摘 Important 1(c)：本文は「最初の --export」から採るが、2 本目以降の本文が
+  // 違っていても（かつ 2 本目の指摘の quote/range が 1 本目の本文と食い違っていても）
+  // ハッシュ照合が validateFindingRanges より先に働き、bodyHash の食い違いだけが報告される
+  // ことを検査する。
+  it("処理の順序：--export 2本の本文が違うとき、ハッシュ照合が validateFindingRanges より先に働く", async () => {
+    const secondBody = "かきくけこ";
+    const captured = buildAggregateIO({
+      readExportBytes: (path) =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              path === "b.json"
+                ? evalExportJsonWithMismatchedFinding({ body: secondBody })
+                : evalExportJson(),
+            ),
+          ),
+        ),
+    });
+    const code = await main(
+      ["aggregate", "--truth", "truth.json", "--export", "a.json", "--export", "b.json"],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("bodyHash が一致しません");
+    expect(stderr).not.toContain("quote が本文の該当範囲と一致しません");
   });
 
   it("--export どうしが同じパス文字列なら重複としてエラー（--result と同じ扱い。決定21・29）", async () => {

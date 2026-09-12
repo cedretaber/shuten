@@ -587,6 +587,12 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
 
   // 3. 本文の決定（決定 29）。--export があれば最初の --export の埋め込み本文を使う
   //    （ここでその --export を先に読む）。無ければ --manuscript を読む。
+  //    複数の --export の本文どうしの一致は、ここでは検査しない。各エクスポートは
+  //    hashBody(body) === bodyHash を自身の内部整合として保証しており（決定30。
+  //    export-adapter.ts）、6 の 3 方向ハッシュ照合が「本文（1 本目）の hashBody」と
+  //    「各入力の conditions.manuscript.bodyHash」を突き合わせるため、本文が違う
+  //    --export が混ざっていれば 6 で必ず「bodyHash が一致しません」として検出される
+  //    （決定30が保証する連鎖。レビュー指摘 Minor4）。
   let text: string;
   let firstExportedValue: RunExportDto | null = null;
   if (args.exportPaths.length > 0) {
