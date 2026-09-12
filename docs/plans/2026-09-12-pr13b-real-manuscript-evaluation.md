@@ -512,6 +512,8 @@ pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失
 `finding.verdict`（初回判定。統合後の値）を持つので、誤検出の指標に `likelyError` / `confirmWithAuthor`
 の件数を足す。全体と観点別の両方に付け、`aggregate` は 3 回分の最小・中央値・最大を出す。
 レポートの誤検出一覧には「初回判定」列と、人が埋める「理由の参考価値（人）」列を足す。
+指標 JSON・集計 JSON の `formatVersion` は `"1"` から `"2"` に上げる（PR13a 決定 13「定義を変えたら上げる」。
+項目の追加でも、古いレポートと混ざらないようにする目的は同じ。レビュー指摘）。
 これは `check-truth` と同じ**評価ハーネスの道具**で、`packages/server` にも web にも触れず、
 仕様書の「合意した機能範囲」は広がらない。段階 A の前に入れ、全実行で内訳が自動で残るようにする。
 

@@ -163,7 +163,11 @@ export interface PerformanceMetrics {
 }
 
 export interface EvaluationMetrics {
-  readonly formatVersion: "1";
+  /**
+   * 指標 JSON の版（PR13a 決定 13）。項目を足したら上げる。"2"：誤検出に初回判定別の内訳
+   * （`likelyError` / `confirmWithAuthor`）と `FalsePositiveFinding.verdict` を足した（PR13b 決定 18）。
+   */
+  readonly formatVersion: "2";
   readonly truthEntryCounts: { readonly error: number; readonly normal: number };
   readonly beforeRecheck: FindingSetMetrics;
   readonly afterRecheck: FindingSetMetrics;
@@ -572,7 +576,7 @@ export function scoreRun(
   }).length;
 
   return {
-    formatVersion: "1",
+    formatVersion: "2",
     truthEntryCounts: { error: errorEntries.length, normal: normalEntries.length },
     beforeRecheck,
     afterRecheck,

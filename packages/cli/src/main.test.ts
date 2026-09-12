@@ -864,7 +864,7 @@ describe("main evaluate T11: 出力（決定10・11・13）", () => {
     expect(captured.stdout).toHaveLength(1);
     expect(captured.writtenFiles).toHaveLength(0);
     const parsed = JSON.parse(captured.stdout[0] ?? "") as { formatVersion?: unknown };
-    expect(parsed.formatVersion).toBe("1");
+    expect(parsed.formatVersion).toBe("2");
   });
 
   it("--out を指定するとファイルへ書き出し、標準出力には書かない", async () => {
@@ -878,7 +878,7 @@ describe("main evaluate T11: 出力（決定10・11・13）", () => {
     const parsed = JSON.parse(captured.writtenFiles[0]?.content ?? "") as {
       formatVersion?: unknown;
     };
-    expect(parsed.formatVersion).toBe("1");
+    expect(parsed.formatVersion).toBe("2");
   });
 
   it("--report を指定すると Markdown レポートに人手の欄が空で出る（決定11）", async () => {
@@ -1588,7 +1588,7 @@ describe("main aggregate T10: 複数回実行の集計（決定12）", () => {
       formatVersion?: unknown;
       runCount?: unknown;
     };
-    expect(parsed.formatVersion).toBe("1");
+    expect(parsed.formatVersion).toBe("2");
     expect(parsed.runCount).toBe(2);
   });
 
@@ -1925,7 +1925,7 @@ describe("main aggregate T24: --export の配線（決定29）", () => {
       formatVersion?: unknown;
       runCount?: unknown;
     };
-    expect(parsed.formatVersion).toBe("1");
+    expect(parsed.formatVersion).toBe("2");
     expect(parsed.runCount).toBe(2);
   });
 

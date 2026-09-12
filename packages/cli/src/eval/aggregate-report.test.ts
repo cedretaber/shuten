@@ -37,7 +37,7 @@ function baseAggregateResult(
     falsePositiveConfirmWithAuthor: numberAggregate(0, 1, 2),
   };
   return {
-    formatVersion: "1",
+    formatVersion: "2",
     runCount: 2,
     notices: overrides.notices ?? [],
     metrics: {

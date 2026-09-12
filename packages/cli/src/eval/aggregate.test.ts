@@ -149,7 +149,7 @@ function baseMetrics(
   } = {},
 ): EvaluationMetrics {
   return {
-    formatVersion: "1",
+    formatVersion: "2",
     truthEntryCounts: { error: 0, normal: 0 },
     beforeRecheck: overrides.beforeRecheck ?? emptyFindingSet(),
     afterRecheck: overrides.afterRecheck ?? emptyFindingSet(),
@@ -199,7 +199,7 @@ describe("aggregateRuns: 条件がすべて一致していれば集計できる"
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.value.runCount).toBe(2);
-    expect(outcome.value.formatVersion).toBe("1");
+    expect(outcome.value.formatVersion).toBe("2");
   });
 });
 

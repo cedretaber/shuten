@@ -199,7 +199,7 @@ describe("formatEvaluationReport", () => {
     });
 
     expect(report).toContain("# 評価レポート");
-    expect(report).toContain("formatVersion: 1");
+    expect(report).toContain("formatVersion: 2");
     expect(report).toContain("org/test-model");
     expect(report).toContain("mode: split-recheck");
     expect(report).toContain("status: completed");

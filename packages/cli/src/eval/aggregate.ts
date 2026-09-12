@@ -99,7 +99,8 @@ export interface AggregateMetrics {
 }
 
 export interface AggregateResult {
-  readonly formatVersion: "1";
+  /** 集計 JSON の版（PR13a 決定 13）。"2"：誤検出の初回判定別の内訳を足した（PR13b 決定 18）。 */
+  readonly formatVersion: "2";
   readonly runCount: number;
   /** 集計を拒否はしないが読み手に伝えるべきこと（量子化を確認できなかった、など）。 */
   readonly notices: readonly string[];
@@ -541,7 +542,7 @@ export function aggregateRuns(
   return {
     ok: true,
     value: {
-      formatVersion: "1",
+      formatVersion: "2",
       runCount,
       notices,
       metrics,
