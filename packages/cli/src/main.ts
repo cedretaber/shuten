@@ -13,6 +13,7 @@ import { ingestUtf8Bytes } from "@shuten/shared";
 
 import { parseAggregateArgs } from "./args/aggregate.ts";
 import { parseEvaluateArgs } from "./args/evaluate.ts";
+import { parseFullChatArgs } from "./args/full-chat.ts";
 import { parseHashArgs } from "./args/hash.ts";
 import { parseArgs } from "./args.ts";
 import { aggregateRuns, checkRunConditions } from "./eval/aggregate.ts";
@@ -23,6 +24,8 @@ import type { EvaluationResultInput } from "./eval/result-schema.ts";
 import { parseResultJson, validateFindingRanges } from "./eval/result-schema.ts";
 import { scoreRun } from "./eval/score.ts";
 import { resolveTruthEntries } from "./eval/truth.ts";
+import type { FullChatRunResult } from "./full-chat.ts";
+import { runFullChat } from "./full-chat.ts";
 import type { FileIdentity, NamedPath } from "./io.ts";
 import {
   checkOutputConflict,
@@ -30,6 +33,7 @@ import {
   readEvalResultText,
   readExportFile,
   readManuscriptText,
+  readPromptText,
   readTruthFile,
   reportTruthResolveFailure,
   writeResultOrFixedError,
@@ -54,6 +58,8 @@ export type { FileIdentity };
 export interface MainIO {
   readonly readManuscriptBytes: (path: string) => Promise<Uint8Array>;
   readonly readAllowedWordsBytes: (path: string) => Promise<Uint8Array>;
+  /** `full-chat` のプロンプトファイル読み込み（決定 15・38）。 */
+  readonly readPromptBytes: (path: string) => Promise<Uint8Array>;
   readonly readTruthBytes: (path: string) => Promise<Uint8Array>;
   readonly readResultBytes: (path: string) => Promise<Uint8Array>;
   readonly readExportBytes: (path: string) => Promise<Uint8Array>;
@@ -70,6 +76,7 @@ function defaultIO(): MainIO {
   return {
     readManuscriptBytes: (path) => readFile(path),
     readAllowedWordsBytes: (path) => readFile(path),
+    readPromptBytes: (path) => readFile(path),
     readTruthBytes: (path) => readFile(path),
     readResultBytes: (path) => readFile(path),
     readExportBytes: (path) => readFile(path),
@@ -807,11 +814,141 @@ async function runAggregate(argv: readonly string[], io: MainIO): Promise<number
   return 0;
 }
 
+/**
+ * `--out` が `--manuscript`/`--prompt-file` と同じ実体を指していないか調べる（決定 38。
+ * `runRun` の `findOutPathConflict` と同じ形の薄いラッパー）。
+ */
+async function findFullChatOutPathConflict(
+  io: MainIO,
+  outPath: string,
+  manuscriptPath: string,
+  promptPath: string,
+): Promise<string | null> {
+  const paths: NamedPath[] = [
+    { name: "--out", path: outPath },
+    { name: "--manuscript", path: manuscriptPath },
+    { name: "--prompt-file", path: promptPath },
+  ];
+  const conflict = await findPathConflict(io, paths);
+  if (conflict === null) {
+    return null;
+  }
+  if (conflict[0] === "--out") return conflict[1];
+  if (conflict[1] === "--out") return conflict[0];
+  return null;
+}
+
+/**
+ * `full-chat` サブコマンドの本体（決定 15・34・38）。引数解釈・原稿とプロンプトの読み込み・
+ * 全文チャットの実行・結果出力をつなぐだけで、実行そのものは `runFullChat` に委ねる
+ * （`runRun` と同じ役割分担）。分割・観点・許容語・再確認・再試行は持たない。
+ *
+ * 戻り値は終了コード（決定 37）：0 = completed、2 = failed、1 = 引数・入出力の誤り。
+ */
+async function runFullChatCommand(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  io: MainIO,
+): Promise<number> {
+  const parsed = parseFullChatArgs(argv);
+  if (!parsed.ok) {
+    io.writeErrorLine(`引数エラー: ${parsed.error}`);
+    return 1;
+  }
+  const args = parsed.value;
+
+  // 生成要求を送る前に（クライアントを作る前に）確かめる（決定 38。runRun と同じ理由）。
+  if (args.outPath !== null) {
+    const conflict = await findFullChatOutPathConflict(
+      io,
+      args.outPath,
+      args.manuscriptPath,
+      args.promptPath,
+    );
+    if (conflict !== null) {
+      io.writeErrorLine(`引数エラー: --out が ${conflict} と同じファイルを指しています`);
+      return 1;
+    }
+  }
+
+  // 接続先 URL は解析に失敗しても生の値を出さない（runRun と同じ文言を使い回す）。
+  let lmStudioUrl: string;
+  try {
+    lmStudioUrl = parseLmStudioUrl(env.SHUTEN_LM_STUDIO_URL ?? DEFAULT_LM_STUDIO_URL);
+  } catch {
+    io.writeErrorLine(
+      "環境変数 SHUTEN_LM_STUDIO_URL が不正です（値は表示しません。http(s) のルート URL を指定してください）",
+    );
+    return 1;
+  }
+  const apiKey = parseLmStudioApiKey(env.SHUTEN_LM_STUDIO_API_KEY);
+
+  const manuscriptText = await readManuscriptText(io, args.manuscriptPath);
+  if (!manuscriptText.ok) {
+    io.writeErrorLine(manuscriptText.error);
+    return 1;
+  }
+  const text = manuscriptText.value;
+
+  const promptText = await readPromptText(io, args.promptPath);
+  if (!promptText.ok) {
+    io.writeErrorLine(promptText.error);
+    return 1;
+  }
+  const prompt = promptText.value;
+
+  const client = io.createClient({ baseUrl: lmStudioUrl, apiKey });
+
+  const generation: GenerationSettings = {
+    model: args.model,
+    maxTokens: args.maxTokens,
+    temperature: args.temperature,
+    ...(args.seed !== undefined ? { seed: args.seed } : {}),
+    reasoningEffort: args.reasoningEffort,
+  };
+
+  let runResult: FullChatRunResult;
+  try {
+    runResult = await runFullChat({
+      text,
+      prompt,
+      generation,
+      timeoutMs: args.checkTimeoutMs,
+      client,
+    });
+  } catch {
+    // runFullChat が想定外の例外を投げるのは、LmStudioError 以外の例外だけ（runRun と同じ姿勢）。
+    // 原因（cause の連鎖など）に接続先や資格情報の断片が写り込みうるため、固定文言だけを出す。
+    io.writeErrorLine("全文チャットの実行中に想定外のエラーが発生した");
+    return 1;
+  } finally {
+    // 決定 38：生成要求の送信後は、成功・失敗のどちらでも必ずクライアントを閉じる。
+    await client.close();
+  }
+
+  if (!runResult.ok) {
+    // `{{manuscript}}` 欠落だけがここに来る。結果 JSON は書かない。
+    io.writeErrorLine(`引数エラー: ${runResult.error}`);
+    return 1;
+  }
+
+  const json = JSON.stringify(runResult.value, null, 2);
+  const written = await writeResultOrFixedError(io, args.outPath, json);
+  if (!written.ok) {
+    io.writeErrorLine(written.error);
+    return 1;
+  }
+
+  // 決定 37：stop 以外の終了理由も失敗として扱う。失敗でも結果 JSON は書いた上で終了コードを変える。
+  return runResult.value.status === "completed" ? 0 : 2;
+}
+
 type SubcommandDispatch =
   | { readonly subcommand: "run"; readonly rest: readonly string[] }
   | { readonly subcommand: "hash"; readonly rest: readonly string[] }
   | { readonly subcommand: "evaluate"; readonly rest: readonly string[] }
   | { readonly subcommand: "aggregate"; readonly rest: readonly string[] }
+  | { readonly subcommand: "full-chat"; readonly rest: readonly string[] }
   | { readonly subcommand: "unknown" };
 
 /**
@@ -835,6 +972,9 @@ function dispatchSubcommand(argv: readonly string[]): SubcommandDispatch {
   if (first === "aggregate") {
     return { subcommand: "aggregate", rest: argv.slice(1) };
   }
+  if (first === "full-chat") {
+    return { subcommand: "full-chat", rest: argv.slice(1) };
+  }
   return { subcommand: "unknown" };
 }
 
@@ -857,6 +997,8 @@ export async function main(
       return runEvaluate(dispatch.rest, io);
     case "aggregate":
       return runAggregate(dispatch.rest, io);
+    case "full-chat":
+      return runFullChatCommand(dispatch.rest, env, io);
     case "unknown":
       // 先頭トークンが `--` で始まらなければ何でもサブコマンド名扱いなので、打ち間違えた
       // パス（例：原稿ファイルのパス）がそのまま入りうる。固定文言のみを返す（決定 9。M-1 修正）。
