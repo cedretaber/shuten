@@ -839,7 +839,8 @@ null になる）。`scoreRun` が読むのは `stop.reason` だけなので指�
 - `locate.reason` は候補の `locateStatus`（`located` なら拒否）。
 - `locate.diagnostic` は診断の `transformCandidates` が null なら `null`、非 null なら
   `{ candidates: transformCandidates.map(c => ({ transform: c.transform })) }`。
-  診断そのものが無い候補は `diagnostic: null`。
+  **診断の行そのものが無い候補は `diagnostic: null` に丸めず拒否する**（決定 30）。
+  位置特定に失敗した候補には必ず診断が 1 行ある。
 
 **再確認（`RecheckSummaryDto` → `EvaluationRecheckInput`）**
 
@@ -952,14 +953,35 @@ shuten aggregate (--result <結果.json> | --export <エクスポート.json>)..
 | `stopped` なのに `stopReason` または `stopMessage` が null | `RunStop` を作れない（`message` は非 null の項目） |
 | `locateStatus` が `not-found` / `ambiguous` の指摘に、候補が 0 件または 2 件以上ある | 1 候補 1 指摘で保存される（決定 23 の表）。0 件なら黙って数え落とし、2 件以上ならどれを採るかが決まらない |
 | 指摘と候補の `locateStatus` が食い違う | 同上。位置特定失敗の理由を候補から採るため、食い違うと理由が決まらない |
+| 位置未確定の候補に対応する診断が無い | 3 通りとも診断が 1 行できる（決定 23 の表。`insertDiagnostic` の呼び出しは `saveUnlocatedCandidate` の 1 か所だけ）。欠けていれば診断変換別の候補取得件数（決定 8）を黙って過少に数える |
+| 同じ候補を指す診断が 2 行以上ある | どちらを採るかが決まらない |
+| どの候補にも紐づかない診断がある | 参照が壊れている（上と同じ理由） |
 | `locateStatus === "located"` の指摘に候補が 0 件、または `located` でない候補がある | 統合後の指摘は位置確定済みの元候補を 1 件以上持つ |
 
 上の表の後半 4 行は、**zod では書けない関連条件**である（`runExportDtoSchema` は 1 つの値の形しか
 見ない）。エクスポート JSON は外から渡されるファイルなので、アダプターがここを守る。
 
-`RUN_STOP_REASONS` と `StopReason` の対応は、**コンパイル時にも縛る**。
-`satisfies readonly StopReason[]` を通る 7 値の定数配列を置き、`backend-restarted` だけを
-明示的に拒否する形にする（`RUN_STOP_REASONS` に値が増えたら型で気づける）。
+`RunStopReason`（サーバー。8 値）と `StopReason`（`PipelineResult`。7 値）の対応は、
+**全キー必須の対応表でコンパイル時に縛る**。
+
+```ts
+const STOP_REASON_MAP = {
+  "model-not-loaded": "model-not-loaded",
+  "recovery-needed": "recovery-needed",
+  "connection-lost": "connection-lost",
+  settings: "settings",
+  aborted: "aborted",
+  "internal-error": "internal-error",
+  "recovery-blocked": "recovery-blocked",
+  // PipelineResult の StopReason に無い。変換不能として拒否する。
+  "backend-restarted": null,
+} satisfies Record<RunStopReason, StopReason | null>;
+```
+
+`satisfies readonly StopReason[]` を通る 7 値の配列では**足りない**。それは「書いた 7 値が
+`StopReason` として妥当か」を見るだけで、`RUN_STOP_REASONS` の網羅性とは結び付かず、
+サーバー側に 9 つめが増えても気づけない。`Record<RunStopReason, ...>` ならキーが 1 つでも
+欠ければ型検査で落ちる。`null` は「変換できないので拒否する」の意味になる。
 
 
 ### 決定 31：エクスポート由来の `timeouts` は `recoveryConfirmMs` を足した実効上限にする
@@ -1096,12 +1118,30 @@ CLI 経路では常に 0 になる項目でもある。
   **止まった実行の素材も別ケースで入れる**：位置確定済みの指摘があるのに再確認単位がまだ無い
   （`issueRechecks` の前に止まった）実行で、再確認が `pending`（抑制済みなら `suppressed`）に
   復元されること。変異：`recheck === null` を一律 `disabled` にする → 落ちる（決定 27）。
-- **T23 アダプターの拒否**：決定 30 の表の各行で、既定値に丸めずエラーになる。少なくとも
-  `status: "running"`、`finishedAt: null`、`stopReason: "backend-restarted"`、
-  `locateStatus: "located"` かつ `range: null`、`completed` なのに `stopReason` が残っている、
-  `stopped` なのに `stopMessage` が null、`not-found` の指摘に候補が 2 件、
-  指摘と候補の `locateStatus` の食い違いの 8 つ。失敗は 1 件目で止めずすべて列挙する。
+- **T23 アダプターの拒否**：決定 30 の表の**各行**について、既定値に丸めずエラーになる。
+  1. `status: "running"`（終わっていない実行）
+  2. `finishedAt: null`
+  3. `completed` なのに `stopReason` が残っている
+  4. `stopped` なのに `stopReason` が null
+  5. `stopped` なのに `stopMessage` が null
+  6. `stopReason: "backend-restarted"`
+  7. 検査単位に `running` がある
+  8. `status: "done"` の再確認で `verdict` が null
+  9. `locateStatus: "located"` の指摘の `range` が null
+  10. `hashBody(body)` と `bodyHash` の食い違い
+  11. 候補の指す検査単位が無い
+  12. `not-found` の指摘の候補が 0 件
+  13. `ambiguous` の指摘の候補が 2 件
+  14. 指摘と候補の `locateStatus` の食い違い
+  15. `located` の指摘の候補が 0 件
+  16. `located` の指摘に `located` でない候補がある
+  17. 位置未確定の候補に対応する診断が無い
+  18. 同じ候補を指す診断が 2 行ある
+  19. どの候補にも紐づかない診断がある
+
+  失敗は 1 件目で止めずすべて列挙する（複数の違反を 1 つのエクスポートに入れたケースで固定する）。
   エラー文にパス・本文・接続先が出ない。
+  変異：17 を `diagnostic: null` に丸める → 落ちる。
 - **T25 実効上限の集計**：`timeouts` が同じで `recoveryConfirmMs` だけが違う 2 つのエクスポートを
   `aggregate` に渡すと、条件不一致で拒否される（決定 31。変異：`recoveryConfirmMs` を足さずに
   写す → 落ちる）。実効上限が等しい組（`60,000 / 0` と `30,000 / 30,000`）は通る。
