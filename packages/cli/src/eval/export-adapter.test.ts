@@ -152,6 +152,7 @@ type FindingDetailDto = RunExportDto["findings"][number];
 type CandidateDto = RunExportDto["unlocatedCandidates"][number];
 type DiagnosticDto = RunExportDto["unlocatedDiagnostics"][number];
 type JudgmentDto = FindingDetailDto["judgment"];
+type RecheckSummaryDto = NonNullable<FindingDetailDto["recheck"]>;
 
 function makeRun(overrides: Partial<RunDto> = {}): RunDto {
   return {
@@ -249,6 +250,27 @@ function makeRecheckUnit(overrides: Partial<RecheckUnitDto> = {}): RecheckUnitDt
   };
 }
 
+/**
+ * `findings[].recheck`（要約）の既定値。既定の `makeRecheckUnit()` と共通項目
+ * （`id`/`status`/`notApplicableReason`/`verdict`/`reasonKind`/`reason`/`suggestionValid`/
+ * `failure`）が一致するように作る（決定 32：要約と単位は同じ DB 行の 2 つの控え）。
+ * これが食い違うと新しい照合検査（export-adapter.ts の `findRecheckSummaryMismatches`）に
+ * 引っかかるため、素直な最小構成が拒否されてしまう。
+ */
+function makeRecheckSummary(overrides: Partial<RecheckSummaryDto> = {}): RecheckSummaryDto {
+  return {
+    id: "rc1",
+    status: "done",
+    notApplicableReason: null,
+    verdict: "keep",
+    reasonKind: "error-confirmed",
+    reason: "検討の結果、指摘は妥当",
+    suggestionValid: true,
+    failure: null,
+    ...overrides,
+  };
+}
+
 function makeLlm(overrides: Partial<LlmFinding> = {}): LlmFinding {
   return {
     paragraphId: 0,
@@ -302,6 +324,10 @@ function makeJudgment(overrides: Partial<JudgmentDto> = {}): JudgmentDto {
 }
 
 function makeFindingDetail(overrides: Partial<FindingDetailDto> = {}): FindingDetailDto {
+  // 実際の運用では、再確認単位が作られるのは located の指摘だけ（buildRecheckInput は
+  // located 分岐でしか呼ばれない）。既定の recheck も同じ形にしておく：located なら
+  // makeRecheckUnit() の既定と一致する要約、それ以外は null。
+  const locateStatus = overrides.locateStatus ?? "located";
   return {
     id: "f1",
     runId: "r1",
@@ -315,7 +341,7 @@ function makeFindingDetail(overrides: Partial<FindingDetailDto> = {}): FindingDe
     initialVerdict: "likely-error",
     suppression: null,
     reasons: [],
-    recheck: null,
+    recheck: locateStatus === "located" ? makeRecheckSummary() : null,
     judgment: makeJudgment(),
     createdAt: "2026-01-01T00:00:00.000Z",
     candidates: [makeCandidate()],
@@ -361,7 +387,7 @@ function assertNoLeakedContent(errors: readonly string[]): void {
   expect(joined).not.toContain(".json");
 }
 
-describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 例 + 決定 32 の追加 2 例）", () => {
+describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 例 + 決定 32 の追加 2 例 + PR #25 レビュー指摘 3 件ぶん）", () => {
   it("素直な最小構成は受理される（以下の拒否ケースの基準）", () => {
     const result = adaptExportToResult(makeValidExport());
     expect(result.ok).toBe(true);
@@ -685,6 +711,71 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
     if (!result.ok) assertNoLeakedContent(result.errors);
   });
 
+  it("21a（PR #25 レビュー指摘 2）. 候補の perspective が検査単位の perspective と食い違う（findings[].candidates 側）", () => {
+    // CandidateDto.perspective は候補の行ではなく check_units から導いた値（PR8 決定 19）。
+    // 候補側の値をそのまま評価に使うと、改変したエクスポートで観点一致の検出率（決定 6）を
+    // 外から動かせてしまう。
+    const result = adaptExportToResult(
+      makeValidExport({
+        findings: [
+          makeFindingDetail({ candidates: [makeCandidate({ perspective: "naturalness" })] }),
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
+  });
+
+  it("21b（PR #25 レビュー指摘 2）. 候補の perspective が検査単位の perspective と食い違う（unlocatedCandidates 側）", () => {
+    const result = adaptExportToResult(
+      makeValidExport({
+        unlocatedCandidates: [
+          makeCandidate({
+            id: "c-outside-mismatch",
+            checkUnitId: "cu1",
+            locateStatus: "outside-target",
+            perspective: "naturalness",
+            range: null,
+          }),
+        ],
+        unlocatedDiagnostics: [
+          makeDiagnostic({ candidateId: "c-outside-mismatch", reason: "outside-target" }),
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
+  });
+
+  it("22（PR #25 レビュー指摘 3）. findings[].recheck の verdict と recheckUnits[] の verdict が違う", () => {
+    // 決定 32：同じ DB 行の 2 つの控え（要約 findings[].recheck と全項目 recheckUnits[]）が
+    // 食い違ったまま受理すると、画面表示（要約）と評価結果（単位から作る）が食い違う。
+    const result = adaptExportToResult(
+      makeValidExport({
+        findings: [makeFindingDetail({ recheck: makeRecheckSummary({ verdict: "withdraw" }) })],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
+  });
+
+  it("23（PR #25 レビュー指摘 3）. findings[].recheck が非 null なのに対応する recheckUnits[] の要素が無い", () => {
+    const result = adaptExportToResult(makeValidExport({ recheckUnits: [] }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
+  });
+
+  it("23 の逆方向（T23 に無いが追加で検査する）. 再確認単位はあるのに対応する指摘の再確認要約（recheck）が null", () => {
+    // ブリーフの指示どおり、この逆方向は「どの指摘にも紐づかない再確認単位がある」検査
+    // （項目 18）と同じ場所で扱う判断にした（レポート参照）。同じ DB 行の控えである以上、
+    // 単位があれば要約も非 null のはずなので、参照が壊れているのと同じ扱いにする。
+    const result = adaptExportToResult(
+      makeValidExport({ findings: [makeFindingDetail({ recheck: null })] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
+  });
+
   it("複数の違反を 1 つのエクスポートに入れると、すべて列挙される（段をまたぐ組み合わせ）", () => {
     // 本文ハッシュ（manuscript 段）・検査単位（checkUnits 段）・指摘の候補（findings 段）の
     // 3 段にまたがる違反を同時に入れる。早期打ち切りがあれば 1 件しか出ない。
@@ -705,11 +796,13 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
     assertNoLeakedContent(result.errors);
   });
 
-  it("totals.unlocated.* は unlocated[] の reason から数える（一覧と件数が構造的に食い違わない）", () => {
-    // unlocatedCandidates は決定 23 では outside-target だけのはずだが、そうでない値が
-    // 混ざっても totals.unlocated.* が unlocated[] の中身と食い違わないことを固定する
-    // （レビュー指摘：以前は unlocatedCandidates.length をそのまま outsideTarget に使っていたため、
-    // ここに not-found が 1 件混ざると notFound が過少・outsideTarget が過多になっていた）。
+  it("20. unlocatedCandidates に not-found の候補が混ざっている（PR #25 レビュー指摘 1）", () => {
+    // 以前はここが「受理されて totals.unlocated.* が unlocated[] の中身と一致する」ことを
+    // 確かめる正常系のテストだった。しかし unlocatedCandidates に入れてよいのは
+    // outside-target の候補だけ（決定 23）で、not-found / ambiguous が混ざったエクスポートは
+    // それ自体が壊れている——受理すると指摘側と二重に数えたうえ、位置特定失敗の内訳
+    // （決定 8）が変わってしまう。したがって、このケースは受理ではなく拒否が正しい挙動である
+    // （export-adapter.ts の `candidate.locateStatus !== "outside-target"` の検査）。
     const result = adaptExportToResult(
       makeValidExport({
         recheckUnits: [],
@@ -728,33 +821,33 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
       }),
     );
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.unlocated).toHaveLength(1);
-    expect(result.value.unlocated[0]?.candidate.locate.reason).toBe("not-found");
-    expect(result.value.totals.unlocated).toEqual({ notFound: 1, ambiguous: 0, outsideTarget: 0 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
   });
 
   it("位置未確定の候補の診断（transformCandidates 非 null）は変換候補の transform だけを写す（決定 27。locate.diagnostic の非 null 分岐）", () => {
     // これまでのテストは診断を常に transformCandidates: null（makeDiagnostic の既定値）で
     // 作っていたため、非 null 分岐（export-adapter.ts の lookupDiagnosticInput）は無検査だった
     // （task-10-re-review.md Minor 2）。text/range を運ばず transform だけを写す規則を固定する。
+    // 候補は unlocatedCandidates 経由（locateStatus は outside-target。決定 23：この配列に
+    // 入れてよいのは outside-target だけで、PR #25 レビュー指摘 1 の修正後は not-found を
+    // ここに置くと拒否される）。
     const result = adaptExportToResult(
       makeValidExport({
         recheckUnits: [],
         findings: [],
         unlocatedCandidates: [
           makeCandidate({
-            id: "c-notfound-transform",
+            id: "c-outside-transform",
             checkUnitId: "cu1",
-            locateStatus: "not-found",
+            locateStatus: "outside-target",
             range: null,
           }),
         ],
         unlocatedDiagnostics: [
           makeDiagnostic({
-            candidateId: "c-notfound-transform",
-            reason: "not-found",
+            candidateId: "c-outside-transform",
+            reason: "outside-target",
             transformVersion: "1",
             transformCandidates: [
               { transform: "nfc", text: "うえお", range: { start: 2, end: 5 } },

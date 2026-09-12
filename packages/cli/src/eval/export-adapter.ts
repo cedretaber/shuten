@@ -3,9 +3,11 @@ import type { StopReason } from "@shuten/server/run/result.ts";
 import type {
   CandidateDto,
   DiagnosticDto,
+  RecheckSummaryDto,
   RecheckUnitDto,
   RunExportDto,
   RunStopReason,
+  UnitFailureDto,
 } from "@shuten/shared";
 import { countGraphemes, runExportDtoSchema, splitParagraphs } from "@shuten/shared";
 
@@ -157,6 +159,44 @@ function buildRecheckInput(args: {
   }
 }
 
+/** `UnitFailureDto | null` どうしの構造比較（`findings[].recheck` と `recheckUnits[]` の突き合わせ用）。 */
+function unitFailureEquals(a: UnitFailureDto | null, b: UnitFailureDto | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return (
+    a.reason === b.reason &&
+    a.message === b.message &&
+    a.finishReason === b.finishReason &&
+    a.origin === b.origin
+  );
+}
+
+/**
+ * `RecheckSummaryDto`（`findings[].recheck`）と `RecheckUnitDto`（`recheckUnits[]`）の
+ * 共通項目（`id` / `status` / `notApplicableReason` / `verdict` / `reasonKind` / `reason` /
+ * `suggestionValid` / `failure`）を比較し、食い違う項目名を返す（決定 30・32）。
+ * 値そのものはエラー文に出さない（`reason` は原稿由来ではないが LLM の応答本文なので、
+ * 決定 9 の「本文を出さない」と同じ扱いにする）。
+ */
+function findRecheckSummaryMismatches(
+  summary: RecheckSummaryDto,
+  unit: RecheckUnitDto,
+): readonly string[] {
+  const mismatches: string[] = [];
+  if (summary.id !== unit.id) mismatches.push("id");
+  if (summary.status !== unit.status) mismatches.push("status");
+  if (summary.notApplicableReason !== unit.notApplicableReason) {
+    mismatches.push("notApplicableReason");
+  }
+  if (summary.verdict !== unit.verdict) mismatches.push("verdict");
+  if (summary.reasonKind !== unit.reasonKind) mismatches.push("reasonKind");
+  if (summary.reason !== unit.reason) mismatches.push("reason");
+  if (summary.suggestionValid !== unit.suggestionValid) mismatches.push("suggestionValid");
+  if (!unitFailureEquals(summary.failure, unit.failure)) mismatches.push("failure");
+  return mismatches;
+}
+
 /**
  * エクスポート JSON（決定 16・23・32）を評価入力（`EvaluationResultInput`。決定 18）に写す
  * （決定 27・28・30・31）。
@@ -258,13 +298,43 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
       recheckUnitsByFindingId.set(unit.findingId, [unit]);
     }
   }
-  const findingIds = new Set(exported.findings.map((f) => f.id));
+  const findingsById = new Map(exported.findings.map((f) => [f.id, f] as const));
   for (const [findingId, units] of recheckUnitsByFindingId) {
-    if (!findingIds.has(findingId)) {
+    const finding = findingsById.get(findingId);
+    if (finding === undefined) {
       errors.push(`再確認単位が指す指摘が見つかりません（findingId: ${findingId}）`);
+    } else if (finding.recheck === null) {
+      // 逆方向（単位はあるが要約が null）。同じ DB 行の控えである以上、単位があれば
+      // 要約も非 null のはずなので、「参照先が見つからない」と同じ扱いにする（決定 30・32）。
+      errors.push(
+        `再確認単位があるのに、対応する指摘の再確認要約（recheck）が null です（findingId: ${findingId}）`,
+      );
     }
     if (units.length > 1) {
       errors.push(`同じ指摘を指す再確認単位が複数あります（findingId: ${findingId}）`);
+    }
+  }
+
+  // 決定 32：同じ DB 行の 2 つの控え（要約 `findings[].recheck` と全項目 `recheckUnits[]`）が
+  // 食い違っていないかを検査する。アダプター自身は後者だけを読むので、ここで検査しないと
+  // 画面表示（要約）と評価結果（単位）が黙って食い違う。
+  for (const finding of exported.findings) {
+    if (finding.recheck === null) {
+      continue;
+    }
+    const recheckUnit = recheckUnitsByFindingId.get(finding.id)?.[0];
+    if (recheckUnit === undefined) {
+      errors.push(
+        `指摘の再確認要約（recheck）が非 null なのに、対応する再確認単位がありません（findingId: ${finding.id}）`,
+      );
+      continue;
+    }
+    const mismatches = findRecheckSummaryMismatches(finding.recheck, recheckUnit);
+    if (mismatches.length > 0) {
+      errors.push(
+        `指摘の再確認要約と再確認単位が食い違います` +
+          `（findingId: ${finding.id}, 項目: ${mismatches.join("・")}）`,
+      );
     }
   }
 
@@ -288,12 +358,21 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
 
   // 指摘に紐づく候補が指す検査単位も、`unlocatedCandidates` 側（下の outside-target のループ）と
   // 同じく参照整合を検査する（決定 30「候補・指摘・検査単位の参照先が見つからない」）。
-  // ここで読んだ値は出力に使わない（候補の観点・LLM 応答は `CandidateDto` 自体が運ぶ）ので、
-  // 見つからなくても既存の集計を誤らせはしないが、参照が壊れていること自体は報告する。
+  // 併せて `candidate.perspective` が参照先の検査単位の `perspective` と一致するかも検査する
+  // （PR8 決定 19：`perspective` は候補の行ではなく `check_units` から導いた値）。
   for (const finding of exported.findings) {
     for (const candidate of finding.candidates) {
-      if (!checkUnitById.has(candidate.checkUnitId)) {
+      const checkUnit = checkUnitById.get(candidate.checkUnitId);
+      if (checkUnit === undefined) {
         errors.push(`候補が指す検査単位が見つかりません（candidateId: ${candidate.id}）`);
+        continue;
+      }
+      if (candidate.perspective !== checkUnit.perspective) {
+        errors.push(
+          `候補の観点が検査単位の観点と食い違います` +
+            `（candidateId: ${candidate.id}, 候補: ${candidate.perspective}, ` +
+            `検査単位: ${checkUnit.perspective}）`,
+        );
       }
     }
   }
@@ -425,9 +504,21 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
       errors.push(`候補が指す検査単位が見つかりません（candidateId: ${candidate.id}）`);
       continue;
     }
-    if (candidate.locateStatus === "located") {
+    // `unlocatedCandidates` に入るのは `finding_id` が null の候補＝`outside-target` だけ
+    // （決定 23）。`not-found` / `ambiguous` が混ざると、指摘側（findings[].candidates）と
+    // 二重に数えたうえ、位置特定失敗の内訳（決定 8）が変わる（決定 30）。
+    if (candidate.locateStatus !== "outside-target") {
       errors.push(
-        `位置未確定の候補の一覧に located の候補が含まれています（candidateId: ${candidate.id}）`,
+        `位置未確定の候補の一覧に outside-target でない候補が含まれています` +
+          `（candidateId: ${candidate.id}, locateStatus: ${candidate.locateStatus}）`,
+      );
+      continue;
+    }
+    if (candidate.perspective !== checkUnit.perspective) {
+      errors.push(
+        `候補の観点が検査単位の観点と食い違います` +
+          `（candidateId: ${candidate.id}, 候補: ${candidate.perspective}, ` +
+          `検査単位: ${checkUnit.perspective}）`,
       );
       continue;
     }
