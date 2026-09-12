@@ -3,8 +3,8 @@
  *
  * LM Studio へ生成要求を 1 回だけ送る。分割・観点・許容語・再確認・再試行は持たない
  * （`packages/server/src/run/executor.ts` の `runOne` を「再試行なしの 1 回だけ」に
- * 簡略化したもの）。`packages/server` には何も足さない（決定 34）。`main.ts` への接続は
- * 後続タスクの仕事なので、ここではまだ繋がない。
+ * 簡略化したもの）。`packages/server` には何も足さない（決定 34）。
+ * `main.ts` の `runFullChatCommand` から呼ばれる。
  */
 import { hashBody } from "@shuten/server/hash.ts";
 import { LmStudioError } from "@shuten/server/lmstudio/errors.ts";

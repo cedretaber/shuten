@@ -1,6 +1,7 @@
 import { hashBody } from "@shuten/server/hash.ts";
 import { LmStudioError } from "@shuten/server/lmstudio/errors.ts";
 import type {
+  ChatRequest,
   ChatResult,
   LmStudioClient,
   LmStudioClientOptions,
@@ -1626,6 +1627,26 @@ describe("main aggregate T10: 複数回実行の集計（決定12）", () => {
   });
 });
 
+describe("main aggregate T34: 全文チャットの結果は受け取らない（決定39）", () => {
+  it("--result に全文チャットの結果を渡すと拒否される", async () => {
+    // 防壁は evaluate と共有の parseResultJson だが、aggregate 側でも閉じていることを
+    // 記録に残す（最終レビュー m-4）。
+    const captured = buildAggregateIO({
+      readResultBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify({ formatVersion: "full-chat/1", status: "completed" }),
+          ),
+        ),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("全文チャット方式");
+  });
+});
+
 describe("main aggregate T19: 出力先の衝突（決定21）", () => {
   it("--out と --report が同じパス文字列ならエラー", async () => {
     const captured = buildAggregateIO();
@@ -2249,13 +2270,14 @@ function makeFullChatClient(
   overrides: {
     readonly ensureLoaded?: LmStudioClient["ensureLoaded"];
     readonly chat?: LmStudioClient["chat"];
+    readonly close?: LmStudioClient["close"];
   } = {},
 ): FullChatClientHandle {
   const ensureLoaded = vi.fn(
     overrides.ensureLoaded ?? (() => Promise.resolve(fullChatModelInfo())),
   );
   const chat = vi.fn(overrides.chat ?? (() => Promise.resolve(fullChatChatResult())));
-  const close = vi.fn(() => Promise.resolve(undefined));
+  const close = vi.fn(overrides.close ?? (() => Promise.resolve(undefined)));
   const client: LmStudioClient = {
     listModels: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     ensureLoaded,
@@ -2270,6 +2292,7 @@ function buildFullChatIO(
   clientOverrides: {
     readonly ensureLoaded?: LmStudioClient["ensureLoaded"];
     readonly chat?: LmStudioClient["chat"];
+    readonly close?: LmStudioClient["close"];
   } = {},
 ): CapturedIO & { readonly fullChatClient: FullChatClientHandle } {
   const fullChatClient = makeFullChatClient(clientOverrides);
@@ -2416,6 +2439,79 @@ describe("main full-chat: 通し", () => {
     };
     expect(parsed.formatVersion).toBe(FULL_CHAT_FORMAT_VERSION);
     expect(parsed.status).toBe("completed");
+  });
+
+  it("引数の生成設定とタイムアウトが、要求にも結果の実行条件にも写る", async () => {
+    // 最終レビュー I-1：main.ts の generation の組み立てと timeoutMs の受け渡し、
+    // full-chat.ts の ChatRequest と conditions を、どのテストも守っていなかった
+    // （max_tokens と temperature を入れ替える変異が全テストを通り抜けた）。
+    // PR13b は「4 方式を同じ条件で比較した」ことを conditions で示すので、ここがずれると
+    // 比較の前提が静かに崩れる。任意オプションを全部渡した 1 本でまとめて固定する。
+    const captured = buildFullChatIO();
+    const code = await main(
+      [
+        ...FULL_CHAT_ARGS,
+        "--max-tokens",
+        "1234",
+        "--temperature",
+        "0.25",
+        "--seed",
+        "99",
+        "--reasoning-effort",
+        "medium",
+        "--check-timeout-ms",
+        "45678",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+
+    const [request, options] = captured.fullChatClient.chat.mock.calls[0] as [
+      ChatRequest,
+      { readonly timeoutMs: number },
+    ];
+    expect(request.model).toBe("test-model");
+    expect(request.maxTokens).toBe(1234);
+    expect(request.temperature).toBe(0.25);
+    expect(request.seed).toBe(99);
+    expect(request.reasoningEffort).toBe("medium");
+    expect(options.timeoutMs).toBe(45678);
+
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      conditions: {
+        generation: {
+          model: string;
+          maxTokens: number;
+          temperature: number;
+          seed?: number;
+          reasoningEffort: string;
+        };
+        timeouts: { checkMs: number };
+      };
+    };
+    expect(parsed.conditions.generation).toEqual({
+      model: "test-model",
+      maxTokens: 1234,
+      temperature: 0.25,
+      seed: 99,
+      reasoningEffort: "medium",
+    });
+    expect(parsed.conditions.timeouts.checkMs).toBe(45678);
+  });
+
+  it("client.close() が失敗しても結果 JSON は書かれ、終了コードは変わらない", async () => {
+    // 最終レビュー m-1：close の失敗で書き出しが飛ぶと、決定 37 の
+    // 「失敗でも結果 JSON は書く」が破れ、bin に catch が無いので未処理の拒否になる。
+    const captured = buildFullChatIO(
+      {},
+      { close: () => Promise.reject(new Error("閉じられない")) },
+    );
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toHaveLength(1);
   });
 
   it("--out を指定すると出力先ファイルに書き出す", async () => {

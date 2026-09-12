@@ -923,7 +923,10 @@ async function runFullChatCommand(
     return 1;
   } finally {
     // 決定 38：生成要求の送信後は、成功・失敗のどちらでも必ずクライアントを閉じる。
-    await client.close();
+    // 閉じる失敗は握りつぶす。ここで投げると、この後の結果 JSON の書き出しが飛んで
+    // 決定 37 の「失敗でも結果 JSON は書く」が破れ、さらに bin には catch が無いので
+    // パスを含みうるスタックが標準エラーに出る（最終レビュー m-1）。
+    await client.close().catch(() => undefined);
   }
 
   if (!runResult.ok) {

@@ -1,6 +1,6 @@
 /**
  * `full-chat` サブコマンドのプロンプトへの原稿の差し込み（決定 35）。
- * これ以外は担わない（送信・実行条件の記録などは後続のタスク）。
+ * これ以外は担わない（送信と実行条件の記録は `full-chat.ts` の `runFullChat`）。
  */
 export type FillResult =
   | { readonly ok: true; readonly value: string }
