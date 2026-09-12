@@ -17,9 +17,8 @@ describe("parseEvaluateArgs", () => {
     expect(result).toEqual({
       ok: true,
       value: {
-        manuscriptPath: "manuscript.txt",
+        input: { kind: "result", resultPath: "result.json", manuscriptPath: "manuscript.txt" },
         truthPath: "truth.json",
-        resultPath: "result.json",
         outPath: null,
         reportPath: null,
       },
@@ -40,7 +39,7 @@ describe("parseEvaluateArgs", () => {
     expect(result.value.reportPath).toBe("report.md");
   });
 
-  it("--manuscript が無いとエラー", () => {
+  it("--manuscript が無いとエラー（--result だけを使うときは必須。決定29）", () => {
     const result = parseEvaluateArgs(["--truth", "truth.json", "--result", "result.json"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -54,20 +53,19 @@ describe("parseEvaluateArgs", () => {
     expect(result.error).toContain("--truth");
   });
 
-  it("--result が無いとエラー", () => {
+  it("--result も --export も無いとエラー", () => {
     const result = parseEvaluateArgs(["--manuscript", "manuscript.txt", "--truth", "truth.json"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("--result");
+    expect(result.error).toContain("--export");
   });
 
-  it("必須オプションがすべて無いとまとめてエラーになる", () => {
+  it("必須オプションがすべて無いと --truth 不足のエラーになる（--truth が唯一常に必須のため）", () => {
     const result = parseEvaluateArgs([]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("--manuscript");
     expect(result.error).toContain("--truth");
-    expect(result.error).toContain("--result");
   });
 
   it("未知のオプションはエラー", () => {
@@ -82,5 +80,78 @@ describe("parseEvaluateArgs", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("--result");
+  });
+
+  // --- 決定29：--export の配線（Task 11） ------------------------------------------------------
+
+  it("--export だけを指定すると解釈できる（--manuscript は不要）", () => {
+    const result = parseEvaluateArgs(["--truth", "truth.json", "--export", "export.json"]);
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        input: { kind: "export", exportPath: "export.json" },
+        truthPath: "truth.json",
+        outPath: null,
+        reportPath: null,
+      },
+    });
+  });
+
+  it("--result と --export の両方を指定するとエラー", () => {
+    const result = parseEvaluateArgs([
+      "--truth",
+      "truth.json",
+      "--result",
+      "result.json",
+      "--export",
+      "export.json",
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("--result と --export は同時に指定できません");
+  });
+
+  it("--result も --export も無いと「どちらかを指定してください」エラーになる", () => {
+    const result = parseEvaluateArgs(["--truth", "truth.json"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("--result か --export のどちらかを指定してください");
+  });
+
+  it("--export と --manuscript を併用するとエラー（本文はエクスポートに含まれるため）", () => {
+    const result = parseEvaluateArgs([
+      "--manuscript",
+      "manuscript.txt",
+      "--truth",
+      "truth.json",
+      "--export",
+      "export.json",
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe(
+      "--export を指定したときは --manuscript を指定できません（本文はエクスポートに含まれます）",
+    );
+  });
+
+  it("--result を使うのに --manuscript が無いとエラー", () => {
+    const result = parseEvaluateArgs(["--truth", "truth.json", "--result", "result.json"]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("--manuscript がありません（--result だけを使うときは必要です）");
+  });
+
+  it("--export の重複はエラー（evaluate は 1 本だけ。--result と同じ扱い）", () => {
+    const result = parseEvaluateArgs([
+      "--truth",
+      "truth.json",
+      "--export",
+      "export.json",
+      "--export",
+      "another.json",
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("--export");
   });
 });
