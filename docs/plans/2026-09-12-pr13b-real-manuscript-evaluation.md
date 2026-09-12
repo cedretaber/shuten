@@ -533,7 +533,8 @@ user メッセージとして貼る**形である（2026-09-13 確認）。PR13a
 - `--prompt-file` は必須のまま。普段の使い方を再現するときは、`{{manuscript}}` だけを書いたファイルを渡す
   （user の中身は原稿そのもの）。これは指示ではないので決定 15（プロンプトをこちらで書かない）に反しない
 - 実行条件（決定 40）に `systemPromptHash: string | null` を足す（system の生の内容の `hashBody`。未指定なら
-  `null`）。`formatVersion` は `"full-chat/1"` のまま（項目の追加だけで、既存の項目の意味は変えない）
+  `null`）。`formatVersion` は `"full-chat/2"` に上げる（必須項目の追加は形式の変更。レビュー指摘）。
+  空（空白だけ）の system プロンプトファイルは引数エラーとして拒否する（レビュー指摘）
 - `--out` の衝突検査（決定 38）の対象に `--system-prompt-file` を加える。標準出力・標準エラーにパスを出さない
 - `packages/server` の LM Studio クライアントは既に system 役を送れる（アプリの分割検査が使っている）ので、
   server には触れない

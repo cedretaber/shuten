@@ -291,7 +291,7 @@ pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロン�
 - 終了コードは 0 = 成功、1 = 引数・入出力の誤り、2 = 生成の失敗。失敗でも結果 JSON は書く
 
 **`evaluate` / `aggregate` には渡せない。**自由形式の応答から指摘を機械的に取り出すことはできないため
-自動採点しない（結果 JSON の `formatVersion` は `"full-chat/1"` で、渡すと拒否される）。
+自動採点しない（結果 JSON の `formatVersion` は `"full-chat/2"` で、`"full-chat/"` 始まりはすべて拒否される）。
 応答は人が読んで正解ファイルと突き合わせる。
 
 1 万字を 1 要求で投げるので、既定のタイムアウト（300 秒）では足りない場合がある。

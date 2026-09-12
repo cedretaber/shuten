@@ -24,7 +24,12 @@ import { countGraphemes, isGenerationCapable, splitParagraphs } from "@shuten/sh
 
 import { fillManuscript } from "./full-chat-prompt.ts";
 
-export const FULL_CHAT_FORMAT_VERSION = "full-chat/1";
+/**
+ * 結果 JSON の版。"full-chat/2"：実行条件に必須項目 `systemPromptHash` を足した（決定 19。
+ * レビュー指摘：必須項目の追加は形式の変更なので版を上げる）。`parseResultJson` は
+ * `"full-chat/"` 始まりをすべて拒否するので、版を上げても `evaluate` への誤投入は防げる。
+ */
+export const FULL_CHAT_FORMAT_VERSION = "full-chat/2";
 
 /** 記録する実行条件（決定 40）。分割・観点・許容語・再確認に関わる項目は持たない。 */
 export interface FullChatConditions {
@@ -90,6 +95,12 @@ function toFailure(error: LmStudioError, origin: "ensure-loaded" | "chat"): Unit
 export async function runFullChat(args: FullChatRunArgs): Promise<FullChatRunResult> {
   const now = args.now ?? (() => new Date());
   const startedAt = now().toISOString();
+
+  // 空（空白・改行だけを含む）の system は拒否する（レビュー指摘）。空の system メッセージを
+  // 送ると「system 無し」と区別できない実行になり、`systemPromptHash` だけが違う結果が残る。
+  if (args.systemPrompt !== null && args.systemPrompt.trim() === "") {
+    return { ok: false, error: "system プロンプトファイルが空です" };
+  }
 
   const filled = fillManuscript(args.prompt, args.text);
   if (!filled.ok) {

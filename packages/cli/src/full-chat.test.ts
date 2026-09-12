@@ -421,6 +421,34 @@ describe("runFullChat", () => {
       ]);
     });
 
+    it.each([
+      ["空文字", ""],
+      ["空白と改行だけ", " \n\t\n"],
+    ])(
+      "system プロンプトが%sのとき、生成要求を送らずにエラー値を返す（レビュー指摘）",
+      async (_label, systemPrompt) => {
+        const chat = vi.fn().mockResolvedValue(makeChatResult());
+        const ensureLoaded = vi.fn().mockResolvedValue(makeModelInfo());
+        const client = makeClient({ chat, ensureLoaded });
+
+        const result = await runFullChat({
+          text: TEXT,
+          prompt: PROMPT,
+          systemPrompt,
+          generation: GENERATION,
+          timeoutMs: 1000,
+          client,
+          now: FIXED_NOW,
+        });
+
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toContain("system プロンプトファイルが空です");
+        expect(ensureLoaded).not.toHaveBeenCalled();
+        expect(chat).not.toHaveBeenCalled();
+      },
+    );
+
     it("{{manuscript}} を含む system プロンプトを渡しても置換されない（fillManuscript を適用しない）", async () => {
       const chat = vi.fn().mockResolvedValue(makeChatResult());
       const client = makeClient({ chat });

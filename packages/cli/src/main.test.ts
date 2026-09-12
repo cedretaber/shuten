@@ -2425,6 +2425,22 @@ describe("main full-chat T33: パスの漏えいを防ぐ（決定9・38）", ()
     expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
   });
 
+  it("system プロンプトファイルが空白だけのとき、終了コード1で生成要求を送らず結果 JSON も書かない（レビュー指摘）", async () => {
+    const captured = buildFullChatIO({
+      readSystemPromptBytes: () => Promise.resolve(new TextEncoder().encode(" \n\n")),
+    });
+    const code = await main(
+      [...FULL_CHAT_ARGS, "--system-prompt-file", "system.txt"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expectNoLeak(captured.stderr);
+    expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
+  });
+
   it("SHUTEN_LM_STUDIO_URL が不正なとき、標準エラーにその値を含めない", async () => {
     const SECRET_URL = "http://secret-lmstudio-host.internal:19999/with-a-path";
     const captured = buildFullChatIO();
@@ -2479,7 +2495,7 @@ describe("main evaluate T34: full-chat 方式の結果は evaluate に渡せな�
 });
 
 describe("main full-chat: 通し", () => {
-  it("成功時、終了コード0で書かれたJSONのformatVersionがfull-chat/1になる", async () => {
+  it("成功時、終了コード0で書かれたJSONのformatVersionがFULL_CHAT_FORMAT_VERSIONになる", async () => {
     const captured = buildFullChatIO();
     const code = await main(FULL_CHAT_ARGS, {}, captured.io);
 

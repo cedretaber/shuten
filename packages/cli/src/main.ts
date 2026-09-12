@@ -955,7 +955,7 @@ async function runFullChatCommand(
   }
 
   if (!runResult.ok) {
-    // `{{manuscript}}` 欠落だけがここに来る。結果 JSON は書かない。
+    // `{{manuscript}}` 欠落と空の system プロンプトがここに来る。結果 JSON は書かない。
     io.writeErrorLine(`引数エラー: ${runResult.error}`);
     return 1;
   }
