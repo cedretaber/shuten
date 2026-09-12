@@ -304,8 +304,13 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
     if (finding === undefined) {
       errors.push(`再確認単位が指す指摘が見つかりません（findingId: ${findingId}）`);
     } else if (finding.recheck === null) {
-      // 逆方向（単位はあるが要約が null）。同じ DB 行の控えである以上、単位があれば
-      // 要約も非 null のはずなので、「参照先が見つからない」と同じ扱いにする（決定 30・32）。
+      // 逆方向（単位はあるが要約が null）。根拠は組み立て側（`server/api/run-export.ts`）に
+      // ある：`recheckByFindingId`（190 行）は `recheckUnits`（=このエクスポートの
+      // `recheckUnits[]` と同じ配列）から作られ、`toFindingDto` の `recheck` 引数
+      // （202 行）にそのまま渡って要約になる。つまり要約と `recheckUnits[]` は同じ
+      // `listRecheckUnits` の結果から作られており（223 行）、`recheckUnits[]` に
+      // `findingId` の行がある指摘の要約が null になることは正常なエクスポートでは
+      // 起こらない。したがって「参照先が見つからない」と同じ扱いにする（決定 30・32）。
       errors.push(
         `再確認単位があるのに、対応する指摘の再確認要約（recheck）が null です（findingId: ${findingId}）`,
       );

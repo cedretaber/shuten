@@ -426,6 +426,20 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
   it("5. 再確認単位に running がある", () => {
     const result = adaptExportToResult(
       makeValidExport({
+        // 要約（findings[].recheck）を単位に揃えておく。揃えないと「再確認単位に running が
+        // ある」の検査を潰しても、要約と単位の食い違い（決定 32）で別途拒否されてしまい、
+        // この検査の変異耐性が失われる（PR #25 再レビュー指摘 1）。
+        findings: [
+          makeFindingDetail({
+            recheck: makeRecheckSummary({
+              status: "running",
+              verdict: null,
+              reasonKind: null,
+              reason: null,
+              suggestionValid: null,
+            }),
+          }),
+        ],
         recheckUnits: [
           makeRecheckUnit({
             status: "running",
@@ -443,7 +457,12 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
 
   it("6. status: done の再確認で 4 項目のいずれかが null（reason）", () => {
     const result = adaptExportToResult(
-      makeValidExport({ recheckUnits: [makeRecheckUnit({ reason: null })] }),
+      makeValidExport({
+        // 同上（PR #25 再レビュー指摘 1）：要約側の reason も null に揃え、この検査だけの
+        // 変異で落ちるようにする。
+        findings: [makeFindingDetail({ recheck: makeRecheckSummary({ reason: null }) })],
+        recheckUnits: [makeRecheckUnit({ reason: null })],
+      }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) assertNoLeakedContent(result.errors);
@@ -695,7 +714,13 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
 
   it("18（決定 32 の追加）. どの指摘にも紐づかない再確認単位がある", () => {
     const result = adaptExportToResult(
-      makeValidExport({ recheckUnits: [makeRecheckUnit({ findingId: "ghost-finding" })] }),
+      makeValidExport({
+        // f1 の要約を null にしておく（PR #25 再レビュー指摘 1）。ghost-finding は f1 を
+        // 指さないので逆方向の検査（単位はあるが要約が null）は発火せず、意図した「どの指摘
+        // にも紐づかない再確認単位がある」の検査だけがこのケースを拒否する。
+        findings: [makeFindingDetail({ recheck: null })],
+        recheckUnits: [makeRecheckUnit({ findingId: "ghost-finding" })],
+      }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) assertNoLeakedContent(result.errors);
@@ -753,6 +778,48 @@ describe("export-adapter: adaptExportToResult（T23：決定 30 の拒否。19 �
     const result = adaptExportToResult(
       makeValidExport({
         findings: [makeFindingDetail({ recheck: makeRecheckSummary({ verdict: "withdraw" }) })],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) assertNoLeakedContent(result.errors);
+  });
+
+  it("22 の追加（Minor 任意）. findings[].recheck の failure と recheckUnits[] の failure が違う（構造比較）", () => {
+    // findRecheckSummaryMismatches の 8 項目のうち failure だけは構造比較（unitFailureEquals）
+    // なので、verdict の食い違いだけを見るテスト 22 では unitFailureEquals を常に true に
+    // する変異が生き残ってしまう（再レビュー指摘・任意）。failure の reason だけを変えて、
+    // この 1 項目単独の食い違いを固定する。
+    const failureA = {
+      reason: "timeout" as const,
+      message: "応答がタイムアウトした",
+      finishReason: null,
+      origin: "chat" as const,
+    };
+    const failureB = { ...failureA, reason: "malformed" as const };
+    const result = adaptExportToResult(
+      makeValidExport({
+        findings: [
+          makeFindingDetail({
+            recheck: makeRecheckSummary({
+              status: "failed",
+              verdict: null,
+              reasonKind: null,
+              reason: null,
+              suggestionValid: null,
+              failure: failureA,
+            }),
+          }),
+        ],
+        recheckUnits: [
+          makeRecheckUnit({
+            status: "failed",
+            verdict: null,
+            reasonKind: null,
+            reason: null,
+            suggestionValid: null,
+            failure: failureB,
+          }),
+        ],
       }),
     );
     expect(result.ok).toBe(false);
