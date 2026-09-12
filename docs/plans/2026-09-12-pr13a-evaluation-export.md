@@ -886,8 +886,7 @@ null になる）。`scoreRun` が読むのは `stop.reason` だけなので指�
 | `requests` | `Σ checkUnits[].attempts + Σ recheckUnits[].attempts`（どちらもエクスポート直下の配列。`executor` は `attempts` と `requestCount` を同じ 1 か所で増やすので一致する） |
 | `candidates` | `Σ findings[].candidates.length + unlocatedCandidates.length` |
 | `located` | 位置確定済みの指摘の `candidates.length` の合計 |
-| `unlocated.notFound` / `.ambiguous` | `locateStatus` がその値の指摘の件数 |
-| `unlocated.outsideTarget` | `unlocatedCandidates.length` |
+| `unlocated.notFound` / `.ambiguous` / `.outsideTarget` | **組み上がった `unlocated[]` の `locate.reason` で数える**（一覧と件数が構成上ずれない。`pipeline.ts` と同じ数え方。当初は「`locateStatus` がその値の指摘の件数」「`unlocatedCandidates.length`」と書いていたが、`unlocatedCandidates` に `outside-target` 以外が混ざったときに一覧と件数が食い違うため、Task 10 のレビューで改めた） |
 | `findings` | 位置確定済みの指摘の件数 |
 | `suppressed` | そのうち `suppression` が非 null の件数 |
 | `rechecks.*` | 位置確定済みの指摘に付く再確認を、上の表で写した後の状態で数える |
