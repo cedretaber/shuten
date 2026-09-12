@@ -787,6 +787,19 @@ PR13a-1 の実装で分かったことを踏まえ、着手時に決めた（決
 を置く。`EvaluationResultInput`（決定 18）は `PipelineResult` の部分集合なので、エクスポートに
 無い項目は**その場で数え直す**。数え直しの定義は `run/pipeline.ts` の `totals` の作り方に合わせる。
 
+**実行の状態（`status`）と停止（`stop`）**
+
+| `run.status` | 写す値 |
+| --- | --- |
+| `completed` / `partially-failed` | `status` はそのまま、`stop: null`。`stopReason` / `stopMessage` が非 null、または `generationUnconfirmed` が true なら不整合として拒否する（再開時に `clearStopState` が消すはずの値が残っている） |
+| `stopped` | `status: "stopped"`、`stop: { reason: run.stopReason（null なら拒否）, message: run.stopMessage（null なら拒否）, failure: null, generationUnconfirmed: run.generationUnconfirmed }` |
+| その他（`queued` / `running` / `recovery-waiting` など） | 拒否（決定 26・30） |
+
+`stop.failure`（停止の原因になった検査単位の失敗）は `runs` に列が無く、**復元できないので `null` にする**。
+丸めではなく「記録が無い」ことの表現である（`RunStop.failure` は設定値の検証エラーや停止要求でも
+null になる）。`scoreRun` が読むのは `stop.reason` だけなので指標には影響しない。停止に至った単位の
+失敗は `checkUnits[].failure` としてエクスポートに残っている。
+
 **実行条件（`conditions`）**
 
 | 写す先 | 元 |
@@ -798,7 +811,7 @@ PR13a-1 の実装で分かったことを踏まえ、着手時に決めた（決
 | `generation` | `{ model: run.modelId, ...run.generationSettings }`（`seed` / `reasoningEffort` は値があるときだけキーを作る。`exactOptionalPropertyTypes`） |
 | `model` | `run.modelInfo` |
 | `chunkSettings` | `run.chunkSettings` |
-| `timeouts` | `run.timeouts` |
+| `timeouts` | `{ checkMs: run.timeouts.checkMs + run.recoveryConfirmMs, recheckMs: run.timeouts.recheckMs + run.recoveryConfirmMs }`（実効上限。決定 31） |
 | `allowedWords` | `run.allowedWords` |
 | `versions.result` | `"export/1"`（決定 28） |
 | `versions.prompt` / `.allowedWordRule` / `.diagnosticTransform` | `run.promptVersion` / `.allowedWordRuleVersion` / `.diagnosticTransformVersion` |
@@ -832,7 +845,7 @@ PR13a-1 の実装で分かったことを踏まえ、着手時に決めた（決
 
 | エクスポート | 評価入力 |
 | --- | --- |
-| `recheck` が null（再確認を無効にした実行では起票されない） | `{ status: "disabled" }` |
+| `recheck` が null（まだ起票されていない） | 下記のとおり `disabled` / `suppressed` / `pending` に振り分ける |
 | `status: "done"` | `{ status: "done", output: { verdict, reasonKind, reason, suggestionValid } }`（4 つのいずれかが null なら拒否） |
 | `status: "failed"` | `{ status: "failed" }` |
 | `status: "pending"` | `{ status: "pending" }` |
@@ -840,6 +853,21 @@ PR13a-1 の実装で分かったことを踏まえ、着手時に決めた（決
 | 同上、`"suppressed"` | `{ status: "suppressed" }` |
 | 同上、`"unlocated"` | 位置未確定の指摘に付くもの。その指摘は `unlocated[]` に回るので写さない |
 | `status: "running"` | 拒否（決定 30） |
+
+**`recheck` が null のときを `disabled` に丸めてはならない。** 再確認単位はその検査対象の初回検査が
+決着してから起票される（`run/loop.ts` の `issueRechecks`。決定 34）ので、**指摘を保存した後・起票の前に
+止まった実行**にも行の無い指摘がありうる。`FindingDto.recheck` の「再確認を無効にした実行では
+起票されない」という注記は、起こりうる場合の一部しか挙げていない。`issueRechecks` の優先順位
+（決定 11：disabled → unlocated → suppressed）をそのまま写して復元する。
+
+| 条件（上から順に判定） | 写す値 |
+| --- | --- |
+| `run.recheckEnabled === false` | `{ status: "disabled" }` |
+| 指摘が位置未確定（`locateStatus !== "located"`） | `unlocated[]` に回るので写さない |
+| `finding.suppression !== null` | `{ status: "suppressed" }` |
+| それ以外 | `{ status: "pending" }` |
+
+これは `runPipeline` が同じ状況で作る値と一致する（止まった実行の未実施の再確認は `pending`）。
 
 `LlmRecheckOutput` は `{ reason, reasonKind, verdict, suggestionValid }` の 4 項目だけで、
 `RecheckSummaryDto` はその 4 つをすべて持つ。よって `done` の復元に欠落は無い。
@@ -869,12 +897,12 @@ PR13a-1 の実装で分かったことを踏まえ、着手時に決めた（決
 ### 決定 28：`conditions.versions.result` は `"export/1"` にする
 
 アダプターが作る評価入力の `versions.result` に `RESULT_VERSION`（`"1"`）を入れてはならない。
-**サーバー経由の実行と CLI の実行は、同じ設定でも条件が同じではない**からである。
+**サーバー経由の実行と CLI の実行は、同じ設定でも同じ条件ではない**からである。
 
-- `RunDto.recoveryConfirmMs > 0` のとき、`timeouts.checkMs` / `.recheckMs` は打ち切りの上限ではなく
-  遅延通知の閾値で、実際のハード上限は `+ recoveryConfirmMs` になる（PR9 決定 7）。CLI は
-  `recoveryConfirmMs: 0` なので同じ数値でも意味が違う。
-- 経路も違う（オーケストレーターの逐次保存 対 `runPipeline`）。
+- 実行経路が違う。オーケストレーター（逐次保存・キュー・復旧ゲート・再開）と `runPipeline`
+  （1 回きりの通し実行）は別の実装で、再試行や停止の起こり方が同じとは限らない。
+- `timeouts` の意味も違う（PR9 決定 7）。決定 31 で実効上限に正規化するので**数値としては
+  比べられる**ようになるが、正規化した値と設定値そのものを同じ物差しの上に並べるべきではない。
 
 `aggregate` は `versions.result` の一致を要求する（決定 12）ので、`"export/1"` にしておけば
 **CLI の結果とエクスポート由来の結果を混ぜた集計は、意味の分かるエラーで止まる**。
@@ -920,10 +948,45 @@ shuten aggregate (--result <結果.json> | --export <エクスポート.json>)..
 | `locateStatus === "located"` の指摘の `range` が null | 位置確定済みの指摘は範囲を持つ |
 | `hashBody(manuscript.body) !== manuscript.bodyHash` | 本文とハッシュが食い違う（決定 3 の鍵が壊れている） |
 | 候補・指摘・検査単位の参照先が見つからない | 外部キーが守るはずの不変条件が壊れている |
+| `completed` / `partially-failed` なのに `stopReason` / `stopMessage` が非 null、または `generationUnconfirmed` が true | 再開時に消えるはずの停止情報が残っている（決定 27） |
+| `stopped` なのに `stopReason` または `stopMessage` が null | `RunStop` を作れない（`message` は非 null の項目） |
+| `locateStatus` が `not-found` / `ambiguous` の指摘に、候補が 0 件または 2 件以上ある | 1 候補 1 指摘で保存される（決定 23 の表）。0 件なら黙って数え落とし、2 件以上ならどれを採るかが決まらない |
+| 指摘と候補の `locateStatus` が食い違う | 同上。位置特定失敗の理由を候補から採るため、食い違うと理由が決まらない |
+| `locateStatus === "located"` の指摘に候補が 0 件、または `located` でない候補がある | 統合後の指摘は位置確定済みの元候補を 1 件以上持つ |
+
+上の表の後半 4 行は、**zod では書けない関連条件**である（`runExportDtoSchema` は 1 つの値の形しか
+見ない）。エクスポート JSON は外から渡されるファイルなので、アダプターがここを守る。
 
 `RUN_STOP_REASONS` と `StopReason` の対応は、**コンパイル時にも縛る**。
 `satisfies readonly StopReason[]` を通る 7 値の定数配列を置き、`backend-restarted` だけを
 明示的に拒否する形にする（`RUN_STOP_REASONS` に値が増えたら型で気づける）。
+
+
+### 決定 31：エクスポート由来の `timeouts` は `recoveryConfirmMs` を足した実効上限にする
+
+`RunDto` は `timeouts`（`checkMs` / `recheckMs`）と `recoveryConfirmMs` を別に持つ。
+`recoveryConfirmMs > 0` のとき、`timeouts` の値は打ち切りの上限ではなく**遅延として通知する閾値**で、
+実際のハード上限は `timeouts + recoveryConfirmMs` である（PR9 決定 7。`run/result.ts` の
+`RunConditions.timeouts` の注記）。
+
+`RunConditions.timeouts` には `recoveryConfirmMs` を置く場所が無い。設定値をそのまま写すと、
+**`recoveryConfirmMs` が 0 の実行と 120,000 の実行が「同じ条件」として集計されてしまう**
+（決定 12 の一致検査は `timeouts` しか見ない）。`"export/1"`（決定 28）は CLI とサーバーを
+分けるだけで、サーバー実行どうしのこの差は捕まえられない。
+
+**そこで、アダプターは実効上限を写す。**
+
+- `checkMs: run.timeouts.checkMs + run.recoveryConfirmMs`、`recheckMs` も同様。
+- `recoveryConfirmMs` が 0 のときは設定値と一致する（CLI と同じ意味になる）。
+- **設定値そのものは失われる。** レポートの実行条件の節に、エクスポート由来であること
+  （決定 28(c) の 1 行）と併せて「`timeouts` は `recoveryConfirmMs` を含む実効上限」と明示する。
+- 実効上限が同じで内訳が違う組（例：`checkMs 60,000 / confirm 0` と `checkMs 30,000 / confirm 30,000`）は
+  **同条件として集計する**。生成そのものの打ち切りは同じ時点で起き、違うのは途中で遅延通知を出すか
+  だけで、指摘の中身には効かないためである。これは意図した挙動として書き残す。
+
+**却下した案。** `RunConditions` に `recoveryConfirmMs` を足す → `PipelineResult` の形を
+エクスポートの都合で変えることになり、既存の結果 JSON（この項目を持たない）が検証に落ちる。
+CLI 経路では常に 0 になる項目でもある。
 
 
 ## テスト
@@ -1028,10 +1091,22 @@ shuten aggregate (--result <結果.json> | --export <エクスポート.json>)..
   `toEqual` で一致すること。素材には次をすべて含める：元候補 2 件の統合指摘、抑制された指摘、
   `not-found` / `ambiguous` / `outside-target` の各 1 件、`failed` の再確認、`pending` の再確認、
   再送のある検査単位（`attempts: 2`）。
+  実行の開始・終了時刻と状態は DB 側と `PipelineResult` 側でそろえる（`performance` に出る）。
   変異：`requests` の数え方から再確認の `attempts` を落とす → 落ちる。
+  **止まった実行の素材も別ケースで入れる**：位置確定済みの指摘があるのに再確認単位がまだ無い
+  （`issueRechecks` の前に止まった）実行で、再確認が `pending`（抑制済みなら `suppressed`）に
+  復元されること。変異：`recheck === null` を一律 `disabled` にする → 落ちる（決定 27）。
 - **T23 アダプターの拒否**：決定 30 の表の各行で、既定値に丸めずエラーになる。少なくとも
   `status: "running"`、`finishedAt: null`、`stopReason: "backend-restarted"`、
-  `locateStatus: "located"` かつ `range: null` の 4 つ。エラー文にパス・本文・接続先が出ない。
+  `locateStatus: "located"` かつ `range: null`、`completed` なのに `stopReason` が残っている、
+  `stopped` なのに `stopMessage` が null、`not-found` の指摘に候補が 2 件、
+  指摘と候補の `locateStatus` の食い違いの 8 つ。失敗は 1 件目で止めずすべて列挙する。
+  エラー文にパス・本文・接続先が出ない。
+- **T25 実効上限の集計**：`timeouts` が同じで `recoveryConfirmMs` だけが違う 2 つのエクスポートを
+  `aggregate` に渡すと、条件不一致で拒否される（決定 31。変異：`recoveryConfirmMs` を足さずに
+  写す → 落ちる）。実効上限が等しい組（`60,000 / 0` と `30,000 / 30,000`）は通る。
+- **T26 `stop.failure`**：停止した実行のエクスポートから作った評価入力の `stop.failure` が null で、
+  停止に至った検査単位の失敗は `totals.checkUnits.failed` に数えられている。
 - **T24 `--export` の引数**：`--result` と `--export` の両方を渡すと引数エラー、どちらも無ければ
   引数エラー。`--export` と `--manuscript` の併用は引数エラー。`aggregate` の `--export` の重複は
   拒否。出力先の衝突検査に `--export` が入っている（決定 29）。
@@ -1170,8 +1245,8 @@ shuten aggregate (--result <結果.json> | --export <エクスポート.json>)..
   - `packages/cli/src/eval/export-adapter.ts` に `adaptExportToResult` を置く。純粋関数
     （`node:fs`・HTTP に依存しない）。エクスポート JSON の形の検証は `runExportDtoSchema` を使う。
   - `EvaluationReportInput` に `source: "result" | "export"` を足し、実行条件の節に 1 行出す
-    （決定 28(c)）。
-  - テスト：T20、T23。
+    （決定 28(c)）。エクスポート由来のときは `timeouts` が実効上限である旨も併せて出す（決定 31）。
+  - テスト：T20、T23、T25、T26。
 - **Task 11**：`--export` の配線（決定 29）と引数。
   - `evaluate` / `aggregate` の引数解釈、出力先の衝突検査への追加、`io.ts` の読み込み
     （`readExportFile`。既存の `readTruthFile` と同じ形）。
