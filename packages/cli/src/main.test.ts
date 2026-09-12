@@ -2639,7 +2639,11 @@ function checkTruthJson(overrides: { bodyHash?: string; entries?: unknown[] } = 
   };
 }
 
-/** 解決に失敗する正解ファイル（quote が本文に無い）。T14・T15・T17 で使う。 */
+/**
+ * 解決に失敗する正解ファイル（quote が本文に無い）。T14・T15・T17・T16 で使う。
+ * quote はカタカナだけにする（固定の日本語エラーメッセージは漢字・ひらがなしか使わないため、
+ * 標準エラーにこの文字列が漏れていないかを紛れなく確かめられる）。
+ */
 function checkTruthJsonWithNoMatch(): unknown {
   return checkTruthJson({
     entries: [
@@ -2647,7 +2651,7 @@ function checkTruthJsonWithNoMatch(): unknown {
         id: "e-no-match",
         kind: "normal",
         paragraphId: 0,
-        quote: "存在しない文字列",
+        quote: "ナイヨウ",
         occurrence: 1,
       },
     ],
@@ -2875,15 +2879,45 @@ describe("main check-truth: 正解の解決に失敗したとき（決定4。終
 });
 
 describe("main check-truth T16: 原稿本文・quote・パス文字列を漏らさない", () => {
+  function assertNoLeak(output: string): void {
+    expect(output).not.toContain(CT_TEXT);
+    expect(output).not.toContain("ヒミツ");
+    expect(output).not.toContain("ナイヨウ");
+    expect(output).not.toContain("manuscript.txt");
+    expect(output).not.toContain("truth.json");
+    expect(output).not.toContain("report.md");
+  }
+
   it("成功時の標準出力・標準エラーの全行に、原稿本文の断片・目印の文字列・パス文字列が含まれない", async () => {
     const captured = buildCheckTruthIO();
     const code = await main(CT_ARGS, {}, captured.io);
     expect(code).toBe(0);
 
-    const output = [...captured.stdout, ...captured.stderr].join("\n");
-    expect(output).not.toContain(CT_TEXT);
-    expect(output).not.toContain("ヒミツ");
-    expect(output).not.toContain("manuscript.txt");
-    expect(output).not.toContain("truth.json");
+    assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+  });
+
+  it("解決の失敗（--report 無し）でも、標準エラーに quote・原稿本文・パス文字列が含まれない", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJsonWithNoMatch()))),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+    expect(code).toBe(2);
+
+    assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+  });
+
+  it("bodyHash 不一致でも、標準エラーに原稿本文・目印の文字列・パス文字列が含まれない", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(checkTruthJson({ bodyHash: "b".repeat(64) }))),
+        ),
+    });
+    const code = await main([...CT_ARGS, "--report", "report.md"], {}, captured.io);
+    expect(code).toBe(2);
+
+    assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+    expect(captured.writtenFiles).toHaveLength(0);
   });
 });

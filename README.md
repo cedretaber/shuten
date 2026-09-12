@@ -300,8 +300,7 @@ pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロン�
 pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失敗レポート.md>]
 ```
 
-利用者が手で書く正解ファイル（20〜40 件、多いと 40〜80 件になる誤り項目）を、LLM を回さず・
-結果 JSON も無しで検証する。検査するのは次の 4 点。
+利用者が手で書く正解ファイルを、LLM を回さず・結果 JSON も無しで検証する。検査するのは次の 4 点。
 
 - 正解ファイルの形式（zod 検証。`docs/reference/truth-format.md`）
 - 原稿との `bodyHash` 照合（`hash` で取った値と正解ファイルの `manuscript.bodyHash` が一致するか）
