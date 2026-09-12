@@ -270,13 +270,32 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
 
   // --- 候補・診断の対応表（決定 30 の関連条件。zod では書けない） -------------------------------
   const candidatesById = new Map<string, CandidateDto>();
+  const registerCandidate = (candidate: CandidateDto): void => {
+    if (candidatesById.has(candidate.id)) {
+      errors.push(`同じ候補 ID が複数の場所にあります（candidateId: ${candidate.id}）`);
+      return;
+    }
+    candidatesById.set(candidate.id, candidate);
+  };
   for (const finding of exported.findings) {
     for (const candidate of finding.candidates) {
-      candidatesById.set(candidate.id, candidate);
+      registerCandidate(candidate);
     }
   }
   for (const candidate of exported.unlocatedCandidates) {
-    candidatesById.set(candidate.id, candidate);
+    registerCandidate(candidate);
+  }
+
+  // 指摘に紐づく候補が指す検査単位も、`unlocatedCandidates` 側（下の outside-target のループ）と
+  // 同じく参照整合を検査する（決定 30「候補・指摘・検査単位の参照先が見つからない」）。
+  // ここで読んだ値は出力に使わない（候補の観点・LLM 応答は `CandidateDto` 自体が運ぶ）ので、
+  // 見つからなくても既存の集計を誤らせはしないが、参照が壊れていること自体は報告する。
+  for (const finding of exported.findings) {
+    for (const candidate of finding.candidates) {
+      if (!checkUnitById.has(candidate.checkUnitId)) {
+        errors.push(`候補が指す検査単位が見つかりません（candidateId: ${candidate.id}）`);
+      }
+    }
   }
 
   const diagnosticsByCandidateId = new Map<string, DiagnosticDto[]>();
@@ -431,10 +450,15 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
     return { ok: false, errors };
   }
 
-  // --- conditions（決定 27・28・31） ------------------------------------------------------------
-  // finishedAt は上のチェックで非 null が確定している（errors が空なのでここに到達する）。
-  const finishedAtValue = finishedAt as string;
+  // ここに到達するのは errors が空のときだけであり、finishedAt が null なら必ず上で
+  // errors に積んでいる（決定 30）ので、この分岐には到達しないはずである。値の型アサーション
+  // （`as string`）に頼らず、型を絞り込む形の防御にする。
+  if (finishedAt === null) {
+    return { ok: false, errors: ["run.finishedAt が null です（elapsedMs を作れません）"] };
+  }
+  const finishedAtValue = finishedAt;
 
+  // --- conditions（決定 27・28・31） ------------------------------------------------------------
   const conditions: EvaluationResultInput["conditions"] = {
     startedAt: run.startedAt,
     finishedAt: finishedAtValue,
@@ -465,6 +489,12 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
     },
   };
 
+  // 決定 27 の順序（1. not-found/ambiguous の指摘 → 2. unlocatedCandidates）で固定する。
+  const unlocated: readonly UnlocatedInput[] = [
+    ...unlocatedFromFindings,
+    ...unlocatedFromCandidates,
+  ];
+
   // --- totals（`run/pipeline.ts` の作り方に合わせる。決定 27・32） ------------------------------
   const locatedFindings = exported.findings.filter((f) => f.locateStatus === "located");
 
@@ -477,10 +507,14 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
       exported.findings.reduce((sum, f) => sum + f.candidates.length, 0) +
       exported.unlocatedCandidates.length,
     located: locatedFindings.reduce((sum, f) => sum + f.candidates.length, 0),
+    // `unlocatedCandidates` は「outside-target だけ」のはずだが（決定 23）、その前提を数え方の
+    // 正本にはしない。組み上がった `unlocated[]` の `locate.reason` から数えることで、一覧
+    // （`unlocated[]`）と件数（`totals.unlocated.*`）が構造的に食い違わないようにする
+    // （`run/pipeline.ts` も `unlocated[]` 自体から数えている）。
     unlocated: {
-      notFound: exported.findings.filter((f) => f.locateStatus === "not-found").length,
-      ambiguous: exported.findings.filter((f) => f.locateStatus === "ambiguous").length,
-      outsideTarget: exported.unlocatedCandidates.length,
+      notFound: unlocated.filter((u) => u.candidate.locate.reason === "not-found").length,
+      ambiguous: unlocated.filter((u) => u.candidate.locate.reason === "ambiguous").length,
+      outsideTarget: unlocated.filter((u) => u.candidate.locate.reason === "outside-target").length,
     },
     findings: locatedFindings.length,
     suppressed: locatedFindings.filter((f) => f.suppression !== null).length,
@@ -501,7 +535,7 @@ export function adaptExportToResult(exported: RunExportDto): AdaptResult {
       stop,
       conditions,
       findings: evaluationFindings,
-      unlocated: [...unlocatedFromFindings, ...unlocatedFromCandidates],
+      unlocated,
       totals,
     },
   };

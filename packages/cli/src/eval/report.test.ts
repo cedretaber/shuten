@@ -205,6 +205,30 @@ describe("formatEvaluationReport", () => {
     expect(report).toContain("stopReason: (なし)");
   });
 
+  it("決定 28(c)：source が export のときだけ実行条件の節に 2 行を出す", () => {
+    const entries = [errorEntry("e1", "typo", 0, 4)];
+    const result = makeResult([finding("f1", 0, 4)]);
+    const metrics = scoreRun(entries, result);
+
+    const exportReport = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "export",
+    });
+    expect(exportReport).toContain("- 入力：エクスポート JSON（サーバー経由の実行）");
+    expect(exportReport).toContain("- timeouts は recoveryConfirmMs を含む実効上限（決定 31）");
+
+    const resultReport = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
+    expect(resultReport).not.toContain("エクスポート JSON（サーバー経由の実行）");
+    expect(resultReport).not.toContain("recoveryConfirmMs を含む実効上限");
+  });
+
   it("決定 11 の人が判定する指標の表をそのまま出す", () => {
     const entries = [errorEntry("e1", "typo", 0, 4)];
     const result = makeResult([finding("f1", 0, 4)]);
