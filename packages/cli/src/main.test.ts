@@ -1,5 +1,12 @@
 import { hashBody } from "@shuten/server/hash.ts";
-import type { LmStudioClient, LmStudioClientOptions } from "@shuten/server/lmstudio/types.ts";
+import { LmStudioError } from "@shuten/server/lmstudio/errors.ts";
+import type {
+  ChatRequest,
+  ChatResult,
+  LmStudioClient,
+  LmStudioClientOptions,
+  ModelInfo,
+} from "@shuten/server/lmstudio/types.ts";
 import type { PipelineArgs } from "@shuten/server/run/pipeline.ts";
 import type { PipelineResult, PipelineRunStatus, RunStop } from "@shuten/server/run/result.ts";
 import { RESULT_VERSION } from "@shuten/server/run/result.ts";
@@ -8,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import * as aggregateReportModule from "./eval/aggregate-report.ts";
 import * as reportModule from "./eval/report.ts";
+import { FULL_CHAT_FORMAT_VERSION } from "./full-chat.ts";
 import type { MainIO } from "./main.ts";
 import { main } from "./main.ts";
 
@@ -95,6 +103,7 @@ function buildIO(overrides: Partial<MainIO> = {}): CapturedIO {
   const io: MainIO = {
     readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode("dummy")),
     readAllowedWordsBytes: () => Promise.resolve(new TextEncoder().encode("")),
+    readPromptBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readTruthBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readResultBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
     readExportBytes: () => Promise.reject(new Error("テストでは呼ばれない想定")),
@@ -549,7 +558,7 @@ describe("main T2: サブコマンドの振り分け（決定9）", () => {
     // パスがそのまま入りうる（決定9）。固定文言だけを出し、受け取った文字列は出さない。
     expect(captured.stderr.join("\n")).not.toContain("frobnicate");
     expect(captured.stderr.join("\n")).toContain(
-      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate）",
+      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat）",
     );
   });
 
@@ -1618,6 +1627,26 @@ describe("main aggregate T10: 複数回実行の集計（決定12）", () => {
   });
 });
 
+describe("main aggregate T34: 全文チャットの結果は受け取らない（決定39）", () => {
+  it("--result に全文チャットの結果を渡すと拒否される", async () => {
+    // 防壁は evaluate と共有の parseResultJson だが、aggregate 側でも閉じていることを
+    // 記録に残す（最終レビュー m-4）。
+    const captured = buildAggregateIO({
+      readResultBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify({ formatVersion: "full-chat/1", status: "completed" }),
+          ),
+        ),
+    });
+    const code = await main(AGGREGATE_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("全文チャット方式");
+  });
+});
+
 describe("main aggregate T19: 出力先の衝突（決定21）", () => {
   it("--out と --report が同じパス文字列ならエラー", async () => {
     const captured = buildAggregateIO();
@@ -2187,5 +2216,381 @@ describe("main aggregate T22: パスの漏えいを防ぐ（決定9）", () => {
     expect(code).toBe(1);
     expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
     expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+});
+
+// --- full-chat サブコマンド（Task 15：決定 15・34・37・38・39） ---------------------------------
+//
+// すべて合成のテキスト・合成のプロンプト（実原稿の断片を含まない）。実 LM Studio には触れない。
+
+const FULL_CHAT_ARGS = [
+  "full-chat",
+  "--manuscript",
+  "manuscript.txt",
+  "--model",
+  "test-model",
+  "--prompt-file",
+  "prompt.txt",
+];
+
+const FULL_CHAT_PROMPT = "指示。\n{{manuscript}}\n以上。";
+const FULL_CHAT_TEXT = "これは合成の原稿です。";
+
+function fullChatModelInfo(): ModelInfo {
+  return {
+    id: "test-model",
+    type: "llm",
+    state: "loaded",
+    quantization: null,
+    maxContextLength: null,
+    loadedContextLength: null,
+  };
+}
+
+function fullChatChatResult(overrides: Partial<ChatResult> = {}): ChatResult {
+  return {
+    content: "応答本文",
+    reasoningContent: null,
+    finishReason: "stop",
+    usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3, reasoningTokens: null },
+    raw: { dummy: true },
+    ...overrides,
+  };
+}
+
+interface FullChatClientHandle {
+  readonly client: LmStudioClient;
+  readonly ensureLoaded: ReturnType<typeof vi.fn>;
+  readonly chat: ReturnType<typeof vi.fn>;
+  readonly close: ReturnType<typeof vi.fn>;
+}
+
+/** `full-chat` の `createClient` が返すクライアント。呼ばれたかどうかをテストから見える形にする。 */
+function makeFullChatClient(
+  overrides: {
+    readonly ensureLoaded?: LmStudioClient["ensureLoaded"];
+    readonly chat?: LmStudioClient["chat"];
+    readonly close?: LmStudioClient["close"];
+  } = {},
+): FullChatClientHandle {
+  const ensureLoaded = vi.fn(
+    overrides.ensureLoaded ?? (() => Promise.resolve(fullChatModelInfo())),
+  );
+  const chat = vi.fn(overrides.chat ?? (() => Promise.resolve(fullChatChatResult())));
+  const close = vi.fn(overrides.close ?? (() => Promise.resolve(undefined)));
+  const client: LmStudioClient = {
+    listModels: () => Promise.reject(new Error("テストでは呼ばれない想定")),
+    ensureLoaded,
+    chat,
+    close,
+  };
+  return { client, ensureLoaded, chat, close };
+}
+
+function buildFullChatIO(
+  overrides: Partial<MainIO> = {},
+  clientOverrides: {
+    readonly ensureLoaded?: LmStudioClient["ensureLoaded"];
+    readonly chat?: LmStudioClient["chat"];
+    readonly close?: LmStudioClient["close"];
+  } = {},
+): CapturedIO & { readonly fullChatClient: FullChatClientHandle } {
+  const fullChatClient = makeFullChatClient(clientOverrides);
+  const receivedClientOptions: LmStudioClientOptions[] = [];
+  const captured = buildIO({
+    readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode(FULL_CHAT_TEXT)),
+    readPromptBytes: () => Promise.resolve(new TextEncoder().encode(FULL_CHAT_PROMPT)),
+    createClient: (options) => {
+      receivedClientOptions.push(options);
+      return fullChatClient.client;
+    },
+    ...overrides,
+  });
+  return { ...captured, receivedClientOptions, fullChatClient };
+}
+
+describe("main full-chat T32: 出力先の衝突（決定38）", () => {
+  it("--out と --manuscript が同じ実体のとき、終了コード1で拒否され createClient/ensureLoaded/chat を呼ばない", async () => {
+    const captured = buildFullChatIO({
+      statFile: (path) =>
+        Promise.resolve(
+          path === "out.json" || path === "manuscript.txt" ? { dev: 1, ino: 1 } : null,
+        ),
+    });
+    const code = await main([...FULL_CHAT_ARGS, "--out", "out.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+    expect(captured.fullChatClient.ensureLoaded).not.toHaveBeenCalled();
+    expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
+    expect(captured.writtenFiles).toHaveLength(0);
+  });
+
+  it("--out と --prompt-file が同じ実体のときも同様に拒否する", async () => {
+    const captured = buildFullChatIO({
+      statFile: (path) =>
+        Promise.resolve(path === "out.json" || path === "prompt.txt" ? { dev: 2, ino: 2 } : null),
+    });
+    const code = await main([...FULL_CHAT_ARGS, "--out", "out.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.receivedClientOptions).toHaveLength(0);
+    expect(captured.fullChatClient.ensureLoaded).not.toHaveBeenCalled();
+    expect(captured.fullChatClient.chat).not.toHaveBeenCalled();
+    expect(captured.writtenFiles).toHaveLength(0);
+  });
+});
+
+describe("main full-chat T33: パスの漏えいを防ぐ（決定9・38）", () => {
+  const SENTINEL_PATH = "/private/leak-should-not-appear/prompt.txt";
+  const sentinelError = (prefix: string) =>
+    new Error(`${prefix}: no such file or directory, open '${SENTINEL_PATH}'`);
+
+  function expectNoLeak(stderr: readonly string[]): void {
+    const all = stderr.join("\n");
+    expect(all).not.toContain(SENTINEL_PATH);
+    expect(all).not.toContain("manuscript.txt");
+    expect(all).not.toContain("prompt.txt");
+    expect(all).not.toContain(FULL_CHAT_PROMPT);
+    expect(all).not.toContain(FULL_CHAT_TEXT);
+  }
+
+  it("プロンプトファイルが読めないとき、標準エラーにパス・原稿・プロンプトを含めない", async () => {
+    const captured = buildFullChatIO({
+      readPromptBytes: () => Promise.reject(sentinelError("ENOENT")),
+    });
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+    expect(code).toBe(1);
+    expectNoLeak(captured.stderr);
+  });
+
+  it("プロンプトファイルが UTF-8 でないとき、標準エラーにパス・原稿・プロンプトを含めない", async () => {
+    const captured = buildFullChatIO({
+      readPromptBytes: () => Promise.resolve(new Uint8Array([0xff])),
+    });
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+    expect(code).toBe(1);
+    expectNoLeak(captured.stderr);
+  });
+
+  it("SHUTEN_LM_STUDIO_URL が不正なとき、標準エラーにその値を含めない", async () => {
+    const SECRET_URL = "http://secret-lmstudio-host.internal:19999/with-a-path";
+    const captured = buildFullChatIO();
+    const code = await main(FULL_CHAT_ARGS, { SHUTEN_LM_STUDIO_URL: SECRET_URL }, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SECRET_URL);
+    expect(captured.stderr.join("\n")).not.toContain("secret-lmstudio-host");
+  });
+
+  it("必須オプションが欠けているとき、標準エラーにパスを含めない", async () => {
+    const captured = buildFullChatIO();
+    const code = await main(
+      ["full-chat", "--model", "test-model", "--prompt-file", "prompt-path-should-not-leak.txt"],
+      {},
+      captured.io,
+    );
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain("prompt-path-should-not-leak.txt");
+  });
+});
+
+describe("main evaluate T34: full-chat 方式の結果は evaluate に渡せない（決定39）", () => {
+  it("--result に full-chat 方式の結果を渡すと終了コードが 0 以外になり、標準エラーに「全文チャット方式」を含む", async () => {
+    const fullChatResultJson = {
+      formatVersion: FULL_CHAT_FORMAT_VERSION,
+      status: "completed",
+      content: "本文",
+      reasoningContent: null,
+      finishReason: "stop",
+      usage: null,
+      failure: null,
+      conditions: {
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        model: null,
+        generation: { model: "test-model", maxTokens: 100, temperature: 0.2 },
+        timeouts: { checkMs: 300000 },
+        manuscript: { utf16Length: 5, graphemeCount: 5, paragraphCount: 1, bodyHash: EVAL_HASH },
+        promptHash: "dummy-hash",
+      },
+    };
+    const captured = buildEvalIO({
+      readResultBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(fullChatResultJson))),
+    });
+
+    const code = await main(EVAL_ARGS, {}, captured.io);
+
+    expect(code).not.toBe(0);
+    expect(captured.stderr.join("\n")).toContain("全文チャット方式");
+  });
+});
+
+describe("main full-chat: 通し", () => {
+  it("成功時、終了コード0で書かれたJSONのformatVersionがfull-chat/1になる", async () => {
+    const captured = buildFullChatIO();
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toHaveLength(1);
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      formatVersion: string;
+      status: string;
+    };
+    expect(parsed.formatVersion).toBe(FULL_CHAT_FORMAT_VERSION);
+    expect(parsed.status).toBe("completed");
+  });
+
+  it("引数の生成設定とタイムアウトが、要求にも結果の実行条件にも写る", async () => {
+    // 最終レビュー I-1：main.ts の generation の組み立てと timeoutMs の受け渡し、
+    // full-chat.ts の ChatRequest と conditions を、どのテストも守っていなかった
+    // （max_tokens と temperature を入れ替える変異が全テストを通り抜けた）。
+    // PR13b は「4 方式を同じ条件で比較した」ことを conditions で示すので、ここがずれると
+    // 比較の前提が静かに崩れる。任意オプションを全部渡した 1 本でまとめて固定する。
+    const captured = buildFullChatIO();
+    const code = await main(
+      [
+        ...FULL_CHAT_ARGS,
+        "--max-tokens",
+        "1234",
+        "--temperature",
+        "0.25",
+        "--seed",
+        "99",
+        "--reasoning-effort",
+        "medium",
+        "--check-timeout-ms",
+        "45678",
+      ],
+      {},
+      captured.io,
+    );
+
+    expect(code).toBe(0);
+
+    const [request, options] = captured.fullChatClient.chat.mock.calls[0] as [
+      ChatRequest,
+      { readonly timeoutMs: number },
+    ];
+    expect(request.model).toBe("test-model");
+    expect(request.maxTokens).toBe(1234);
+    expect(request.temperature).toBe(0.25);
+    expect(request.seed).toBe(99);
+    expect(request.reasoningEffort).toBe("medium");
+    expect(options.timeoutMs).toBe(45678);
+
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as {
+      conditions: {
+        generation: {
+          model: string;
+          maxTokens: number;
+          temperature: number;
+          seed?: number;
+          reasoningEffort: string;
+        };
+        timeouts: { checkMs: number };
+      };
+    };
+    expect(parsed.conditions.generation).toEqual({
+      model: "test-model",
+      maxTokens: 1234,
+      temperature: 0.25,
+      seed: 99,
+      reasoningEffort: "medium",
+    });
+    expect(parsed.conditions.timeouts.checkMs).toBe(45678);
+  });
+
+  it("client.close() が失敗しても結果 JSON は書かれ、終了コードは変わらない", async () => {
+    // 最終レビュー m-1：close の失敗で書き出しが飛ぶと、決定 37 の
+    // 「失敗でも結果 JSON は書く」が破れ、bin に catch が無いので未処理の拒否になる。
+    const captured = buildFullChatIO(
+      {},
+      { close: () => Promise.reject(new Error("閉じられない")) },
+    );
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toHaveLength(1);
+  });
+
+  it("--out を指定すると出力先ファイルに書き出す", async () => {
+    const captured = buildFullChatIO();
+    const code = await main([...FULL_CHAT_ARGS, "--out", "result.json"], {}, captured.io);
+
+    expect(code).toBe(0);
+    expect(captured.writtenFiles).toHaveLength(1);
+    expect(captured.writtenFiles[0]?.path).toBe("result.json");
+  });
+
+  it("失敗時（chat が truncated を投げる）、終了コード2で、writeResult が呼ばれている", async () => {
+    const captured = buildFullChatIO(
+      {},
+      {
+        chat: () =>
+          Promise.reject(
+            new LmStudioError("truncated", "生成が通常どおり終わらなかった", {
+              finishReason: "length",
+            }),
+          ),
+      },
+    );
+
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(1);
+    const parsed = JSON.parse(captured.stdout[0] ?? "") as { status: string };
+    expect(parsed.status).toBe("failed");
+  });
+
+  it("client.close() が成功時に呼ばれる", async () => {
+    const captured = buildFullChatIO();
+    await main(FULL_CHAT_ARGS, {}, captured.io);
+    expect(captured.fullChatClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("client.close() が失敗時にも呼ばれる", async () => {
+    const captured = buildFullChatIO(
+      {},
+      {
+        chat: () =>
+          Promise.reject(new LmStudioError("truncated", "失敗", { finishReason: "length" })),
+      },
+    );
+    await main(FULL_CHAT_ARGS, {}, captured.io);
+    expect(captured.fullChatClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("runFullChat が想定外の例外を投げても終了コード1で、原因は表示せず、client.close() は呼ばれる", async () => {
+    const captured = buildFullChatIO(
+      {},
+      {
+        chat: () => Promise.reject(new Error("boom", { cause: new Error("ECONNREFUSED") })),
+      },
+    );
+
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expect(captured.stderr.join("\n")).toContain("全文チャットの実行中に想定外のエラーが発生した");
+    expect(captured.stderr.join("\n")).not.toContain("boom");
+    expect(captured.stderr.join("\n")).not.toContain("ECONNREFUSED");
+    expect(captured.fullChatClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("{{manuscript}} が無いプロンプトのとき、終了コード1で結果 JSON を書かない", async () => {
+    const captured = buildFullChatIO({
+      readPromptBytes: () =>
+        Promise.resolve(new TextEncoder().encode("差し込み口が無いプロンプト")),
+    });
+    const code = await main(FULL_CHAT_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expect(captured.fullChatClient.ensureLoaded).not.toHaveBeenCalled();
   });
 });

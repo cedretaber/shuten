@@ -388,6 +388,21 @@ export function formatIssues(
 
 /** 結果 JSON（`JSON.parse` の戻り値）を検証する。`versions.result` の照合を含む。 */
 export function parseResultJson(json: unknown): ResultValidateResult {
+  // 決定 39：全文チャット方式の結果（formatVersion が "full-chat/" で始まる）は自動採点しない。
+  // zod の必須項目欠落として落ちるだけでは「形式が違う」ことが読み取れないので、先に判別する。
+  if (
+    typeof json === "object" &&
+    json !== null &&
+    "formatVersion" in json &&
+    typeof (json as { formatVersion: unknown }).formatVersion === "string" &&
+    (json as { formatVersion: string }).formatVersion.startsWith("full-chat/")
+  ) {
+    return {
+      ok: false,
+      errors: ["全文チャット方式の結果は自動採点しないため、evaluate / aggregate には渡せません"],
+    };
+  }
+
   const result = resultSchema.safeParse(json);
   if (result.success) {
     return { ok: true, value: result.data };

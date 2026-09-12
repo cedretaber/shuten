@@ -26,6 +26,11 @@ export interface ManuscriptReader {
   readonly readManuscriptBytes: (path: string) => Promise<Uint8Array>;
 }
 
+/** `readPromptText` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
+export interface PromptReader {
+  readonly readPromptBytes: (path: string) => Promise<Uint8Array>;
+}
+
 /** `readTruthText` が要る入出力だけを取り出した形。`MainIO` は構造的にこれを満たす。 */
 export interface TruthReader {
   readonly readTruthBytes: (path: string) => Promise<Uint8Array>;
@@ -92,6 +97,11 @@ export async function readManuscriptText(
 /** 正解ファイルを読み込み UTF-8 として取り込む（`evaluate` が使う。決定 9）。 */
 export async function readTruthText(io: TruthReader, path: string): Promise<IoResult<string>> {
   return readTextOrFixedError((p) => io.readTruthBytes(p), path, "正解ファイル");
+}
+
+/** プロンプトファイルを読み込み UTF-8 として取り込む（`full-chat` が使う。決定 9・38）。 */
+export async function readPromptText(io: PromptReader, path: string): Promise<IoResult<string>> {
+  return readTextOrFixedError((p) => io.readPromptBytes(p), path, "プロンプトファイル");
 }
 
 /** 結果 JSON ファイルを読み込み UTF-8 として取り込む（`evaluate` / `aggregate` が使う。決定 9）。 */
