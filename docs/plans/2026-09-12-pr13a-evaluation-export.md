@@ -533,6 +533,7 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
   manuscript: ManuscriptVersionDto,  // 本文と bodyHash を含む
   targets: RunTargetDto[],
   checkUnits: CheckUnitDto[],
+  recheckUnits: RecheckUnitDto[],    // 再確認単位の全項目（決定 32）
   findings: FindingDetailDto[],      // 理由・再確認要約・採否・元候補・位置診断
   unlocatedCandidates: CandidateDto[],   // finding_id が null の候補（outside-target。決定 23）
   unlocatedDiagnostics: DiagnosticDto[]  // 上記の候補に紐づく診断
@@ -540,7 +541,8 @@ shuten full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプ�
 ```
 
 - 仕様 8.1 の保存単位（原稿版・検査実行・検査単位・再確認単位・位置診断・指摘・作者の判断）を
-  すべて覆う。再確認単位と採否は `FindingDetailDto` に入っている。
+  すべて覆う。採否は `FindingDetailDto` に入っている。**再確認単位は別の配列で全項目を運ぶ**
+  （`FindingDetailDto.recheck` は要約で、試行回数や所要時間を落としている。決定 32）。
 - **位置特定失敗の候補を別に持つ**。`FindingDetailDto.candidates` は指摘に紐づく候補だけなので、
   指摘を持たない候補（`finding_id` が null）は入らない。これが無いと仕様 10 節の
   「位置特定失敗率」をエクスポートから測れない。
@@ -842,11 +844,11 @@ null になる）。`scoreRun` が読むのは `stop.reason` だけなので指�
   **診断の行そのものが無い候補は `diagnostic: null` に丸めず拒否する**（決定 30）。
   位置特定に失敗した候補には必ず診断が 1 行ある。
 
-**再確認（`RecheckSummaryDto` → `EvaluationRecheckInput`）**
+**再確認（`recheckUnits[]` の `RecheckUnitDto` → `EvaluationRecheckInput`。決定 32）**
 
 | エクスポート | 評価入力 |
 | --- | --- |
-| `recheck` が null（まだ起票されていない） | 下記のとおり `disabled` / `suppressed` / `pending` に振り分ける |
+| その指摘を指す再確認単位が無い（まだ起票されていない） | 下記のとおり `disabled` / `suppressed` / `pending` に振り分ける |
 | `status: "done"` | `{ status: "done", output: { verdict, reasonKind, reason, suggestionValid } }`（4 つのいずれかが null なら拒否） |
 | `status: "failed"` | `{ status: "failed" }` |
 | `status: "pending"` | `{ status: "pending" }` |
@@ -855,7 +857,7 @@ null になる）。`scoreRun` が読むのは `stop.reason` だけなので指�
 | 同上、`"unlocated"` | 位置未確定の指摘に付くもの。その指摘は `unlocated[]` に回るので写さない |
 | `status: "running"` | 拒否（決定 30） |
 
-**`recheck` が null のときを `disabled` に丸めてはならない。** 再確認単位はその検査対象の初回検査が
+**再確認単位が無いときを `disabled` に丸めてはならない。** 再確認単位はその検査対象の初回検査が
 決着してから起票される（`run/loop.ts` の `issueRechecks`。決定 34）ので、**指摘を保存した後・起票の前に
 止まった実行**にも行の無い指摘がありうる。`FindingDto.recheck` の「再確認を無効にした実行では
 起票されない」という注記は、起こりうる場合の一部しか挙げていない。`issueRechecks` の優先順位
@@ -881,7 +883,7 @@ null になる）。`scoreRun` が読むのは `stop.reason` だけなので指�
 | --- | --- |
 | `targets` | `targets.length` |
 | `checkUnits.done` / `.failed` / `.pending` | `checkUnits` を状態で数える（`running` / `not-applicable` があれば拒否） |
-| `requests` | `Σ checkUnits.attempts + Σ recheckUnits.attempts`（`executor` は `attempts` と `requestCount` を同じ 1 か所で増やすので一致する） |
+| `requests` | `Σ checkUnits[].attempts + Σ recheckUnits[].attempts`（どちらもエクスポート直下の配列。`executor` は `attempts` と `requestCount` を同じ 1 か所で増やすので一致する） |
 | `candidates` | `Σ findings[].candidates.length + unlocatedCandidates.length` |
 | `located` | 位置確定済みの指摘の `candidates.length` の合計 |
 | `unlocated.notFound` / `.ambiguous` | `locateStatus` がその値の指摘の件数 |
@@ -962,6 +964,8 @@ shuten aggregate (--result <結果.json> | --export <エクスポート.json>)..
 | 位置未確定の候補に対応する診断が無い | 3 通りとも診断が 1 行できる（決定 23 の表。`insertDiagnostic` の呼び出しは `saveUnlocatedCandidate` の 1 か所だけ）。欠けていれば診断変換別の候補取得件数（決定 8）を黙って過少に数える |
 | 同じ候補を指す診断が 2 行以上ある | どちらを採るかが決まらない |
 | どの候補にも紐づかない診断がある | 参照が壊れている（上と同じ理由） |
+| どの指摘にも紐づかない再確認単位がある | 参照が壊れている |
+| 同じ指摘を指す再確認単位が 2 つ以上ある | `finding_id` の一意索引が壊れている |
 | `locateStatus === "located"` の指摘に候補が 0 件、または `located` でない候補がある | 統合後の指摘は位置確定済みの元候補を 1 件以上持つ |
 
 上の表の後半 4 行は、**zod では書けない関連条件**である（`runExportDtoSchema` は 1 つの値の形しか
@@ -1015,6 +1019,29 @@ const STOP_REASON_MAP = {
 **却下した案。** `RunConditions` に `recoveryConfirmMs` を足す → `PipelineResult` の形を
 エクスポートの都合で変えることになり、既存の結果 JSON（この項目を持たない）が検証に落ちる。
 CLI 経路では常に 0 になる項目でもある。
+
+
+### 決定 32：エクスポートは再確認単位を要約とは別に全項目で運ぶ
+
+決定 16 は「再確認単位は `FindingDetailDto` に入っている」と書いたが、そこに入るのは
+`RecheckSummaryDto`（`id` / `status` / `notApplicableReason` / `verdict` / `reasonKind` / `reason` /
+`suggestionValid` / `failure`）であって、**`attempts` / `inputRange` / `elapsedMs` / 時刻を落とした要約**である。
+画面の指摘一覧はそれで足りるが、エクスポートは可搬用の控えなので落としてはいけない。
+
+とくに決定 27 の `totals.requests`（`Σ checkUnits.attempts + Σ recheckUnits.attempts`）が
+**再確認側の試行回数を復元できず、再送のあった実行で要求数を静かに過小評価する**。
+
+**`recheckUnits: RecheckUnitDto[]` をエクスポートの直下に足す。**
+
+- 出どころは `listRecheckUnits`（決定 25 で既に呼んでいる。問い合わせは増えない）。
+- `findings[].recheck`（要約）はそのまま残す。重複は控えとしては許容する
+  （`checkUnits` と同じく、単位は単位として全項目で並ぶ形に揃う）。
+- **アダプター（決定 27）は再確認の状態をこの `recheckUnits` から読む**（要約ではなく単位を正本にする）。
+  `findingId` で引く。`recheck_units_finding_id_key`（`finding_id` の一意索引）があるので
+  1 指摘につき高々 1 単位である。
+
+**却下した案。** (a) `RecheckSummaryDto` に `attempts` を足す → 画面用の DTO を評価の都合で太らせる。
+(b) 決定 27 から `requests` の再確認ぶんを落とす → 要求数が実測と食い違う指標になる。
 
 
 ## テスト
@@ -1103,7 +1130,8 @@ CLI 経路では常に 0 になる項目でもある。
 
 ### PR13a-2（エクスポート）
 
-- **T13 エクスポート**：仕様 8.1 の全単位が入っている。`not-found` / `ambiguous` の候補は
+- **T13 エクスポート**：仕様 8.1 の全単位が入っている（再確認単位は `recheckUnits[]` に
+  全項目で入る。決定 32。変異：`attempts` を落とす → 落ちる）。`not-found` / `ambiguous` の候補は
   位置 null の指摘として `findings[]` に、`outside-target` の候補は `unlocatedCandidates` /
   `unlocatedDiagnostics` に入る（決定 23。変異：`unlocatedCandidates` を `finding_id` で絞らず
   全候補にする → 落ちる）。存在しない実行 ID は 404。
