@@ -104,14 +104,14 @@ describe("parseFullChatArgs: この方式には無いオプション", () => {
     const result = parseFullChatArgs([...REQUIRED, "--perspectives", "typo"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toMatch(/未知のオプション/);
+    expect(result.error).toMatch(/使えないオプション/);
   });
 
   it("--mode split は未知のオプションとして拒否される", () => {
     const result = parseFullChatArgs([...REQUIRED, "--mode", "split"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toMatch(/未知のオプション/);
+    expect(result.error).toMatch(/使えないオプション/);
   });
 
   it("--allowed-words は未知のオプションとして拒否される", () => {

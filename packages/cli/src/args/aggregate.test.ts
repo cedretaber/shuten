@@ -111,7 +111,10 @@ describe("parseAggregateArgs", () => {
     const result = parseAggregateArgs([...REQUIRED, "--unknown", "x"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("--unknown");
+    // 受け取ったトークンは出さない（オプション名を付け忘れて渡された値かもしれず、
+    // この位置では区別できないため。`args/common.ts` の `collectRawOptions`）。
+    expect(result.error).not.toContain("--unknown");
+    expect(result.error).toContain("使えないオプション");
   });
 
   // --- 決定29：--export の配線（Task 11） ------------------------------------------------------

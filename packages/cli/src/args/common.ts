@@ -44,15 +44,18 @@ export function collectRawOptions(
       break;
     }
     if (!knownSet.has(token)) {
-      // オプション名（`--` 始まり）はそのまま返してよいが、それ以外の値は返さない。
-      // `shuten check-truth manuscript.txt --truth t.json` のようにオプション名を付け忘れると、
-      // 値＝ファイルパスがそのまま標準エラーに出てしまう（決定 9：パスを出さない。レビュー指摘）。
+      // **受け取ったトークンを一切返さない。** この位置では「打ち間違えたオプション名」と
+      // 「オプション名を付け忘れて渡された値」を区別できない。`--` 始まりかどうかでも
+      // 区別できない（`--PRIVATE_TITLE.txt` のようなファイル名は Windows でも Linux でも
+      // 作れる。レビュー指摘）。`shuten check-truth <原稿パス> --truth t.json` のような
+      // 打ち方で原稿のパスが標準エラーに出るのは決定 9 に反する。
+      //
+      // 代わりに**受け付けるオプション名の一覧**を案内する。これは各サブコマンドの
+      // `KNOWN_OPTIONS` リテラル由来で、利用者の入力を含まない。
       // これは `collectRawOptions` を使うすべてのサブコマンドに共通の経路である。
-      return token.startsWith("--")
-        ? err(`未知のオプションです: ${token}`)
-        : err(
-            "オプション名以外の引数が渡されました（値は表示しません。--オプション名 値 の形で渡してください）",
-          );
+      return err(
+        `使えないオプションが渡されました（値は表示しません）。使えるのは: ${spec.known.join(" ")}`,
+      );
     }
     const value = argv[i + 1];
     if (value === undefined) {

@@ -72,7 +72,10 @@ describe("parseEvaluateArgs", () => {
     const result = parseEvaluateArgs([...REQUIRED, "--unknown", "x"]);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("--unknown");
+    // 受け取ったトークンは出さない（オプション名を付け忘れて渡された値かもしれず、
+    // この位置では区別できないため。`args/common.ts` の `collectRawOptions`）。
+    expect(result.error).not.toContain("--unknown");
+    expect(result.error).toContain("使えないオプション");
   });
 
   it("--result の重複はエラー（evaluate は 1 本だけ）", () => {

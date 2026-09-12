@@ -2924,6 +2924,19 @@ describe("main check-truth T16: 原稿本文・quote・パス文字列を漏ら�
     expect(captured.stdout).toHaveLength(0);
   });
 
+  it("-- で始まる原稿ファイル名を位置引数で渡しても、標準エラーにパスが出ない", async () => {
+    // `--` 始まりを安全なオプション名とみなす判定では防げない。`--` で始まるファイル名は
+    // Windows でも Linux でも作れる（レビュー指摘）。
+    const leakPath = "--leak-should-not-appear-TITLE.txt";
+    const captured = buildCheckTruthIO();
+    const code = await main(["check-truth", leakPath, "--truth", "truth.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(leakPath);
+    expect(captured.stderr.join("\n")).not.toContain("leak-should-not-appear");
+    expect(captured.stdout).toHaveLength(0);
+  });
+
   it("要約の書き出しに失敗したら 1 を返し、例外のパスを標準エラーに出さない", async () => {
     // レビュー指摘：成功経路の writeResultOrFixedError の失敗を誰も見ておらず、
     // 「書けなくても 0 を返す」変異が 141 件のテストを通り抜けていた。
