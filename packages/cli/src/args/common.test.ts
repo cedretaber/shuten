@@ -23,6 +23,39 @@ describe("collectRawOptions", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("未知のトークンは、値をメッセージに含めない", () => {
+    // オプション名を付け忘れると値＝ファイルパスが渡ってくる。それを出すとパスが
+    // 標準エラーに漏れる（決定 9。レビュー指摘）。
+    const leakPath = "/private/leak-should-not-appear/manuscript.txt";
+    const result = collectRawOptions([leakPath, "--a", "1"], { known: KNOWN });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).not.toContain(leakPath);
+    expect(result.error).not.toContain("leak-should-not-appear");
+  });
+
+  it("-- で始まるファイル名でも値をメッセージに含めない", () => {
+    // `--` 始まりを「安全なオプション名」とみなす判定では防げない。Windows でも Linux でも
+    // `--` で始まるファイル名は作れる（レビュー指摘）。
+    const leakPath = "--leak-should-not-appear-TITLE.txt";
+    const result = collectRawOptions([leakPath, "--a", "1"], { known: KNOWN });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).not.toContain(leakPath);
+    expect(result.error).not.toContain("leak-should-not-appear");
+  });
+
+  it("使えるオプション名の一覧を案内する", () => {
+    // 受け取った値を出さない代わりの手がかり。`known` は呼び出し側のリテラルで、
+    // 利用者の入力を含まない。
+    const result = collectRawOptions(["--c", "1"], { known: KNOWN });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    for (const option of KNOWN) {
+      expect(result.error).toContain(option);
+    }
+  });
+
   it("値のないオプションを拒否する", () => {
     const result = collectRawOptions(["--a"], { known: KNOWN });
     expect(result.ok).toBe(false);

@@ -558,7 +558,7 @@ describe("main T2: サブコマンドの振り分け（決定9）", () => {
     // パスがそのまま入りうる（決定9）。固定文言だけを出し、受け取った文字列は出さない。
     expect(captured.stderr.join("\n")).not.toContain("frobnicate");
     expect(captured.stderr.join("\n")).toContain(
-      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat）",
+      "引数エラー: 先頭の引数がサブコマンド名ではありません（run / hash / evaluate / aggregate / full-chat / check-truth）",
     );
   });
 
@@ -611,6 +611,16 @@ describe("main T22: パスの漏えいを防ぐ（決定9）", () => {
       readManuscriptBytes: () => Promise.reject(sentinelError("ENOENT")),
     });
     const code = await main(["hash", "--manuscript", "manuscript.txt"], {}, captured.io);
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
+    expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
+  });
+
+  it("run: 原稿パスを位置引数で渡しても標準エラーにパスが出ない（共通の引数解釈）", async () => {
+    // 修正は `collectRawOptions` にあるのですべてのサブコマンドに効く。代表として
+    // 既定のサブコマンドである `run` でも固定する（レビュー指摘）。
+    const captured = buildIO({});
+    const code = await main([SENTINEL_PATH, "--model", "test-model"], {}, captured.io);
     expect(code).toBe(1);
     expect(captured.stderr.join("\n")).not.toContain(SENTINEL_PATH);
     expect(captured.stdout.join("\n")).not.toContain(SENTINEL_PATH);
@@ -2592,5 +2602,378 @@ describe("main full-chat: 通し", () => {
     expect(captured.stdout).toHaveLength(0);
     expect(captured.writtenFiles).toHaveLength(0);
     expect(captured.fullChatClient.ensureLoaded).not.toHaveBeenCalled();
+  });
+});
+
+// --- check-truth サブコマンド（Task 0：LLM を回さずに正解ファイルだけを検証する） ----------------
+//
+// すべて合成のテキスト・合成の JSON（実原稿の断片を含まない）。原稿はカタカナだけの短い文字列にし、
+// 目印の文字列（「ヒミツ」）を末尾に足す。エラーメッセージが日本語（漢字・ひらがな）の固定文言しか
+// 使わないため、カタカナの quote や目印がそこに紛れ込めば漏えいだと分かる（T16）。
+
+const CT_TEXT = "アイウエオヒミツ";
+const CT_HASH = hashBody(CT_TEXT);
+const CT_ARGS = ["check-truth", "--manuscript", "manuscript.txt", "--truth", "truth.json"];
+
+function checkTruthJson(overrides: { bodyHash?: string; entries?: unknown[] } = {}): unknown {
+  return {
+    formatVersion: "1",
+    // 原稿名も漏えい検査の対象にするため、他と混ざらない目印にする（レビュー指摘）。
+    manuscript: { name: "ゲンコウメイZZ", bodyHash: overrides.bodyHash ?? CT_HASH },
+    entries: overrides.entries ?? [
+      {
+        id: "e1",
+        kind: "error",
+        perspective: "typo",
+        paragraphId: 0,
+        quote: "ア",
+        occurrence: 1,
+      },
+      {
+        id: "e2",
+        kind: "error",
+        perspective: "typo",
+        paragraphId: 0,
+        quote: "イ",
+        occurrence: 1,
+      },
+      {
+        id: "e3",
+        kind: "error",
+        perspective: "naturalness",
+        paragraphId: 0,
+        quote: "ウ",
+        occurrence: 1,
+      },
+      { id: "n1", kind: "normal", paragraphId: 0, quote: "エ", occurrence: 1 },
+    ],
+  };
+}
+
+/**
+ * 解決に失敗する正解ファイル（quote が本文に無い）。T14・T15・T17・T16 で使う。
+ * quote はカタカナだけにする（固定の日本語エラーメッセージは漢字・ひらがなしか使わないため、
+ * 標準エラーにこの文字列が漏れていないかを紛れなく確かめられる）。
+ */
+function checkTruthJsonWithNoMatch(): unknown {
+  return checkTruthJson({
+    entries: [
+      {
+        id: "e-no-match",
+        kind: "normal",
+        paragraphId: 0,
+        quote: "ナイヨウ",
+        occurrence: 1,
+      },
+    ],
+  });
+}
+
+function buildCheckTruthIO(overrides: Partial<MainIO> = {}): CapturedIO {
+  return buildIO({
+    readManuscriptBytes: () => Promise.resolve(new TextEncoder().encode(CT_TEXT)),
+    readTruthBytes: () =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJson()))),
+    ...overrides,
+  });
+}
+
+describe("main check-truth: 正常系（Task 0）", () => {
+  it("すべて正しいとき0で、標準出力に3行の要約が出る。件数が正しい", async () => {
+    const captured = buildCheckTruthIO();
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(0);
+    expect(captured.stdout).toEqual([
+      "正解項目 4 件\n  error 3（typo 2 / naturalness 1）\n  normal 1",
+    ]);
+    expect(captured.writtenFiles).toHaveLength(0);
+  });
+});
+
+describe("main check-truth: 正解ファイルの内容の誤り（終了コード2）", () => {
+  it("原稿と正解ファイルの bodyHash が食い違うと2", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(checkTruthJson({ bodyHash: "b".repeat(64) }))),
+        ),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("未知のキーを含む正解ファイルは zod 検証に失敗し2", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              checkTruthJson({
+                entries: [
+                  {
+                    id: "e1",
+                    kind: "normal",
+                    paragraphId: 0,
+                    quote: "ア",
+                    occurrence: 1,
+                    occurence: 1, // 誤記（未知キー）。strict なので黙って無視されない
+                  },
+                ],
+              }),
+            ),
+          ),
+        ),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("paragraphId が段落数の範囲外だと2", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              checkTruthJson({
+                entries: [{ id: "e1", kind: "normal", paragraphId: 5, quote: "ア", occurrence: 1 }],
+              }),
+            ),
+          ),
+        ),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("quote が本文に無いと2", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJsonWithNoMatch()))),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("occurrence が出現回数を超えると2", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(
+            JSON.stringify(
+              checkTruthJson({
+                entries: [{ id: "e1", kind: "normal", paragraphId: 0, quote: "ア", occurrence: 2 }],
+              }),
+            ),
+          ),
+        ),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("正解ファイルの JSON 構文が不正だと2", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () => Promise.resolve(new TextEncoder().encode("{ これは JSON ではない")),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    expect(captured.stdout).toHaveLength(0);
+  });
+});
+
+describe("main check-truth: 入出力の誤り（終了コード1）", () => {
+  it("原稿ファイルが読めないとき1", async () => {
+    const captured = buildCheckTruthIO({
+      readManuscriptBytes: () => Promise.reject(new Error("ENOENT")),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("正解ファイルが読めないとき1", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () => Promise.reject(new Error("ENOENT")),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+  });
+});
+
+describe("main check-truth: 出力先の衝突検査は読み込みより前（Task 0 ブリーフ 3節・完了条件の変異）", () => {
+  it("--report が --manuscript と同じ実体のとき1で拒否され、readTruthBytes も readManuscriptBytes も呼ばれない", async () => {
+    const readManuscriptBytes = vi.fn(() => Promise.resolve(new TextEncoder().encode(CT_TEXT)));
+    const readTruthBytes = vi.fn(() =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJson()))),
+    );
+    const captured = buildCheckTruthIO({ readManuscriptBytes, readTruthBytes });
+    const code = await main([...CT_ARGS, "--report", "manuscript.txt"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expect(readManuscriptBytes).not.toHaveBeenCalled();
+    expect(readTruthBytes).not.toHaveBeenCalled();
+    expect(captured.stderr.join("\n")).toContain("--manuscript");
+  });
+
+  it("--report が --truth と同じ実体のとき1で拒否され、readTruthBytes も readManuscriptBytes も呼ばれない", async () => {
+    const readManuscriptBytes = vi.fn(() => Promise.resolve(new TextEncoder().encode(CT_TEXT)));
+    const readTruthBytes = vi.fn(() =>
+      Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJson()))),
+    );
+    const captured = buildCheckTruthIO({ readManuscriptBytes, readTruthBytes });
+    const code = await main([...CT_ARGS, "--report", "truth.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stdout).toHaveLength(0);
+    expect(captured.writtenFiles).toHaveLength(0);
+    expect(readManuscriptBytes).not.toHaveBeenCalled();
+    expect(readTruthBytes).not.toHaveBeenCalled();
+    expect(captured.stderr.join("\n")).toContain("--truth");
+  });
+});
+
+describe("main check-truth: 正解の解決に失敗したとき（決定4。終了コードをレポートの書き出しで分ける）", () => {
+  it("解決に失敗し、かつレポートの書き出しにも失敗したとき1（2ではない）", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJsonWithNoMatch()))),
+      writeResult: (outPath) =>
+        outPath === "report.md" ? Promise.reject(new Error("EACCES")) : Promise.resolve(),
+    });
+    const code = await main([...CT_ARGS, "--report", "report.md"], {}, captured.io);
+
+    expect(code).toBe(1);
+  });
+
+  it("解決に失敗しレポートは書けたとき2で、--report のパスに書かれている", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJsonWithNoMatch()))),
+    });
+    const code = await main([...CT_ARGS, "--report", "report.md"], {}, captured.io);
+
+    expect(code).toBe(2);
+    const reportFile = captured.writtenFiles.find((file) => file.path === "report.md");
+    expect(reportFile).toBeDefined();
+  });
+
+  it("--report を渡さなくても標準エラーに失敗の1行ずつが出る（id と段落番号を含む）", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJsonWithNoMatch()))),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(2);
+    const stderr = captured.stderr.join("\n");
+    expect(stderr).toContain("e-no-match");
+    expect(stderr).toContain("paragraphId 0");
+    expect(captured.writtenFiles).toHaveLength(0);
+  });
+});
+
+describe("main check-truth T16: 原稿本文・quote・パス文字列を漏らさない", () => {
+  function assertNoLeak(output: string): void {
+    expect(output).not.toContain(CT_TEXT);
+    expect(output).not.toContain("ヒミツ");
+    expect(output).not.toContain("ナイヨウ");
+    // 正解ファイルの manuscript.name。利用者が自由に付ける名前なので、原稿の題名がそのまま
+    // 入りうる（レビュー指摘）。
+    expect(output).not.toContain("ゲンコウメイZZ");
+    expect(output).not.toContain("manuscript.txt");
+    expect(output).not.toContain("truth.json");
+    expect(output).not.toContain("report.md");
+  }
+
+  it("成功時の標準出力・標準エラーの全行に、原稿本文の断片・目印の文字列・パス文字列が含まれない", async () => {
+    const captured = buildCheckTruthIO();
+    const code = await main(CT_ARGS, {}, captured.io);
+    expect(code).toBe(0);
+
+    assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+  });
+
+  it("オプション名を付け忘れて原稿パスを位置引数で渡しても、標準エラーにパスが出ない", async () => {
+    // レビュー指摘：`collectRawOptions` が未知のトークンをそのままメッセージに埋めていたため、
+    // `check-truth <原稿パス> --truth t.json` と打つとパスが標準エラーに出ていた。
+    // 経路は `collectRawOptions` なので、この修正はすべてのサブコマンドに効く。
+    const leakPath = "/private/leak-should-not-appear/manuscript.txt";
+    const captured = buildCheckTruthIO();
+    const code = await main(["check-truth", leakPath, "--truth", "truth.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(leakPath);
+    expect(captured.stderr.join("\n")).not.toContain("leak-should-not-appear");
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("-- で始まる原稿ファイル名を位置引数で渡しても、標準エラーにパスが出ない", async () => {
+    // `--` 始まりを安全なオプション名とみなす判定では防げない。`--` で始まるファイル名は
+    // Windows でも Linux でも作れる（レビュー指摘）。
+    const leakPath = "--leak-should-not-appear-TITLE.txt";
+    const captured = buildCheckTruthIO();
+    const code = await main(["check-truth", leakPath, "--truth", "truth.json"], {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(leakPath);
+    expect(captured.stderr.join("\n")).not.toContain("leak-should-not-appear");
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("要約の書き出しに失敗したら 1 を返し、例外のパスを標準エラーに出さない", async () => {
+    // レビュー指摘：成功経路の writeResultOrFixedError の失敗を誰も見ておらず、
+    // 「書けなくても 0 を返す」変異が 141 件のテストを通り抜けていた。
+    // run / hash には同じ対のテストがある（main.test.ts の T9 群）。
+    const leakPath = "/private/leak-should-not-appear/summary.txt";
+    const captured = buildCheckTruthIO({
+      writeResult: () => Promise.reject(new Error(`EACCES: permission denied, open '${leakPath}'`)),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+
+    expect(code).toBe(1);
+    expect(captured.stderr.join("\n")).not.toContain(leakPath);
+    expect(captured.stdout).toHaveLength(0);
+  });
+
+  it("解決の失敗（--report 無し）でも、標準エラーに quote・原稿本文・パス文字列が含まれない", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(new TextEncoder().encode(JSON.stringify(checkTruthJsonWithNoMatch()))),
+    });
+    const code = await main(CT_ARGS, {}, captured.io);
+    expect(code).toBe(2);
+
+    assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+  });
+
+  it("bodyHash 不一致でも、標準エラーに原稿本文・目印の文字列・パス文字列が含まれない", async () => {
+    const captured = buildCheckTruthIO({
+      readTruthBytes: () =>
+        Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(checkTruthJson({ bodyHash: "b".repeat(64) }))),
+        ),
+    });
+    const code = await main([...CT_ARGS, "--report", "report.md"], {}, captured.io);
+    expect(code).toBe(2);
+
+    assertNoLeak([...captured.stdout, ...captured.stderr].join("\n"));
+    expect(captured.writtenFiles).toHaveLength(0);
   });
 });
