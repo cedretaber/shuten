@@ -369,12 +369,15 @@ export const findingDetailDtoSchema = findingDtoSchema.extend({
 export type FindingDetailDto = z.infer<typeof findingDetailDtoSchema>;
 
 /**
- * `GET /api/runs/:id/export` の応答（PR13a-2 決定 16・23・24）。
+ * `GET /api/runs/:id/export` の応答（PR13a-2 決定 16・23・24・32）。
  *
  * 実行 1 件ぶんの全量を、既存の DTO 射影だけを使って並べたもの。新しい射影は作らない。
  * `unlocatedCandidates` / `unlocatedDiagnostics` は `finding_id` が null の候補
  * （`outside-target` だけ。決定 23）とその診断で、`not-found` / `ambiguous` の候補は
  * 位置 null の指摘として `findings[]` 側（`candidates` / `diagnostics`）に入る。
+ * `recheckUnits` は再確認単位を全項目で運ぶ（決定 32）。`findings[].recheck`
+ * （`RecheckSummaryDto`）は画面向けの要約で `attempts` / `inputRange` / `elapsedMs` / 時刻を
+ * 落としているため、可搬用の控えとしてはここに全項目の控えを別に持つ。重複は許容する。
  */
 export const runExportDtoSchema = z
   .object({
@@ -384,6 +387,7 @@ export const runExportDtoSchema = z
     manuscript: manuscriptVersionDtoSchema,
     targets: z.array(runTargetDtoSchema),
     checkUnits: z.array(checkUnitDtoSchema),
+    recheckUnits: z.array(recheckUnitDtoSchema),
     findings: z.array(findingDetailDtoSchema),
     unlocatedCandidates: z.array(candidateDtoSchema),
     unlocatedDiagnostics: z.array(diagnosticDtoSchema),

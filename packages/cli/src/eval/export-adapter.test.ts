@@ -54,6 +54,7 @@ function validExportJson(): RunExportDto {
     },
     targets: [],
     checkUnits: [],
+    recheckUnits: [],
     findings: [],
     unlocatedCandidates: [],
     unlocatedDiagnostics: [],

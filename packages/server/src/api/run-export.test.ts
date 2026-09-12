@@ -322,6 +322,29 @@ describe("api/run-export: buildRunExport", () => {
     expect(result.unlocatedDiagnostics.map((d) => d.candidateId)).toEqual(["f-outside-c1"]);
     expect(result.unlocatedDiagnostics[0]?.reason).toBe("outside-target");
 
+    // 再確認単位は要約（findings[].recheck）とは別に、全項目の控えを直下に持つ（決定 32）。
+    // `attempts` / `inputRange` / `elapsedMs` / 時刻は要約（RecheckSummaryDto）には無い項目で、
+    // ここが落ちていないことがこのテストの中心（変異：attempts を落とす → 落ちる）。
+    expect(result.recheckUnits.map((u) => u.id)).toEqual(["rc-located"]);
+    const recheckUnitDto = result.recheckUnits[0];
+    expect(recheckUnitDto).toEqual({
+      id: "rc-located",
+      findingId: "f-located",
+      inputRange: { start: 0, end: 2 },
+      status: "done",
+      notApplicableReason: null,
+      attempts: 1,
+      failure: null,
+      pendingNote: null,
+      verdict: "keep",
+      reasonKind: "error-confirmed",
+      reason: "問題を確認した",
+      suggestionValid: true,
+      elapsedMs: 10,
+      startedAt: null,
+      finishedAt: expect.any(String),
+    });
+
     close();
   });
 
@@ -334,6 +357,7 @@ describe("api/run-export: buildRunExport", () => {
     expect(result.findings).toEqual([]);
     expect(result.unlocatedCandidates).toEqual([]);
     expect(result.unlocatedDiagnostics).toEqual([]);
+    expect(result.recheckUnits).toEqual([]);
 
     close();
   });

@@ -1,5 +1,5 @@
 /**
- * エクスポート（`GET /api/runs/:id/export`）の組み立て（PR13a-2 Task 9。決定 16・23・24・25・26）。
+ * エクスポート（`GET /api/runs/:id/export`）の組み立て（PR13a-2 Task 9/10。決定 16・23・24・25・26・32）。
  *
  * **HTTP に依存しない**（Hono を import しない）。`api/run-view.ts` と同じ姿勢で、DB と
  * `RunRecord` を受け取って `RunExportDto` を返すだけなので、`app.request` を通さずに
@@ -45,6 +45,7 @@ import {
   toDiagnosticDto,
   toFindingDto,
   toManuscriptVersionDto,
+  toRecheckUnitDto,
   toRunDto,
   toRunTargetDto,
 } from "./dto.ts";
@@ -217,6 +218,9 @@ export function buildRunExport(db: AppDatabaseLike, run: RunRecord): RunExportDt
     checkUnits: checkUnits.map((unit) =>
       toCheckUnitDto(unit, requireTargetIndex(indexByTargetId, unit.targetId)),
     ),
+    // 再確認単位を全項目で運ぶ（決定 32）。`listRecheckUnits` は上ですでに呼んでいる
+    // （`recheckByFindingId` の組み立てに使う）ので、新しい問い合わせは増えない。
+    recheckUnits: recheckUnits.map(toRecheckUnitDto),
     findings: findingDtos,
     unlocatedCandidates: unlocatedCandidates.map((candidate) =>
       toCandidateDto(candidate, requirePerspective(perspectiveByUnitId, candidate)),
