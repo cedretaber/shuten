@@ -70,6 +70,17 @@ describe("parseFullChatArgs: 数値・列挙の検証", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("--check-timeout-ms 0 は拒否される", () => {
+    // 下限も固定する（上限だけだと、下限を 0 に緩める変異を誰も捕まえられない。レビュー指摘）。
+    const result = parseFullChatArgs([...REQUIRED, "--check-timeout-ms", "0"]);
+    expect(result.ok).toBe(false);
+  });
+
+  it("--check-timeout-ms 1 は通る", () => {
+    const result = parseFullChatArgs([...REQUIRED, "--check-timeout-ms", "1"]);
+    expect(result.ok).toBe(true);
+  });
+
   it("--check-timeout-ms が MAX_TIMEOUT_MS ちょうどなら通る", () => {
     const result = parseFullChatArgs([...REQUIRED, "--check-timeout-ms", String(MAX_TIMEOUT_MS)]);
     expect(result.ok).toBe(true);
