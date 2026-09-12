@@ -94,8 +94,18 @@ PR13a-2・PR13a-3 に持ち越した。
 使うときは本文がエクスポートに含まれるため `--manuscript` を渡さない。`aggregate` は `--result` と
 `--export` を混ぜて渡せるが、CLI 経由の実行とサーバー経由の実行を混ぜた集計は実行条件
 （`versions.result`）が食い違うため必ず条件不一致で止まる。詳細は
-`docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 16〜32）。全文チャット方式（PR13a-3）は
-まだ着手していない。
+`docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 16〜32）。
+
+さらに**PR13a-3（全文チャット方式）が完了**し、仕様書 10 節が比較対象としている「現在の全文チャット
+方式」を `pnpm eval full-chat` で記録できるようになった。プロンプトは利用者がファイルで渡し
+（`{{manuscript}}` の位置に原稿を差し込む。こちらではプロンプトを書かない）、構造化出力も system も
+使わず `user` 1 通を 1 回だけ送る。`finish_reason` が `stop` 以外はすべて失敗として記録し、打ち切られた
+本文を成功として保存しない。結果 JSON には原稿本文もプロンプトも入れず、どのプロンプトで取ったかは
+`promptHash` で照合する。自由形式の応答から指摘を機械的に取り出すことはできないので**自動採点はせず**、
+`evaluate` / `aggregate` に渡すと拒否される。詳細は同じ計画書の決定 34〜40。
+
+これで PR13a は 3 本とも完了し、**PR13b（実原稿での評価の実施）の前提が揃った**。PR13b の計画は
+`docs/plans/2026-09-12-pr13b-real-manuscript-evaluation.md`。
 
 ## 技術スタック
 
@@ -169,7 +179,7 @@ Windows 環境では未確認**（`docs/guides/windows-verification.md` のチ�
 ## 評価ハーネス（`packages/cli`）
 
 原稿ファイルに検査パイプラインを回して結果 JSON を出し、正解データと突き合わせて仕様書 10 節の指標を
-出す評価用の CLI。サブコマンドは `run`（既定）／`evaluate`／`aggregate`／`hash`。
+出す評価用の CLI。サブコマンドは `run`（既定）／`evaluate`／`aggregate`／`hash`／`full-chat`。
 先頭の引数が `--` で始まる場合と引数が無い場合は `run` に振られるので、旧来の起動
 （`... --manuscript x --model y`）もそのまま動く。ルートの `pnpm eval` はこの CLI のショートカットで、
 次の 2 つはどちらも同じように動く。
@@ -252,6 +262,37 @@ pnpm eval aggregate --export <エクスポート1.json> --export <エクスポ�
 ```sh
 curl http://localhost:<ポート>/api/runs/<実行ID>/export -o export.json
 ```
+
+### `full-chat`：全文チャット方式で 1 回生成する
+
+仕様書 10 節が比較対象としている「現在の全文チャット方式」——利用者が LM Studio のチャットに原稿を
+貼って自分の指示で校正させている運用——を、同じ条件で記録できるようにしたもの。
+
+```sh
+pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプト.txt> \
+                    [--out <結果.json>] [--max-tokens N] [--temperature X] [--seed N] \
+                    [--reasoning-effort none|low|medium|high] [--check-timeout-ms N]
+```
+
+**プロンプトは利用者が書く。**こちらでは書かない（書いた時点で比較対象ではなく別のアプリの
+プロンプトになる）。プロンプトファイルには原稿を差し込む位置を `{{manuscript}}` で示す。
+1 つも無ければエラーになり、2 つ以上あればすべて置換される。
+
+- 構造化出力を使わず、`system` も付けない（`user` 1 通だけを送る）。分割も参考文脈も許容語の抑制も
+  位置特定も通らない
+- 生成は **1 回だけ**。`run` と違って再試行しない
+- `finish_reason` が `stop` 以外（打ち切り `length`、`tool_calls` など）はすべて失敗として記録し、
+  打ち切られた本文を成功として保存しない
+- 結果 JSON に**原稿本文もプロンプトも入れない**。どのプロンプトで取ったかは `promptHash`
+  （差し込み前のプロンプトのハッシュ）で照合する
+- 終了コードは 0 = 成功、1 = 引数・入出力の誤り、2 = 生成の失敗。失敗でも結果 JSON は書く
+
+**`evaluate` / `aggregate` には渡せない。**自由形式の応答から指摘を機械的に取り出すことはできないため
+自動採点しない（結果 JSON の `formatVersion` は `"full-chat/1"` で、渡すと拒否される）。
+応答は人が読んで正解ファイルと突き合わせる。
+
+1 万字を 1 要求で投げるので、既定のタイムアウト（300 秒）では足りない場合がある。
+`--check-timeout-ms` で伸ばすこと。
 
 ### `hash`：原稿の本文ハッシュを出す
 
