@@ -367,3 +367,26 @@ export const findingDetailDtoSchema = findingDtoSchema.extend({
   diagnostics: z.array(diagnosticDtoSchema),
 });
 export type FindingDetailDto = z.infer<typeof findingDetailDtoSchema>;
+
+/**
+ * `GET /api/runs/:id/export` の応答（PR13a-2 決定 16・23・24）。
+ *
+ * 実行 1 件ぶんの全量を、既存の DTO 射影だけを使って並べたもの。新しい射影は作らない。
+ * `unlocatedCandidates` / `unlocatedDiagnostics` は `finding_id` が null の候補
+ * （`outside-target` だけ。決定 23）とその診断で、`not-found` / `ambiguous` の候補は
+ * 位置 null の指摘として `findings[]` 側（`candidates` / `diagnostics`）に入る。
+ */
+export const runExportDtoSchema = z
+  .object({
+    formatVersion: z.literal("1"),
+    exportedAt: z.iso.datetime(),
+    run: runDtoSchema,
+    manuscript: manuscriptVersionDtoSchema,
+    targets: z.array(runTargetDtoSchema),
+    checkUnits: z.array(checkUnitDtoSchema),
+    findings: z.array(findingDetailDtoSchema),
+    unlocatedCandidates: z.array(candidateDtoSchema),
+    unlocatedDiagnostics: z.array(diagnosticDtoSchema),
+  })
+  .strict();
+export type RunExportDto = z.infer<typeof runExportDtoSchema>;
