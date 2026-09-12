@@ -92,6 +92,8 @@ function emptyFindingSet(
     detectedLoose?: Rate;
     duplicateFindings?: number;
     falsePositives?: Rate;
+    falsePositiveLikelyError?: number;
+    falsePositiveConfirmWithAuthor?: number;
     matchedPairs?: FindingSetMetrics["matchedPairs"];
     missedEntryIds?: readonly string[];
   } = {},
@@ -111,10 +113,24 @@ function emptyFindingSet(
       falsePositives: overrides.falsePositives ?? rate(0, 0),
       onNormal: 0,
       other: 0,
+      likelyError: overrides.falsePositiveLikelyError ?? 0,
+      confirmWithAuthor: overrides.falsePositiveConfirmWithAuthor ?? 0,
     },
     falsePositiveByPerspective: {
-      typo: { falsePositives: rate(0, 0), onNormal: 0, other: 0 },
-      naturalness: { falsePositives: rate(0, 0), onNormal: 0, other: 0 },
+      typo: {
+        falsePositives: rate(0, 0),
+        onNormal: 0,
+        other: 0,
+        likelyError: 0,
+        confirmWithAuthor: 0,
+      },
+      naturalness: {
+        falsePositives: rate(0, 0),
+        onNormal: 0,
+        other: 0,
+        likelyError: 0,
+        confirmWithAuthor: 0,
+      },
     },
     overlapKinds: { exact: 0, containsTruth: 0, containedInTruth: 0, partial: 0 },
     findingsOverlappingMultipleErrors: [],
@@ -133,7 +149,7 @@ function baseMetrics(
   } = {},
 ): EvaluationMetrics {
   return {
-    formatVersion: "1",
+    formatVersion: "2",
     truthEntryCounts: { error: 0, normal: 0 },
     beforeRecheck: overrides.beforeRecheck ?? emptyFindingSet(),
     afterRecheck: overrides.afterRecheck ?? emptyFindingSet(),
@@ -183,7 +199,7 @@ describe("aggregateRuns: 条件がすべて一致していれば集計できる"
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.value.runCount).toBe(2);
-    expect(outcome.value.formatVersion).toBe("1");
+    expect(outcome.value.formatVersion).toBe("2");
   });
 });
 
@@ -727,5 +743,41 @@ describe("aggregateRuns: completed でない実行が混ざると notices に出
 describe("aggregateRuns: metricsList と resultsList の長さが違えば例外", () => {
   it("長さが違うと例外を投げる（丸めない）", () => {
     expect(() => aggregateRuns([baseMetrics()], [baseResult(), baseResult()])).toThrow();
+  });
+});
+
+// --- 誤検出の初回判定別の内訳（決定 18(b)） ------------------------------------------------------
+
+describe("aggregateRuns: 誤検出の初回判定別の内訳（決定18(b)）", () => {
+  it("3 本（likelyError 1,2,3 / confirmWithAuthor 3,2,1）で min/median/max が正しい", () => {
+    // 変異：falsePositiveLikelyError / falsePositiveConfirmWithAuthor を集計しない（0 に固定する等）
+    // → min/median/max がずれて落ちる。
+    const metrics = [
+      { likelyError: 1, confirmWithAuthor: 3 },
+      { likelyError: 2, confirmWithAuthor: 2 },
+      { likelyError: 3, confirmWithAuthor: 1 },
+    ].map(({ likelyError, confirmWithAuthor }) =>
+      baseMetrics({
+        afterRecheck: emptyFindingSet({
+          falsePositiveLikelyError: likelyError,
+          falsePositiveConfirmWithAuthor: confirmWithAuthor,
+        }),
+      }),
+    );
+    const results = [baseResult(), baseResult(), baseResult()];
+    const outcome = aggregateRuns(metrics, results);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.value.metrics.afterRecheck.falsePositiveLikelyError).toEqual({
+      min: 1,
+      median: 2,
+      max: 3,
+    });
+    expect(outcome.value.metrics.afterRecheck.falsePositiveConfirmWithAuthor).toEqual({
+      min: 1,
+      median: 2,
+      max: 3,
+    });
   });
 });

@@ -80,6 +80,10 @@ function formatFindingSetAggregateSection(title: string, set: FindingSetAggregat
     `- 検出率（参考値。重なりが 1 件でもあれば検出とみなす）: ${formatRateAggregate(set.detectedLoose)}`,
   );
   lines.push(`- 誤検出率: ${formatRateAggregate(set.falsePositives)}`);
+  lines.push(
+    `- 誤検出の初回判定別（件数）: likely-error ${formatNumberAggregate(set.falsePositiveLikelyError)}、` +
+      `confirm-with-author ${formatNumberAggregate(set.falsePositiveConfirmWithAuthor)}`,
+  );
   lines.push(`- 重複指摘: ${formatNumberAggregate(set.duplicateFindings)}`);
   lines.push("");
   lines.push("観点別の検出率（1 対 1）:");

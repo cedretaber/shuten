@@ -90,6 +90,7 @@ interface FindingOptions {
   readonly quote?: string;
   readonly suggestion?: string | null;
   readonly reason?: string;
+  readonly verdict?: "likely-error" | "confirm-with-author";
 }
 
 function finding(
@@ -107,7 +108,7 @@ function finding(
       quote: options.quote ?? "引用",
       category: "notation",
       suggestion: options.suggestion ?? null,
-      verdict: "likely-error",
+      verdict: options.verdict ?? "likely-error",
       sources: perspectives.map((perspective, index) => ({
         id: `${id}-c${String(index)}`,
         perspective,
@@ -198,7 +199,7 @@ describe("formatEvaluationReport", () => {
     });
 
     expect(report).toContain("# 評価レポート");
-    expect(report).toContain("formatVersion: 1");
+    expect(report).toContain("formatVersion: 2");
     expect(report).toContain("org/test-model");
     expect(report).toContain("mode: split-recheck");
     expect(report).toContain("status: completed");
@@ -310,10 +311,55 @@ describe("formatEvaluationReport", () => {
 
     expect(report).toContain("### 正常な文章への誤検出（on-normal）");
     expect(report).toContain("### その他の誤検出（other）");
-    // 引用・修正案・理由が出て、最後の列（修正案の妥当性）が空欄になっている
-    // （mdTable は空文字セルの前後に区切り " | " を置くので、行末は `|  |` になる）。
-    expect(report).toContain("| f-on | 口語 | 直した形1 | [typo] on-normal の理由 |  |");
-    expect(report).toContain("| f-other | 無関係な指摘 | 直した形2 | [typo] other の理由 |  |");
+    // 引用・修正案・理由・初回判定が出て、最後の 2 列（修正案の妥当性・理由の参考価値）が
+    // 空欄になっている（mdTable は空文字セルの前後に区切り " | " を置くので、行末は `|  |  |` になる）。
+    expect(report).toContain(
+      "| f-on | 口語 | 直した形1 | [typo] on-normal の理由 | likely-error |  |  |",
+    );
+    expect(report).toContain(
+      "| f-other | 無関係な指摘 | 直した形2 | [typo] other の理由 | likely-error |  |  |",
+    );
+  });
+
+  it("決定 18(b)：誤検出一覧のヘッダーに初回判定・理由の参考価値が出て、行に判定値が出る", () => {
+    const entries = [normalEntry("n1", 10, 14)];
+    const confirmFinding = finding("f-confirm", 10, 14, {
+      quote: "口語",
+      verdict: "confirm-with-author",
+    });
+    const result = makeResult([confirmFinding]);
+    const metrics = scoreRun(entries, result);
+
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
+
+    expect(report).toContain(
+      "| id | 引用 | 修正案 | 理由 | 初回判定 | 修正案の妥当性（人） | 理由の参考価値（人） |",
+    );
+    expect(report).toContain("| f-confirm | 口語 |  | [typo] 理由 | confirm-with-author |  |  |");
+  });
+
+  it("決定 18(b)：誤検出率の行に初回判定別の内訳（likely-error・confirm-with-author）が出る", () => {
+    const entries: ResolvedTruthEntry[] = [];
+    const result = makeResult([
+      finding("f1", 10, 14, { verdict: "likely-error" }),
+      finding("f2", 20, 24, { verdict: "confirm-with-author" }),
+    ]);
+    const metrics = scoreRun(entries, result);
+
+    const report = formatEvaluationReport({
+      metrics,
+      truth: truthFileOf(entries),
+      result,
+      source: "result",
+    });
+
+    expect(report).toContain("likely-error: 1");
+    expect(report).toContain("confirm-with-author: 1");
   });
 
   it("抑制された指摘の一覧に抑制語・規則版が出る", () => {

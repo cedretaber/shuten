@@ -33,9 +33,11 @@ function baseAggregateResult(
       typo: { detected: rate },
       naturalness: { detected: rate },
     },
+    falsePositiveLikelyError: numberAggregate(1, 2, 3),
+    falsePositiveConfirmWithAuthor: numberAggregate(0, 1, 2),
   };
   return {
-    formatVersion: "1",
+    formatVersion: "2",
     runCount: 2,
     notices: overrides.notices ?? [],
     metrics: {
@@ -109,5 +111,14 @@ describe("formatAggregateReport", () => {
     const report = formatAggregateReport(baseAggregateResult(), "result");
     expect(report).not.toContain("入力：エクスポート JSON");
     expect(report).not.toContain("recoveryConfirmMs");
+  });
+
+  // --- 決定 18(b)：誤検出の初回判定別の内訳（min/median/max）がレポートに出る ---------------------
+  it("誤検出率の行の直後に初回判定別の内訳（likely-error・confirm-with-author）が出る", () => {
+    const report = formatAggregateReport(baseAggregateResult(), "result");
+    expect(report).toContain(
+      "誤検出の初回判定別（件数）: likely-error 中央値 2（min 1 / max 3）、" +
+        "confirm-with-author 中央値 1（min 0 / max 2）",
+    );
   });
 });

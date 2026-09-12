@@ -72,6 +72,7 @@ interface FindingOptions {
   readonly perspectives?: readonly Perspective[];
   readonly suppressed?: boolean;
   readonly recheck?: RecheckInput;
+  readonly verdict?: "likely-error" | "confirm-with-author";
 }
 
 function finding(
@@ -89,7 +90,7 @@ function finding(
       quote: "引用",
       category: "notation",
       suggestion: null,
-      verdict: "likely-error",
+      verdict: options.verdict ?? "likely-error",
       sources: perspectives.map((perspective, index) => ({
         id: `${id}-c${String(index)}`,
         perspective,
@@ -225,7 +226,7 @@ describe("T5 検出と誤検出", () => {
       rate: 0.5,
     });
     expect(metrics.beforeRecheck.falsePositiveFindings).toEqual([
-      { findingId: "f2", kind: "other" },
+      { findingId: "f2", kind: "other", verdict: "likely-error" },
     ]);
   });
 
@@ -239,6 +240,8 @@ describe("T5 検出と誤検出", () => {
       falsePositives: { numerator: 0, denominator: 1, rate: 0 },
       onNormal: 0,
       other: 0,
+      likelyError: 0,
+      confirmWithAuthor: 0,
     });
     expect(metrics.beforeRecheck.falsePositiveFindings).toEqual([]);
   });
@@ -252,10 +255,12 @@ describe("T5 検出と誤検出", () => {
       falsePositives: { numerator: 2, denominator: 2, rate: 1 },
       onNormal: 1,
       other: 1,
+      likelyError: 2,
+      confirmWithAuthor: 0,
     });
     expect(metrics.beforeRecheck.falsePositiveFindings).toEqual([
-      { findingId: "f1", kind: "on-normal" },
-      { findingId: "f2", kind: "other" },
+      { findingId: "f1", kind: "on-normal", verdict: "likely-error" },
+      { findingId: "f2", kind: "other", verdict: "likely-error" },
     ]);
   });
 
@@ -881,5 +886,59 @@ describe("T18 対応付け", () => {
     const total = Object.values(metrics.beforeRecheck.overlapKinds).reduce((a, b) => a + b, 0);
     expect(total).toBe(metrics.beforeRecheck.detection.detected.numerator);
     expect(total).toBe(5);
+  });
+});
+
+// --- T18b 誤検出の初回判定別内訳（決定 18(b)） ---------------------------------------------------
+
+describe("T18b 誤検出の初回判定別内訳", () => {
+  it("誤検出 3 件（likely-error 2・confirm-with-author 1）を内訳に数え、confirm-with-author も分子に含む", () => {
+    // 変異：confirmWithAuthor を常に 0 にする → confirmWithAuthor が 1 にならず落ちる。
+    // 変異：確認事項（confirm-with-author）を誤検出の分子から除く実装にする → falsePositives.numerator
+    // が 2 になり、下の「分子に f3 を含む」の assert が落ちる（このテストの核心）。
+    const metrics = scoreRun(
+      [],
+      makeResult([
+        finding("f1", 10, 14, { verdict: "likely-error" }),
+        finding("f2", 20, 24, { verdict: "likely-error" }),
+        finding("f3", 30, 34, { verdict: "confirm-with-author" }),
+      ]),
+    );
+
+    expect(metrics.beforeRecheck.falsePositive.likelyError).toBe(2);
+    expect(metrics.beforeRecheck.falsePositive.confirmWithAuthor).toBe(1);
+    expect(
+      metrics.beforeRecheck.falsePositive.likelyError +
+        metrics.beforeRecheck.falsePositive.confirmWithAuthor,
+    ).toBe(metrics.beforeRecheck.falsePositive.falsePositives.numerator);
+    // confirm-with-author の指摘（f3）が誤検出の分子（numerator）に含まれることを直接確認する。
+    expect(metrics.beforeRecheck.falsePositive.falsePositives.numerator).toBe(3);
+    expect(metrics.beforeRecheck.falsePositiveFindings.map((f) => f.findingId)).toContain("f3");
+  });
+
+  it("falsePositiveFindings[i].verdict は入力の finding.verdict と一致する", () => {
+    const metrics = scoreRun(
+      [],
+      makeResult([
+        finding("f1", 10, 14, { verdict: "likely-error" }),
+        finding("f2", 20, 24, { verdict: "confirm-with-author" }),
+      ]),
+    );
+    expect(metrics.beforeRecheck.falsePositiveFindings).toEqual([
+      { findingId: "f1", kind: "other", verdict: "likely-error" },
+      { findingId: "f2", kind: "other", verdict: "confirm-with-author" },
+    ]);
+  });
+
+  it("観点別：naturalness だけを持つ confirm-with-author の誤検出は typo の内訳に入らない", () => {
+    // 変異：観点別の絞り込みを外して全指摘で数える → typo.confirmWithAuthor が 1 になって落ちる。
+    const metrics = scoreRun(
+      [],
+      makeResult([
+        finding("f1", 10, 14, { perspectives: ["naturalness"], verdict: "confirm-with-author" }),
+      ]),
+    );
+    expect(metrics.beforeRecheck.falsePositiveByPerspective.typo.confirmWithAuthor).toBe(0);
+    expect(metrics.beforeRecheck.falsePositiveByPerspective.naturalness.confirmWithAuthor).toBe(1);
   });
 });
