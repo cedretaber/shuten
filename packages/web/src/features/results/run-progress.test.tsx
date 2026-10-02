@@ -366,3 +366,48 @@ describe("B8: RunProgress の仕様 9 節の担保（割合・残り時間・<pr
     expect(container.querySelector("progress")).toBeNull();
   });
 });
+
+describe("RunProgress: 内訳の折りたたみ（UI の見直し 1 節）", () => {
+  it("件数の行は折りたたみの外、状態別・観点別の内訳は「詳しい進捗」の中にある", () => {
+    const progress = makeProgress({
+      checkUnits: makeCounts({ done: 2, pending: 1 }),
+      recheckUnits: makeCounts({ done: 1 }),
+    });
+    const units: RunUnitsDto = {
+      checkUnits: [makeCheckUnit({ id: "c1", perspective: "typo", status: "done" })],
+      recheckUnits: [],
+    };
+    const { container } = render(
+      <RunProgress progress={progress} units={units} recheckEnabled={true} slowUnitCount={1} />,
+    );
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(within(details as HTMLElement).getByText("詳しい進捗")).toBeInTheDocument();
+
+    // 件数の行と遅延の通知は外
+    const checkLine = screen.getByText(/^検査: 完了 2 \/ 全 3 件/);
+    expect(details?.contains(checkLine)).toBe(false);
+    expect(details?.contains(screen.getByText(/^再確認: 完了 1 \/ 全 1 件/))).toBe(false);
+    expect(details?.contains(screen.getByText(/生成が遅延しています/))).toBe(false);
+
+    // 内訳と観点別は中
+    expect(within(details as HTMLElement).getAllByText(/未処理 \d+ 件/).length).toBeGreaterThan(0);
+    expect(
+      within(details as HTMLElement).getByText(/誤字・脱字: 完了 1 \/ 全 1 件/),
+    ).toBeInTheDocument();
+  });
+
+  it("再確認なしのときも「再確認なし」は折りたたみの外", () => {
+    const { container } = render(
+      <RunProgress
+        progress={makeProgress()}
+        units={null}
+        recheckEnabled={false}
+        slowUnitCount={0}
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details?.contains(screen.getByText("再確認なし"))).toBe(false);
+  });
+});

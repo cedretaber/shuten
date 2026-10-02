@@ -151,6 +151,34 @@
   gap: var(--space-sm);
 }
 
+/* 件数の行（検査・再確認）。ヘッダーの 1 行目に横並びで入る（UI の見直し 1 節）。 */
+.progressSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+}
+
+/* 状態別・観点別の内訳を畳む「詳しい進捗」。閉じているときは summary の 1 行だけになる。 */
+.progressDetails {
+  font-size: var(--font-size-sm);
+}
+
+.progressDetailsSummary {
+  cursor: pointer;
+  color: var(--color-fg-muted);
+}
+
+.progressBreakdown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.progressBreakdownLabel {
+  color: var(--color-fg);
+}
+
 .progressSection {
   display: flex;
   flex-direction: column;
