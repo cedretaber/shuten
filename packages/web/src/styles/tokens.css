@@ -8,10 +8,11 @@
   --color-fg-muted: #595959;
   --color-border: #d9d9d9;
 
-  /* 色：朱（指摘と操作）。文字・塗りは accent、線は accent-line、選択中の地は accent-bg */
+  /* 色：朱（指摘と操作）。文字・塗りは accent、線は accent-line、選択中の地は accent-bg。
+     選択中は地の濃さだけに頼らず、太い下線・太い枠でも示す（地は白地との比が小さいため） */
   --color-accent: #c23a22;
   --color-accent-line: #d9452b;
-  --color-accent-bg: #fcebe5;
+  --color-accent-bg: #f6cdbd;
 
   /* 色：臙脂（エラー）。色だけで見分けず、枠と「エラー」の文字を添える */
   --color-danger: #9f1239;

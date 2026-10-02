@@ -50,7 +50,6 @@ describe("色の変数のコントラスト比", () => {
     // [前景, 背景, 基準]
     ["--color-accent", "--color-bg", 4.5],
     ["--color-accent", "--color-bg-muted", 4.5],
-    ["--color-accent", "--color-accent-bg", 4.5],
     ["--color-bg", "--color-accent", 4.5],
     ["--color-fg", "--color-accent-bg", 4.5],
     ["--color-fg-muted", "--color-accent-bg", 4.5],
@@ -62,7 +61,8 @@ describe("色の変数のコントラスト比", () => {
     ["--color-fg-muted", "--color-bg-muted", 4.5],
     ["--color-accent-line", "--color-bg", 3],
     ["--color-accent-line", "--color-bg-muted", 3],
-    ["--color-accent-line", "--color-accent-bg", 3],
+    // 選択中の下線と枠は accent で描く。
+    ["--color-accent", "--color-accent-bg", 3],
     ["--color-notice-border", "--color-notice-bg", 3],
   ] as const)("%s on %s ≥ %d", (fg, bg, min) => {
     expect(contrast(v(fg), v(bg))).toBeGreaterThanOrEqual(min);

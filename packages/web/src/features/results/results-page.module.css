@@ -399,8 +399,10 @@
 }
 
 .findingRowSelected {
-  border-color: var(--color-accent-line);
+  border-color: var(--color-accent);
   background-color: var(--color-accent-bg);
+  /* 枠を内側に 1px 足して 2px に見せる（border を太くすると行の大きさが変わるため）。 */
+  box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
 .findingMeta {
@@ -446,6 +448,8 @@
   padding: 0 var(--space-xs);
   border: 1px solid var(--color-accent-line);
   border-radius: var(--radius-pill);
+  /* 選択中の行の濃い地の上では朱の文字が読みにくいので、白地で抜く。 */
+  background-color: var(--color-bg);
   font-size: var(--font-size-sm);
   color: var(--color-accent);
 }
