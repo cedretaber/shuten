@@ -14,6 +14,11 @@
  * 6+7. 操作と操作結果の案内（決定 6・7・8・`RunControl`）、8. 「最新の状態を取得」（PR12a のまま。
  * 自動更新の状態を表す 1 行（決定 4）は `RunHeader` の外——呼び出し元の `results-page.tsx`
  * （PR12b Task 8）が SSE の購読・取り直しの合流を持つため、そちらで描く）。
+ *
+ * PR14a（UI の見直し 1 節）で 2 行の構成にした。1 行目（`.headerMain`）に原稿名・状態・停止理由・
+ * 進捗の件数・操作・「最新の状態を取得」、2 行目（`.headerMeta`、小さめの文字）にモデルと時刻を置き、
+ * その下に停止メッセージと中間状態の案内を出す。モデルと時刻まで 1 行目に入れると広い画面でも
+ * 折り返すため、設計書の「1 行」から 2 行に分けた。
  */
 
 import type { ProgressDto, RunDto, RunUnitsDto } from "@shuten/shared";
@@ -73,75 +78,74 @@ export function RunHeader(props: RunHeaderProps) {
 
   return (
     <div className={styles.header}>
-      <h1>{manuscriptName}</h1>
-
-      {settingsStop ? (
-        <div className={styles.status}>
+      <div className={styles.headerMain}>
+        <h1 className={styles.headerTitle}>{manuscriptName}</h1>
+        {settingsStop ? (
           <p className={styles.statusLine}>検査は開始できませんでした</p>
-          {run.stopMessage !== null && <p className={styles.stopMessage}>{run.stopMessage}</p>}
-          <p>
-            <Link to={ROUTES.home}>検査設定に戻る</Link>
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className={styles.status}>
+        ) : (
+          <>
             <p className={styles.statusLine}>状態: {RUN_STATUS_LABELS[run.status]}</p>
             {run.stopReason !== null && (
               <p className={styles.statusLine}>
                 停止理由: {RUN_STOP_REASON_LABELS[run.stopReason]}
               </p>
             )}
-            {run.stopMessage !== null && <p className={styles.stopMessage}>{run.stopMessage}</p>}
-            <p className={styles.statusLine}>モデル: {run.modelId}</p>
-            {/* 裁定（最終レビュー Important 3）：ローカル時刻で表示する。オフセットは表示対象の
-                瞬間ごとに `-new Date(iso).getTimezoneOffset()` で求める（`format-date-time.ts` 参照）。 */}
-            <p className={styles.statusLine}>
-              開始: {formatDateTime(run.startedAt, -new Date(run.startedAt).getTimezoneOffset())}
-            </p>
-            {run.finishedAt !== null && (
-              <p className={styles.statusLine}>
-                終了:{" "}
-                {formatDateTime(run.finishedAt, -new Date(run.finishedAt).getTimezoneOffset())}
-              </p>
-            )}
-          </div>
+            {/* 4+5. 進捗（決定 10・11）。件数の行だけが見え、内訳は「詳しい進捗」に畳まれる。
+                `run.recheckEnabled` は `RunDto` にすでにあるので、別 props として受け取らない。 */}
+            <RunProgress
+              progress={progress}
+              units={units}
+              recheckEnabled={run.recheckEnabled}
+              slowUnitCount={slowUnitCount}
+            />
+          </>
+        )}
+        {/* 6+7. 操作と操作結果の案内（決定 6・7・8）。`isSettingsStop` でも失敗単位の再試行だけは
+            `controlAvailability` の判断に従って出す（決定 14）ので、上の分岐の外に置く。 */}
+        <RunControl
+          run={run}
+          units={units}
+          onStop={onStop}
+          onResume={onResume}
+          onRetryFailed={onRetryFailed}
+          onConfirmRecovery={onConfirmRecovery}
+          pending={pending}
+          failure={failure}
+        />
+        <button
+          type="button"
+          className={styles.refreshButton}
+          onClick={onRefresh}
+          disabled={refreshing}
+        >
+          {refreshing ? "更新中…" : "最新の状態を取得"}
+        </button>
+      </div>
 
-          {/* 3. 中間状態の案内（決定 9）。停止ボタンが disabled になる理由もここに出る。 */}
-          {notice !== null && <p className={styles.statusNotice}>{notice}</p>}
-
-          {/* 4+5. 進捗（決定 10・11）。`run.recheckEnabled` は `RunDto` にすでにあるので、別 props
-              として受け取らずここから渡す。 */}
-          <RunProgress
-            progress={progress}
-            units={units}
-            recheckEnabled={run.recheckEnabled}
-            slowUnitCount={slowUnitCount}
-          />
-        </>
+      {!settingsStop && (
+        <div className={styles.headerMeta}>
+          <span>モデル: {run.modelId}</span>
+          {/* 裁定（最終レビュー Important 3）：ローカル時刻で表示する。オフセットは表示対象の
+              瞬間ごとに `-new Date(iso).getTimezoneOffset()` で求める（`format-date-time.ts` 参照）。 */}
+          <span>
+            開始: {formatDateTime(run.startedAt, -new Date(run.startedAt).getTimezoneOffset())}
+          </span>
+          {run.finishedAt !== null && (
+            <span>
+              終了: {formatDateTime(run.finishedAt, -new Date(run.finishedAt).getTimezoneOffset())}
+            </span>
+          )}
+        </div>
       )}
 
-      {/* 6+7. 操作と操作結果の案内（決定 6・7・8）。`isSettingsStop` でも失敗単位の再試行だけは
-          `controlAvailability` の判断に従って出す（決定 14）ので、上の分岐の外に置く。 */}
-      <RunControl
-        run={run}
-        units={units}
-        onStop={onStop}
-        onResume={onResume}
-        onRetryFailed={onRetryFailed}
-        onConfirmRecovery={onConfirmRecovery}
-        pending={pending}
-        failure={failure}
-      />
-
-      <button
-        type="button"
-        className={styles.refreshButton}
-        onClick={onRefresh}
-        disabled={refreshing}
-      >
-        {refreshing ? "更新中…" : "最新の状態を取得"}
-      </button>
+      {run.stopMessage !== null && <p className={styles.stopMessage}>{run.stopMessage}</p>}
+      {settingsStop && (
+        <p>
+          <Link to={ROUTES.home}>検査設定に戻る</Link>
+        </p>
+      )}
+      {/* 3. 中間状態の案内（決定 9）。停止ボタンが disabled になる理由もここに出る。 */}
+      {!settingsStop && notice !== null && <p className={styles.statusNotice}>{notice}</p>}
     </div>
   );
 }

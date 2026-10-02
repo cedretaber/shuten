@@ -31,13 +31,30 @@
   gap: var(--space-xs);
 }
 
-.status {
+/* 1 行目：名前・状態・件数・操作。幅が足りなければ折り返す。 */
+.headerMain {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-md);
+}
+
+.headerTitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+/* 2 行目：モデルと時刻。小さめの文字で 1 行に並べる。 */
+.headerMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
 }
 
 .statusLine {
+  margin: 0;
   font-size: var(--font-size-md);
   color: var(--color-fg);
 }
@@ -64,14 +81,15 @@
  */
 .controlPanel {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-sm);
 }
 
 .controlButtons {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-sm);
 }
 
