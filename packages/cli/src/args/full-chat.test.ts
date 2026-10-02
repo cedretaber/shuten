@@ -1,7 +1,7 @@
 import { MAX_TIMEOUT_MS, RUN_SETTINGS_DEFAULTS } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
 
-import { parseFullChatArgs } from "./full-chat.ts";
+import { FULL_CHAT_MAX_TOKENS_DEFAULT, parseFullChatArgs } from "./full-chat.ts";
 
 const REQUIRED = [
   "--manuscript",
@@ -13,7 +13,18 @@ const REQUIRED = [
 ];
 
 describe("parseFullChatArgs: 既定値", () => {
-  it("必須 3 つが揃えば成功し、既定値が RUN_SETTINGS_DEFAULTS と一致する", () => {
+  it("max_tokens の既定は 16,000 で、分割方式の既定（RUN_SETTINGS_DEFAULTS）に追随しない", () => {
+    // 全文チャット方式は 1 応答に全指摘が入るため、分割方式向けに下げた既定（4,000）を
+    // 共有すると長い応答が打ち切りで失敗する（決定記録 0004）。数値を直接確かめる。
+    expect(FULL_CHAT_MAX_TOKENS_DEFAULT).toBe(16_000);
+    expect(FULL_CHAT_MAX_TOKENS_DEFAULT).not.toBe(RUN_SETTINGS_DEFAULTS.generation.maxTokens);
+    const result = parseFullChatArgs(REQUIRED);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.maxTokens).toBe(16_000);
+  });
+
+  it("必須 3 つが揃えば成功し、既定値が RUN_SETTINGS_DEFAULTS と一致する（max_tokens を除く）", () => {
     const result = parseFullChatArgs(REQUIRED);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -21,7 +32,7 @@ describe("parseFullChatArgs: 既定値", () => {
     expect(result.value.model).toBe("test-model");
     expect(result.value.promptPath).toBe("prompt.txt");
     expect(result.value.outPath).toBeNull();
-    expect(result.value.maxTokens).toBe(RUN_SETTINGS_DEFAULTS.generation.maxTokens);
+    expect(result.value.maxTokens).toBe(FULL_CHAT_MAX_TOKENS_DEFAULT);
     expect(result.value.temperature).toBe(RUN_SETTINGS_DEFAULTS.generation.temperature);
     expect(result.value.seed).toBeUndefined();
     expect(result.value.reasoningEffort).toBe(RUN_SETTINGS_DEFAULTS.generation.reasoningEffort);

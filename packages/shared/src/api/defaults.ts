@@ -13,8 +13,12 @@ import type { ReasoningEffort } from "../run/reasoning-effort.ts";
 export const MAX_TIMEOUT_MS = 2_147_483_647;
 
 /**
- * 実行設定の既定値。CLI（`args.ts` の `DEFAULTS`）と web（PR11 の開始フォーム）が共有する
- * 「実測で決める初期値」の表の暫定値（計画 2026-09-08-pr7-pipeline.md）。
+ * 実行設定の既定値。CLI（`args.ts` の `DEFAULTS`）と web（PR11 の開始フォーム）が共有する。
+ * 当初は「実測で決める初期値」の表の暫定値（計画 2026-09-08-pr7-pipeline.md）。PR13b の評価
+ * （`docs/decisions/0004-evaluation-settings.md`）で `maxTokens` を 16,000 から 4,000 に下げた。
+ * 分割方式の正常な 1 応答は 1,025 トークン程度で、上限は出力が反復する縮退ループの打ち切りを
+ * タイムアウト内に収めるためのもの。全文方式（CLI の `--mode full-text`）は 1 応答に全指摘が
+ * 入るので `--max-tokens 16000` を明示する。他の値は評価で据え置いた（仮置き。使用の中で見直す）。
  *
  * `recheckEnabled` は仕様書 5.2 節の初期値表「再確認：有効。比較実験のため無効化可能」に従い
  * `true` を既定にした（CLI の `--mode` 既定 `split` は再確認段階を持つパイプラインを選ぶかどうかの
@@ -22,7 +26,7 @@ export const MAX_TIMEOUT_MS = 2_147_483_647;
  */
 export const RUN_SETTINGS_DEFAULTS = {
   generation: {
-    maxTokens: 16_000,
+    maxTokens: 4_000,
     temperature: 0,
     reasoningEffort: "none",
   },

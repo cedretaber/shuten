@@ -14,7 +14,7 @@ describe("parseArgs: 既定値", () => {
     expect(result.value.outPath).toBeNull();
     expect(result.value.mode).toBe("split");
     expect(result.value.perspectives).toEqual(["typo", "naturalness"]);
-    expect(result.value.maxTokens).toBe(16000);
+    expect(result.value.maxTokens).toBe(4000);
     expect(result.value.temperature).toBe(0);
     expect(result.value.seed).toBeUndefined();
     expect(result.value.reasoningEffort).toBe("none");
