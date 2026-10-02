@@ -36,6 +36,9 @@
  * 入力（未保存のラジオ・メモ）が残らないようにする。保存の実行（`putJudgment` の呼び出しと
  * `findings` への反映）は `onSaveJudgment` を通じて呼び出し側（`results-page.tsx`）が行う
  * （状態の持ち主を 1 か所にするため、ここでは API を直接呼ばない）。
+ *
+ * 区画の順は 原文・修正案・採否・理由・判定。採否を修正案の直後に置く（PR14a。右の列の上の限られた
+ * 高さで、選んですぐ採否を付けられるように。ユーザーの決定 2026-10-02）。
  */
 
 import type {
@@ -178,6 +181,17 @@ export function FindingDetail(props: FindingDetailProps) {
       </section>
 
       <section>
+        <h3>採否</h3>
+        {/* key に finding.id を付け、指摘を選び直すたびに作り直す（前の指摘の未保存入力を
+            残さないため。judgment-control.tsx 冒頭のコメントを参照）。 */}
+        <JudgmentControl
+          key={finding.id}
+          judgment={finding.judgment}
+          onSave={(status, note) => onSaveJudgment(finding.id, status, note, finding.quote)}
+        />
+      </section>
+
+      <section>
         <h3>理由</h3>
         {sortedReasons.length === 0 ? (
           <p>理由の記録はありません</p>
@@ -211,17 +225,6 @@ export function FindingDetail(props: FindingDetailProps) {
         {finding.recheck !== null && finding.recheck.reason !== null && (
           <p className={styles.detailQuote}>{finding.recheck.reason}</p>
         )}
-      </section>
-
-      <section>
-        <h3>採否</h3>
-        {/* key に finding.id を付け、指摘を選び直すたびに作り直す（前の指摘の未保存入力を
-            残さないため。judgment-control.tsx 冒頭のコメントを参照）。 */}
-        <JudgmentControl
-          key={finding.id}
-          judgment={finding.judgment}
-          onSave={(status, note) => onSaveJudgment(finding.id, status, note, finding.quote)}
-        />
       </section>
 
       {(sameRange.length > 0 || overlapping.length > 0) && (

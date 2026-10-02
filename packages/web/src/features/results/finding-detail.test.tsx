@@ -281,6 +281,21 @@ describe("FindingDetail: 取得中・取得失敗の欄の出し分け（元候�
   });
 });
 
+describe("FindingDetail: 区画の順", () => {
+  it("採否の見出しは修正案の後、理由の前にある（PR14a。選んですぐ採否を付けられるように）", () => {
+    render(<FindingDetail {...baseProps()} />);
+    const suggestion = screen.getByRole("heading", { level: 3, name: "修正案" });
+    const judgment = screen.getByRole("heading", { level: 3, name: "採否" });
+    const reason = screen.getByRole("heading", { level: 3, name: "理由" });
+    expect(suggestion.compareDocumentPosition(judgment) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(judgment.compareDocumentPosition(reason) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+});
+
 describe("FindingDetail: 修正案", () => {
   it("suggestion が null なら「修正案なし」", () => {
     render(<FindingDetail {...baseProps({ finding: makeFinding({ suggestion: null }) })} />);
