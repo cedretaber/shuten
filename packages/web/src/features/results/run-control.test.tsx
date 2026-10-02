@@ -13,6 +13,7 @@ import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
+import controls from "../../styles/controls.module.css";
 import type { ControlFailure } from "./run-control.ts";
 import { RunControl, type RunControlProps } from "./run-control.tsx";
 
@@ -341,5 +342,20 @@ describe("RunControl: recovery-blocked の配線（レビュー指摘 I-3）", (
     expect(
       screen.queryByRole("link", { name: /^この検査を確認する（run-1）$/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("RunControl: 共通の部品（PR14c）", () => {
+  it("操作のボタンは枠だけのボタンの部品を使う", () => {
+    renderControl(baseProps({ run: makeRun({ status: "running", stopRequestedAt: null }) }));
+    expect(screen.getByRole("button", { name: "停止" }).className).toContain(
+      controls.secondaryButton,
+    );
+  });
+
+  it("操作の失敗の枠はエラーの枠の部品を使う", () => {
+    renderControl(baseProps({ failure: { message: "すでに実行中です。", links: [] } }));
+    const box = screen.getByText("すでに実行中です。").parentElement;
+    expect(box?.className).toContain(controls.errorBox);
   });
 });

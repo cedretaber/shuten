@@ -9,6 +9,8 @@
  * `results.module.css` は冒頭コメントのとおり `body-view.tsx` 専用（他のどのコンポーネントも
  * 使っていない）で、ここに置くと既存の役割分担と食い違う。一覧・操作ボタンのスタイルは他の
  * 全コンポーネントと同じくこちらに置く（作業報告に記録）。
+ *
+ * 色・枠・角丸は `styles/controls.module.css`（PR14c）。ここには配置だけを置く。
  */
 
 .page {
@@ -16,13 +18,6 @@
   flex-direction: column;
   gap: var(--space-md);
   height: 100%;
-}
-
-.error {
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius);
 }
 
 .header {
@@ -93,21 +88,6 @@
   gap: var(--space-sm);
 }
 
-.controlButton {
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent-line);
-  border-radius: var(--radius);
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.controlButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
 .controlAction {
   display: flex;
   flex-direction: column;
@@ -124,10 +104,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius);
 }
 
 .controlFailureMessage {
@@ -239,23 +215,11 @@
 
 .refreshButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent-line);
-  border-radius: var(--radius);
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.refreshButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 /*
  * 採否の保存の失敗（PR21 レビュー指摘 2）。選択を変えても消えない場所（ヘッダー直下）に出す。
- * `.error`（更新失敗のエラーと同じ配色）をベースに、複数件を積める一覧にする。
+ * エラーの枠（`controls.errorBox`）と並べて付け、複数件を積める一覧にする。
  */
 .judgmentErrorList {
   list-style: none;
@@ -272,10 +236,6 @@
   align-items: baseline;
   gap: var(--space-xs);
   min-width: 0;
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius);
 }
 
 /* どの指摘の保存が失敗したかを示す引用。文字列自体は切り詰めず、はみ出しだけ CSS で省略する
@@ -447,10 +407,6 @@
   color: var(--color-fg-muted);
 }
 
-.findingLocateFailure {
-  color: var(--color-danger);
-}
-
 /*
  * 引用は全文を DOM に置き、はみ出しを CSS で省略表示する（JS 側で書記素境界を無視した
  * 文字列の切り詰めをしないため。ブリーフの指示）。
@@ -596,9 +552,10 @@
   word-break: break-word;
 }
 
-.suggestionInvalidNote {
-  color: var(--color-danger);
-  font-size: var(--font-size-sm);
+/* 詳細の原文と修正案だけ明朝体にして、本文の列と見比べやすくする（UI の見直し 3 節）。
+   同じ .detailQuote を使う理由・元候補・位置診断はゴシックのまま。 */
+.detailSerif {
+  font-family: var(--font-family-serif);
 }
 
 .detailReasonList {
@@ -633,15 +590,12 @@
   word-break: break-word;
 }
 
+.detailRelatedButton:hover {
+  border-color: var(--color-accent-line);
+}
+
 .detailNavigateButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent-line);
-  border-radius: var(--radius);
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
 }
 
 /* 採否と判断メモの操作子（Task 8、決定 13）。 */
@@ -693,34 +647,16 @@
 .judgmentNoteTextarea {
   resize: vertical;
   min-height: 4em;
-  font: inherit;
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background-color: var(--color-bg);
-  color: var(--color-fg);
 }
 
 .judgmentSaveButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent-line);
-  border-radius: var(--radius);
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.judgmentSaveButton:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 /*
  * 失敗単位の一覧（Task 6、決定 6・12。`failed-units.tsx`）。`RunHeader` の下、2 カラムの
- * レイアウト（`.layout`）より上に置く（裁定 R3）。ボタンは `.controlButton`（`run-control.tsx`
- * と同じ見た目）をそのまま使う。
+ * レイアウト（`.layout`）より上に置く（裁定 R3）。ボタンは `controls.secondaryButton`（`run-control.tsx`
+ * と同じ部品）をそのまま使う。
  */
 .failedUnits {
   display: flex;

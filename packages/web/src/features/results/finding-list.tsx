@@ -21,6 +21,7 @@
  * 違えば要約して並べる。
  */
 
+import controls from "../../styles/controls.module.css";
 import type { FindingGroup } from "./finding-group.ts";
 import {
   summarizeCategories,
@@ -83,7 +84,7 @@ function FindingListItem(props: {
           <span>{summarizeJudgments(members)}</span>
           <span>{summarizeRecheckStates(members)}</span>
           {head.locateStatus !== "located" && (
-            <span className={styles.findingLocateFailure}>
+            <span className={controls.dangerNote}>
               {FINDING_LOCATE_STATUS_LABELS[head.locateStatus]}
             </span>
           )}

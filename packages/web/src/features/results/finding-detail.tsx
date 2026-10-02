@@ -59,6 +59,7 @@ import type {
   FindingDto,
   JudgmentStatus,
 } from "@shuten/shared";
+import controls from "../../styles/controls.module.css";
 import { describeRecheck } from "./finding-detail.ts";
 import { type FindingGroup, summarizeCategories } from "./finding-group.ts";
 import { JudgmentControl } from "./judgment-control.tsx";
@@ -174,7 +175,7 @@ export function FindingDetail(props: FindingDetailProps) {
 
       <section>
         <h3>{quote.heading}</h3>
-        <p className={styles.detailQuote}>{quote.text}</p>
+        <p className={`${styles.detailQuote} ${styles.detailSerif}`}>{quote.text}</p>
       </section>
 
       {members.map((member, index) => {
@@ -222,7 +223,11 @@ export function FindingDetail(props: FindingDetailProps) {
       )}
 
       {onNavigate !== undefined && (
-        <button type="button" className={styles.detailNavigateButton} onClick={onNavigate}>
+        <button
+          type="button"
+          className={`${controls.secondaryButton} ${styles.detailNavigateButton}`}
+          onClick={onNavigate}
+        >
           本文の該当箇所へ移動
         </button>
       )}
@@ -254,13 +259,11 @@ function MemberSections(props: {
         {finding.suggestion === null ? (
           <p>修正案なし</p>
         ) : display.suggestionUsable ? (
-          <p className={styles.detailQuote}>{finding.suggestion}</p>
+          <p className={`${styles.detailQuote} ${styles.detailSerif}`}>{finding.suggestion}</p>
         ) : (
           <div>
-            <p className={styles.detailQuote}>{finding.suggestion}</p>
-            <p className={styles.suggestionInvalidNote}>
-              この修正案は再確認で不適切と判定されました
-            </p>
+            <p className={`${styles.detailQuote} ${styles.detailSerif}`}>{finding.suggestion}</p>
+            <p className={controls.dangerNote}>この修正案は再確認で不適切と判定されました</p>
           </div>
         )}
       </section>
@@ -317,14 +320,14 @@ function MemberSections(props: {
           サーバー由来の文面（`detailError`）は転記しない——`refreshError` と違い、ここは
           「表示中の値が古いかもしれない」ことだけを伝えれば足りる。 */}
       {detail !== null && detailError !== null && (
-        <p className={styles.error}>{STALE_DETAIL_NOTICE}</p>
+        <p className={controls.errorBox}>{STALE_DETAIL_NOTICE}</p>
       )}
 
       <details className={styles.detailRaw}>
         <summary>元候補・位置診断</summary>
         {detail === null ? (
           detailError !== null ? (
-            <p className={styles.error}>{detailError}</p>
+            <p className={controls.errorBox}>{detailError}</p>
           ) : (
             <p>読み込み中…</p>
           )

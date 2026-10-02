@@ -24,6 +24,7 @@
 import type { ProgressDto, RunDto, RunUnitsDto } from "@shuten/shared";
 import { Link } from "react-router";
 import { ROUTES } from "../../app/routes.ts";
+import controls from "../../styles/controls.module.css";
 import { formatDateTime } from "./format-date-time.ts";
 import { RUN_STATUS_LABELS, RUN_STOP_REASON_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
@@ -114,7 +115,7 @@ export function RunHeader(props: RunHeaderProps) {
         />
         <button
           type="button"
-          className={styles.refreshButton}
+          className={`${controls.secondaryButton} ${styles.refreshButton}`}
           onClick={onRefresh}
           disabled={refreshing}
         >

@@ -31,6 +31,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { runPath } from "../../app/routes.ts";
+import controls from "../../styles/controls.module.css";
 import styles from "./results-page.module.css";
 import { RESUME_SCOPE_NOTE } from "./run-control.ts";
 
@@ -81,7 +82,7 @@ export function RecoveryNotice(props: RecoveryNoticeProps) {
         <div className={styles.controlButtons}>
           <button
             type="button"
-            className={styles.controlButton}
+            className={controls.secondaryButton}
             onClick={onResume}
             disabled={disabled}
           >
@@ -90,7 +91,7 @@ export function RecoveryNotice(props: RecoveryNoticeProps) {
           {canConfirmRecovery && (
             <button
               type="button"
-              className={styles.controlButton}
+              className={controls.secondaryButton}
               onClick={onConfirmRecovery}
               disabled={disabled}
             >

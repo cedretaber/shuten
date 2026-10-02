@@ -16,9 +16,11 @@ import type { CandidateDto, DiagnosticDto, FindingDetailDto, FindingDto } from "
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import controls from "../../styles/controls.module.css";
 import type { FindingDetailMember, FindingDetailProps } from "./finding-detail.tsx";
 import { FindingDetail } from "./finding-detail.tsx";
 import { groupFindings } from "./finding-group.ts";
+import styles from "./results-page.module.css";
 
 /** 「原文」または「LLM の引用（原文との一致未確認）」の見出しを含む `<section>` を返す。 */
 function quoteSection(headingText: string): HTMLElement {
@@ -589,5 +591,54 @@ describe("FindingDetail: 採否の操作子（Task 8、決定 13）", () => {
     rerender(<FindingDetail {...baseProps({ finding: findingB })} />);
     expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+  });
+});
+
+describe("FindingDetail: 明朝体と共通の部品（PR14c）", () => {
+  const INAPPROPRIATE = {
+    id: "recheck-1",
+    status: "done",
+    notApplicableReason: null,
+    verdict: "confirm-with-author",
+    reasonKind: "suggestion-inappropriate",
+    reason: "修正案が不適切",
+    suggestionValid: false,
+    failure: null,
+  } as const;
+
+  it("原文は明朝体のクラスを持つ", () => {
+    const finding = makeFinding({ locateStatus: "located", range: { start: 5, end: 10 } });
+    render(<FindingDetail {...baseProps({ finding })} />);
+    const p = within(quoteSection("原文")).getByText(BODY.slice(5, 10));
+    expect(p.className).toContain(styles.detailSerif);
+  });
+
+  it("有効な修正案は明朝体のクラスを持つ", () => {
+    render(<FindingDetail {...baseProps({ finding: makeFinding({ suggestion: "これは" }) })} />);
+    expect(screen.getByText("これは").className).toContain(styles.detailSerif);
+  });
+
+  it("不適切と判定された修正案も明朝体で、注記は臙脂の注記の部品を使う", () => {
+    const finding = makeFinding({ suggestion: "これは", recheck: INAPPROPRIATE });
+    render(<FindingDetail {...baseProps({ finding })} />);
+    expect(screen.getByText("これは").className).toContain(styles.detailSerif);
+    expect(screen.getByText("この修正案は再確認で不適切と判定されました").className).toContain(
+      controls.dangerNote,
+    );
+  });
+
+  it("再確認の理由は明朝体にしない", () => {
+    const finding = makeFinding({ suggestion: "これは", recheck: INAPPROPRIATE });
+    render(<FindingDetail {...baseProps({ finding })} />);
+    expect(screen.getByText("修正案が不適切").className).not.toContain(styles.detailSerif);
+  });
+
+  it("取得の失敗はエラーの枠の部品を使う", () => {
+    render(
+      <FindingDetail
+        {...baseProps({ detail: null, detailError: "指摘詳細の取得に失敗しました" })}
+      />,
+    );
+    expect(screen.getByText("指摘詳細の取得に失敗しました").className).toContain(controls.errorBox);
   });
 });

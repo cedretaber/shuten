@@ -155,6 +155,7 @@ import { Link, useParams } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { ROUTES } from "../../app/routes.ts";
+import controls from "../../styles/controls.module.css";
 import { buildBodyView } from "./body-view.ts";
 import { BodyView } from "./body-view.tsx";
 import { FailedUnits } from "./failed-units.tsx";
@@ -1022,10 +1023,14 @@ export function ResultsPage() {
 
       {state.kind === "error" && (
         <div>
-          <p className={styles.error}>{state.message}</p>
+          <p className={controls.errorBox}>{state.message}</p>
           {/* 初回取得の失敗には再試行の導線を置く（最終レビュー Important 1）。"最新の状態を
               取得" と同じラベルにして、更新ボタンと同じ操作だと分かるようにする。 */}
-          <button type="button" className={styles.refreshButton} onClick={handleRetryInitial}>
+          <button
+            type="button"
+            className={`${controls.secondaryButton} ${styles.refreshButton}`}
+            onClick={handleRetryInitial}
+          >
             最新の状態を取得
           </button>
           <p>
@@ -1058,7 +1063,7 @@ export function ResultsPage() {
 
           {/* 更新（再取得）の失敗（最終レビュー Important 1）：`loaded` の内容は残したまま、
               エラーだけを添えて見せる。本文・一覧・詳細・選択は消えない。 */}
-          {refreshError !== null && <p className={styles.error}>{refreshError}</p>}
+          {refreshError !== null && <p className={controls.errorBox}>{refreshError}</p>}
 
           {/* PR21 レビュー指摘 2：採否の保存の失敗。選択を変えても消えない場所（ヘッダー直下、
               上の更新失敗と同じ並び）に出す。どの指摘の保存が失敗したかを引用で示す（切り詰めない
@@ -1066,7 +1071,7 @@ export function ResultsPage() {
           {judgmentErrors.size > 0 && (
             <ul className={styles.judgmentErrorList}>
               {Array.from(judgmentErrors).map(([findingId, entry]) => (
-                <li key={findingId} className={styles.judgmentErrorItem}>
+                <li key={findingId} className={`${controls.errorBox} ${styles.judgmentErrorItem}`}>
                   <span className={styles.judgmentErrorQuote}>{entry.quote}</span>
                   <span className={styles.judgmentErrorMessage}>
                     の採否の保存に失敗しました：{entry.message}
@@ -1183,7 +1188,7 @@ function FindingsPanel(props: {
       return <p>指摘を読み込んでいます…</p>;
     }
     if (freshness === "failed") {
-      return <p className={styles.error}>指摘の取得に失敗しました</p>;
+      return <p className={controls.errorBox}>指摘の取得に失敗しました</p>;
     }
     if (run.status === "completed") {
       return <p>指摘はありません</p>;

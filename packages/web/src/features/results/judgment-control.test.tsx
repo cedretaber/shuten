@@ -14,6 +14,7 @@ import type { JudgmentDto } from "@shuten/shared";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import controls from "../../styles/controls.module.css";
 import type { JudgmentControlProps } from "./judgment-control.tsx";
 import { JudgmentControl } from "./judgment-control.tsx";
 
@@ -237,5 +238,23 @@ describe("JudgmentControl: 採用予定の注記は常に表示される（決�
     render(<JudgmentControl {...baseProps()} />);
     await user.click(screen.getByRole("radio", { name: "採用予定" }));
     expect(screen.getByText(/採用予定.*本文.*書き換わりません/)).toBeInTheDocument();
+  });
+});
+
+describe("JudgmentControl: 共通の部品（PR14c）", () => {
+  it("保存は主な操作、判断メモは入力欄の部品を使う", () => {
+    render(<JudgmentControl {...baseProps()} />);
+    expect(screen.getByRole("button", { name: "保存" }).className).toContain(
+      controls.primaryButton,
+    );
+    expect(screen.getByRole("textbox").className).toContain(controls.input);
+  });
+
+  it("保存の失敗はエラーの枠で出る", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn(() => Promise.reject(new Error("保存に失敗しました")));
+    render(<JudgmentControl {...baseProps({ onSave })} />);
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect((await screen.findByText("保存に失敗しました")).className).toContain(controls.errorBox);
   });
 });
