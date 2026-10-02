@@ -1,7 +1,8 @@
 import type { FindingDto } from "@shuten/shared";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { groupFindings } from "./finding-group.ts";
 import { FindingList } from "./finding-list.tsx";
 import styles from "./results-page.module.css";
 
@@ -39,21 +40,33 @@ function makeFinding(overrides: Partial<FindingDto> = {}): FindingDto {
 describe("FindingList: 行はボタンで、クリックで選択できる", () => {
   it("見つかった件数ぶんのボタンが並ぶ", () => {
     const findings = [
-      makeFinding({ id: "f1" }),
-      makeFinding({ id: "f2" }),
-      makeFinding({ id: "f3" }),
+      makeFinding({ id: "f1", range: { start: 0, end: 1 } }),
+      makeFinding({ id: "f2", range: { start: 1, end: 2 } }),
+      makeFinding({ id: "f3", range: { start: 2, end: 3 } }),
     ];
-    render(<FindingList findings={findings} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings(findings)}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     expect(screen.getAllByRole("button")).toHaveLength(3);
   });
 
   it("渡された順のまま描く（並び替えない）", () => {
     const findings = [
-      makeFinding({ id: "f1", quote: "いち" }),
-      makeFinding({ id: "f2", quote: "に" }),
-      makeFinding({ id: "f3", quote: "さん" }),
+      makeFinding({ id: "f1", range: { start: 0, end: 1 }, quote: "いち" }),
+      makeFinding({ id: "f2", range: { start: 1, end: 2 }, quote: "に" }),
+      makeFinding({ id: "f3", range: { start: 2, end: 3 }, quote: "さん" }),
     ];
-    render(<FindingList findings={findings} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings(findings)}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     const buttons = screen.getAllByRole("button");
     expect(buttons.map((b) => b.textContent)).toEqual([
       expect.stringContaining("いち"),
@@ -65,10 +78,13 @@ describe("FindingList: 行はボタンで、クリックで選択できる", () 
   it("行をクリックすると onSelectFinding がその指摘の ID で呼ばれる", async () => {
     const user = userEvent.setup();
     const onSelectFinding = vi.fn();
-    const findings = [makeFinding({ id: "f1" }), makeFinding({ id: "f2" })];
+    const findings = [
+      makeFinding({ id: "f1", range: { start: 0, end: 1 } }),
+      makeFinding({ id: "f2", range: { start: 1, end: 2 } }),
+    ];
     render(
       <FindingList
-        findings={findings}
+        groups={groupFindings(findings)}
         selectedFindingId={null}
         onSelectFinding={onSelectFinding}
       />,
@@ -80,15 +96,26 @@ describe("FindingList: 行はボタンで、クリックで選択できる", () 
   });
 
   it("選択中の指摘の行にだけ選択用 class が付く", () => {
-    const findings = [makeFinding({ id: "f1" }), makeFinding({ id: "f2" })];
-    render(<FindingList findings={findings} selectedFindingId="f2" onSelectFinding={vi.fn()} />);
+    const findings = [
+      makeFinding({ id: "f1", range: { start: 0, end: 1 } }),
+      makeFinding({ id: "f2", range: { start: 1, end: 2 } }),
+    ];
+    render(
+      <FindingList
+        groups={groupFindings(findings)}
+        selectedFindingId="f2"
+        onSelectFinding={vi.fn()}
+      />,
+    );
     const buttons = screen.getAllByRole("button");
     expect(buttons[0]?.className).not.toContain(styles.findingRowSelected);
     expect(buttons[1]?.className).toContain(styles.findingRowSelected);
   });
 
   it("見つからないときは絞り込みに一致しない旨のメッセージを出す（ボタンは 0 個）", () => {
-    render(<FindingList findings={[]} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList groups={groupFindings([])} selectedFindingId={null} onSelectFinding={vi.fn()} />,
+    );
     expect(screen.queryAllByRole("button")).toHaveLength(0);
     expect(screen.getByText(/絞り込みに一致する指摘はありません/)).toBeInTheDocument();
   });
@@ -97,20 +124,38 @@ describe("FindingList: 行はボタンで、クリックで選択できる", () 
 describe("FindingList: 位置特定失敗の印", () => {
   it("located では印が出ない", () => {
     const finding = makeFinding({ locateStatus: "located", range: { start: 0, end: 1 } });
-    render(<FindingList findings={[finding]} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings([finding])}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     expect(screen.queryByText("本文に見つからない")).not.toBeInTheDocument();
     expect(screen.queryByText("候補が複数あり特定できない")).not.toBeInTheDocument();
   });
 
   it("not-found では「本文に見つからない」の印が出る", () => {
     const finding = makeFinding({ locateStatus: "not-found", range: null });
-    render(<FindingList findings={[finding]} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings([finding])}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     expect(screen.getByText("本文に見つからない")).toBeInTheDocument();
   });
 
   it("ambiguous では「候補が複数あり特定できない」の印が出る", () => {
     const finding = makeFinding({ locateStatus: "ambiguous", range: null });
-    render(<FindingList findings={[finding]} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings([finding])}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     expect(screen.getByText("候補が複数あり特定できない")).toBeInTheDocument();
   });
 });
@@ -124,7 +169,13 @@ describe("FindingList: 一覧の見出しで引用の文字列を切らない", 
 
   it("結合文字を含む長い引用でも全文が textContent に入っている", () => {
     const finding = makeFinding({ id: "f1", quote: COMBINING_QUOTE });
-    render(<FindingList findings={[finding]} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings([finding])}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     const button = screen.getByRole("button");
     expect(button.textContent).toContain(COMBINING_QUOTE);
   });
@@ -136,7 +187,13 @@ describe("FindingList: 一覧の見出しで引用の文字列を切らない", 
 
   it("ZWJ 連結の絵文字を含む引用でも全文が textContent に入っている", () => {
     const finding = makeFinding({ id: "f2", quote: ZWJ_EMOJI_QUOTE });
-    render(<FindingList findings={[finding]} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    render(
+      <FindingList
+        groups={groupFindings([finding])}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
+    );
     const button = screen.getByRole("button");
     expect(button.textContent).toContain(ZWJ_EMOJI_QUOTE);
   });
@@ -144,10 +201,68 @@ describe("FindingList: 一覧の見出しで引用の文字列を切らない", 
   it("引用の <span> は dangerouslySetInnerHTML を使わず、テキストノードとして持つ（切らずに置く）", () => {
     const finding = makeFinding({ id: "f3", quote: COMBINING_QUOTE });
     const { container } = render(
-      <FindingList findings={[finding]} selectedFindingId={null} onSelectFinding={vi.fn()} />,
+      <FindingList
+        groups={groupFindings([finding])}
+        selectedFindingId={null}
+        onSelectFinding={vi.fn()}
+      />,
     );
     const quoteEl = container.querySelector(`.${styles.findingQuote}`);
     expect(quoteEl).not.toBeNull();
     expect(quoteEl?.textContent).toBe(COMBINING_QUOTE);
+  });
+});
+
+describe("FindingList: 同じ範囲の指摘のまとめ（PR14b）", () => {
+  it("同じ範囲の指摘は 1 行になり、引用に「2 案」を添える", () => {
+    const groups = groupFindings([
+      makeFinding({ id: "f1", range: { start: 0, end: 2 }, quote: "声が出す" }),
+      makeFinding({ id: "f2", range: { start: 0, end: 2 }, quote: "声が出す" }),
+      makeFinding({ id: "f3", range: { start: 5, end: 6 }, quote: "別" }),
+    ]);
+    render(<FindingList groups={groups} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(2);
+    expect(within(buttons[0] as HTMLElement).getByText("2 案")).toBeInTheDocument();
+    expect(within(buttons[1] as HTMLElement).queryByText(/案$/)).not.toBeInTheDocument();
+  });
+
+  it("分類・採否・再確認状態は、違えば要約して並べる", () => {
+    const groups = groupFindings([
+      makeFinding({ id: "f1", category: "grammar", range: { start: 0, end: 2 } }),
+      makeFinding({
+        id: "f2",
+        category: "particle",
+        range: { start: 0, end: 2 },
+        judgment: {
+          findingId: "f2",
+          status: "rejected",
+          note: null,
+          updatedAt: "2026-09-10T00:00:00.000Z",
+        },
+      }),
+    ]);
+    render(<FindingList groups={groups} selectedFindingId={null} onSelectFinding={vi.fn()} />);
+    const row = screen.getByRole("button");
+    expect(within(row).getByText("文法／助詞")).toBeInTheDocument();
+    expect(within(row).getByText("未判断 1・却下 1")).toBeInTheDocument();
+    expect(within(row).getByText("再確認なし")).toBeInTheDocument();
+  });
+
+  it("行は先頭の ID で選ばれ、先頭の ID が選択中なら選択状態になる", async () => {
+    const user = userEvent.setup();
+    const onSelectFinding = vi.fn();
+    const groups = groupFindings([
+      makeFinding({ id: "f1", range: { start: 0, end: 2 } }),
+      makeFinding({ id: "f2", range: { start: 0, end: 2 } }),
+    ]);
+    render(
+      <FindingList groups={groups} selectedFindingId="f1" onSelectFinding={onSelectFinding} />,
+    );
+    const row = screen.getByRole("button");
+    expect(row.getAttribute("aria-current")).toBe("true");
+    expect(row.closest("li")?.getAttribute("data-finding-id")).toBe("f1");
+    await user.click(row);
+    expect(onSelectFinding).toHaveBeenCalledWith("f1");
   });
 });
