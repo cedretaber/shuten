@@ -20,115 +20,30 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 
 ## 現在の状態
 
-scaffold と CI（Ubuntu / Windows）は完了している。LM Studio との接続検証も済み、仕様は確定した（v0.9）。
-実装はロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR 単位で進めている。
+ロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR13b まで、実装と評価が終わっている。
+仕様は確定している（v0.9.3）。ブラウザの画面からは次のことができる。
 
-**PR10（HTTP API と SSE）まで完了**した。DB を正本として、検査の開始・停止・再開・失敗単位の個別再試行・
-起動時照合（バックエンド再起動後の状態整合）が動き、`/api` 配下の HTTP エンドポイントと SSE から操作・観測できる。
-接続先 URL は `settings` 表に保存し、API（`PUT /api/settings/connection`）から上書きできる。API キーは
-プロセスのメモリにだけ置く。応答・ログ・SSE・エラーには接続先 URL も API キーも出さず、
-`packages/server/src/api/leak.test.ts` がこれを全エンドポイントで検査している。
+- 設定（LM Studio への接続、生成に使うモデル、詳細な検査設定）
+- 原稿の確定（貼り付け／ファイル読み込み）と、検査の開始・停止・再開・失敗単位の個別再試行
+- 検査中の進捗の表示と、結果の閲覧（本文の強調表示、指摘一覧と詳細、採否の記録）
+- 過去の実行の再閲覧（`/runs`）と、実行 1 件ぶんの JSON エクスポート
 
-2026-09-10 には PR11b（接続断で失敗した単位の復旧を 1 段にする）が完了した。接続断で失敗した検査単位も、
-再開だけで再実行できる。それ以前は、再開と失敗単位の個別再試行の 2 段が要った。
-受け入れ条件のうち 11 節 3・4・5・11・14・15・16・18 項は、サーバー側で満たした。
+評価用 CLI（後述）では、原稿ファイルに検査を回し、正解データと突き合わせて指標を出せる。
 
-**PR11（接続・入力・設定画面）と PR11c（設定画面の統合とナビゲーション）まで完了**した。ブラウザの画面から、
-設定（`/settings`。「LM Studio への接続」「生成に使うモデル」「詳細な検査設定」の 3 節）、原稿の確定
-（貼り付け／ファイル読み込み）、検査設定の入力、検査の開始ができる。画面は、原稿と検査設定の画面（`/`）、
-設定の画面（`/settings`）、それらをつなぐアプリの骨格と API クライアントからなる。検査実行後に出ていた
-受付表示は Task 5 で結果画面に統合し、独立の画面としては無くなった。実行一覧 `/runs` と結果画面
-`/runs/:id` は、後述のとおり PR12a が作った。
-API キーと接続先 URL が、画面の描画、ブラウザの保存領域、接続設定以外の通信へ漏れないことは
-`packages/web/src/leak.test.tsx` が検査している。
+分割長や `max_tokens` などの既定値は、実原稿 2 本での評価に基づく**仮置き**で、使いながら見直す
+（`docs/decisions/0004-evaluation-settings.md`）。
 
-ここまでの詳細計画は次の 6 本にある。
+まだ確かめていないことは次のとおり。
 
-- `docs/plans/2026-09-09-pr9-orchestration.md`（決定 1〜23）
-- `docs/plans/2026-09-09-pr9b-orchestrator.md`（決定 24 以降）
-- `docs/plans/2026-09-09-pr10-http-api.md`（HTTP API と SSE）
-- `docs/plans/2026-09-10-pr11-web-shell.md`（画面とクライアント）
-- `docs/plans/2026-09-10-pr11c-settings-consolidation.md`（設定画面の統合とナビゲーション）
-- `docs/plans/2026-09-10-pr11b-one-step-recovery.md`（接続断で失敗した単位の 1 段復旧）
+- ローカルの Windows 環境で確かめたのは PR11 の 9 項目まで。PR11c 以降は実機で確認しておらず、
+  Windows では CI（`pnpm check`）だけが通っている。
+- 実ブラウザでの確認は、LM Studio 未接続で指摘 0 件の実行でしか行えていない。指摘一覧が長いときの
+  右側の内部スクロール、「指摘へ移動」したときの `scrollIntoView` の挙動、実 LLM を動かした
+  「実行中」の表示（進捗の更新、遅延の通知、停止の効き方）は未確認。
+- 実原稿での評価（PR13b）では、画面経由の実測、命令文を含む原稿での取り直し、全文チャット方式の
+  人手集計、確認時間の実測を行っていない。
 
-Windows でのローカル確認は、PR11 分の 9 項目（`docs/decisions/0002-scaffold-conventions.md`）を済ませた。
-PR11c は実機確認を行っていない。SPA フォールバックはパスに依存せず（`app.get("*")`）、旧パスのリダイレクトは
-ブラウザ内で完結する。そのため、PR11 の実機確認と Windows CI で担保できると判断した
-（PR11c 計画書の「Windows での再確認」節）。
-
-2026-09-11 に、PR12a の設計前のチェックポイントとして強調表示のスパイクを実施した。保存済みの UTF-16 範囲を、
-ブラウザ側で書記素境界を計算せずに DOM の強調へ変換できることを実ブラウザで確認した
-（`docs/experiments/2026-09-11-highlight-spike/README.md`）。
-続く **PR12a（結果閲覧）** で、保存済みの実行を開いて本文・強調・指摘一覧・詳細を読み、採否を記録できる
-ようになった。実行一覧（`/runs`）から過去の実行を再閲覧することもできる。
-
-**PR12b（実行制御と進捗）まで完了**し、結果画面（`/runs/:id`）を開いたまま検査の開始から完了までを追える
-ようになった。上部には原稿名・検査状態・観点別の処理進捗を表示する（進捗は `GET /api/runs/:id/units` を
-クライアントで集計する）。状態に応じて、停止・再開・失敗単位の個別再試行・復旧確認の操作を出し分ける。
-受け付けるかどうかの最終判断はサーバー側が行い、409 が返ったら取り直して従う。
-更新の合図は SSE（`GET /api/runs/:id/events`）で受け、表示する値は必ず DB（REST）から取り直す
-（値の正本は SSE ではなく DB）。本文と右側（指摘一覧・詳細）は独立してスクロールするようになり、
-PR12a から持ち越していたこの点は解消した。
-ただし、実ブラウザでの確認は LM Studio 未接続で指摘 0 件の実行でしか行えていない。指摘一覧が実際に長い
-状態での右側の内部スクロールと、「指摘へ移動」したときの `scrollIntoView` の挙動そのものは未確認である。
-実 LLM を動かした「実行中」の表示（進捗の更新、遅延の通知、停止の効き方）と Windows も未確認
-（詳細計画は `docs/plans/2026-09-11-pr12b-run-control.md`）。
-
-最後に **PR12c（指摘一覧の 3N+1 解消）** で、`GET /api/runs/:id/findings` の問い合わせ回数を直した。
-PR12a の計測で 100 ms を上回ったため、据え置きをやめたものである。実行 1 件あたりの問い合わせは、
-`findRun` 1 本と一覧側 4 本（`findings`・理由・再確認・採否）の計 5 本にまとめた。問い合わせの本数が
-指摘の件数によらないことは、クエリ本数のテストで検査している。同条件（指摘 800 件、WSL2 上の Linux。
-Windows 未確認）で再計測すると中央値は 12 ms 前後で、改善前（110〜130 ms 台）の約 1/10 に縮んだ。
-索引とマイグレーションは追加していない（詳細計画は `docs/plans/2026-09-11-pr12c-findings-batch.md`）。
-
-2026-09-09 に残りの工程を見直し、PR11b・PR12a/12b・PR13a/13b に分け直した
-（ロードマップの「2026-09-09 の見直し」節）。評価原稿と正解データの準備は並行して進める。
-
-一括エクスポート（`GET /api/runs/:id/export`）は、形式を評価ツールと揃えるため PR13a（後述の分割後は
-PR13a-2）に回した。保存済み結果の再閲覧は `GET /api/runs/:id` と `GET /api/runs/:id/findings` で行う。
-
-2026-09-12 に PR13a を 13a-1（評価ツール）・13a-2（エクスポート）・13a-3（全文チャット方式）の 3 本に
-分け、**PR13a-1 が完了**した。正解ファイルの形式が決まり（`docs/reference/truth-format.md`）、ユーザーが
-正解データを用意できる状態になった。評価用 CLI（`packages/cli`）はサブコマンド化した
-（`run`／`evaluate`／`aggregate`／`hash`）。CLI は正解ファイルと結果 JSON を突き合わせ、仕様書 10 節の
-自動集計分（誤りの検出率、誤検出、位置特定失敗率、許容語の抑制、実行性能）を指標 JSON として出す。
-人手で判断する指標（修正案の妥当性、人間の確認負担、診断候補の正誤）は空欄で示す。同条件で複数回
-実行した結果のぶれ（error 項目ごとの検出回数 k/N、各指標の最小・中央値・最大）も集計できる。
-原稿・正解ファイル・結果 JSON の 3 者は本文ハッシュ（`pnpm eval hash`）で照合し、一致しなければ
-集計せずエラー終了する。品質の合否は判定しない（数値目標は未決のまま。仕様書 10・13 節）。
-詳細は `docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 1〜22）。エクスポートと全文チャット方式
-（現在の全文チャット方式との比較用モード）は、PR13a-2・PR13a-3 に持ち越した。
-
-続けて **PR13a-2（エクスポート）が完了**し、`GET /api/runs/:id/export` で検査実行 1 件ぶんを
-丸ごと JSON で取り出せるようになった。応答は既存の DTO 射影だけを並べたもので、仕様書 8.1 節の
-保存単位（原稿版・検査実行・検査単位・再確認単位・位置診断・指摘・作者の判断）をすべて含む。
-検査対象は独立した配列に入る。元候補は指摘に入れ子で入り、指摘を持たない候補だけが別の配列に入る。
-接続先 URL と API キーは含まない（`packages/server/src/api/leak.test.ts` のエンドポイント一覧にも追加済み）。
-評価用 CLI の `evaluate` / `aggregate` は、CLI が書いた結果 JSON（`--result`）の代わりに、この
-エクスポート JSON（`--export`）も入力にできるようになった。`--export` を使うときは本文がエクスポートに
-含まれるため、`--manuscript` を渡さない。`aggregate` は `--result` と `--export` を混ぜて渡せる。ただし、
-CLI 経由の実行とサーバー経由の実行を混ぜた集計は、実行条件（`versions.result`）が食い違うため必ず
-条件不一致で止まる。詳細は `docs/plans/2026-09-12-pr13a-evaluation-export.md`（決定 16〜32）。
-
-さらに **PR13a-3（全文チャット方式）が完了**し、仕様書 10 節が比較対象としている「現在の全文チャット
-方式」を `pnpm eval full-chat` で記録できるようになった。プロンプトは利用者がファイルで渡す
-（`{{manuscript}}` の位置に原稿を差し込む。こちらではプロンプトを書かない）。構造化出力も system も
-使わず、`user` 1 通を 1 回だけ送る。`finish_reason` が `stop` 以外の応答はすべて失敗として記録し、
-打ち切られた本文を成功として保存しない。結果 JSON には原稿本文もプロンプトも入れず、どのプロンプトで
-取ったかは `promptHash` で照合する。自由形式の応答から指摘を機械的に取り出すことはできないので
-**自動採点はせず**、`evaluate` / `aggregate` に渡すと拒否される。詳細は同じ計画書の決定 34〜40。
-
-これで PR13a は 3 本とも完了し、**PR13b（実原稿での評価の実施）の前提が揃った**。PR13b の計画は
-`docs/plans/2026-09-12-pr13b-real-manuscript-evaluation.md`。
-
-続けて **PR13b（実原稿での評価）を実施した**。実原稿 2 本（11,503 字・8,267 字）に正解データを作り、
-埋め込んだ誤りと作者が確認した元からの誤りを、それぞれ計 38 件と 35 件入れた。CLI で 24 本の実行を回し、
-モデル・分割長・方式・思考の有無・ぶれを測った（`docs/experiments/2026-09-13-real-manuscript-evaluation/`）。
-その結果に基づき、仕様書 13 節の未決事項を**仮置き**した（`docs/decisions/0004-evaluation-settings.md`）。
-確定ではなく「使いながら直す」前提である。既定値の変更は `max_tokens` の 16,000 → 4,000 だけで、
-gemma が思考なしでも出力を反復する縮退ループに入ったとき、その打ち切りをタイムアウト内に収めるためである。
-画面経由の実測、命令文を含む原稿での取り直し、全文チャット方式の人手集計、確認時間の実測は行っていない。
-評価原稿・正解・結果はリポジトリ外に置き、記録には件数と率だけを書いている。
+PR ごとの経過は [docs/history.md](docs/history.md) に記録している。
 
 ## 技術スタック
 
@@ -152,10 +67,12 @@ gemma が思考なしでも出力を反復する縮退ループに入ったと�
 | [docs/spec/mvp-spec.md](docs/spec/mvp-spec.md) | MVP 仕様書（正本）。機能範囲、検査処理、保存、評価方法、受け入れ条件 |
 | [docs/reference/invariants.md](docs/reference/invariants.md) | 仕様から導いた不変条件と対象外。実装前に読む |
 | [docs/reference/conventions.md](docs/reference/conventions.md) | 開発規約、パッケージ構成、コマンド |
+| [docs/reference/eval-cli.md](docs/reference/eval-cli.md) | 評価用 CLI（`pnpm eval`）のサブコマンド、オプション、終了コード |
 | [docs/reference/truth-format.md](docs/reference/truth-format.md) | 評価用の正解ファイルの書き方（`pnpm eval evaluate` / `aggregate` の入力） |
-| [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約、LM Studio 接続検証） |
+| [docs/decisions/](docs/decisions/) | 設計上の決定記録（技術スタック、scaffold の規約、LM Studio 接続検証、評価設定の仮置き） |
 | [docs/experiments/](docs/experiments/) | 検証の手順・要求・結果。再検証できる形で残す |
 | [docs/plans/](docs/plans/) | 実装計画。PR 単位のロードマップと、各 PR の詳細計画 |
+| [docs/history.md](docs/history.md) | 開発の経過。PR ごとに何ができるようになったか |
 | [docs/guides/windows-verification.md](docs/guides/windows-verification.md) | Windows での動作確認手順 |
 | [AGENTS.md](AGENTS.md) | コーディングエージェントへの指示 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 固有の事項 |
@@ -199,163 +116,28 @@ LM Studio への接続を閉じ、DB を閉じてから終了する（`shutdown:
 なお Windows での動作確認は CI（`windows-latest` の `pnpm check`）でのみ行っており、**ローカルの
 Windows 環境では未確認**（`docs/guides/windows-verification.md` のチェックポイントで確認する）。
 
-## 評価ハーネス（`packages/cli`）
+## 評価用 CLI（`packages/cli`）
 
 原稿ファイルに検査パイプラインを回して結果 JSON を出し、正解データと突き合わせて仕様書 10 節の指標を
-出す評価用の CLI。サブコマンドは `run`（既定）／`evaluate`／`aggregate`／`hash`／`full-chat`／`check-truth`。
-先頭の引数が `--` で始まる場合と引数が無い場合は `run` に振られるので、旧来の起動
-（`... --manuscript x --model y`）もそのまま動く。ルートの `pnpm eval` はこの CLI のショートカットで、
-次の 2 つはどちらも同じように動く。
+出す CLI。`pnpm eval <サブコマンド> [オプション...]` で起動する。
+
+| サブコマンド | 用途 |
+| --- | --- |
+| `run`（既定） | 原稿に検査パイプラインを回し、結果 JSON を出す |
+| `check-truth` | 正解ファイルを、LLM を回さずに原稿と照らして検証する |
+| `evaluate` | 1 回の実行結果を正解データと突き合わせ、指標を出す |
+| `aggregate` | 同じ条件で複数回実行した結果のぶれを集計する |
+| `full-chat` | 比較用に「現在の全文チャット方式」で 1 回生成する（自動採点はしない） |
+| `hash` | 正解ファイルに貼る原稿の本文ハッシュを出す |
 
 ```sh
-pnpm eval <サブコマンド> [オプション...]
-node packages/cli/bin/shuten-eval.ts <サブコマンド> [オプション...]
+pnpm eval run --manuscript <原稿> --model <id> --out <結果.json>
+pnpm eval evaluate --manuscript <原稿> --truth <正解.json> --result <結果.json> --report <レポート.md>
 ```
 
-### `run`：検査パイプラインを回す
-
-```sh
-pnpm eval run --manuscript <path> --model <id>
-```
-
-接続先と API キーは引数では渡さない（シェル履歴に残さないため）。環境変数
-`SHUTEN_LM_STUDIO_URL`（既定 `http://127.0.0.1:1234`）と `SHUTEN_LM_STUDIO_API_KEY`（省略可）から読む。
-
-終了コードは 0 = `completed`、1 = 引数・入出力の誤り、2 = `partially-failed`、3 = `stopped`。
-進捗は標準エラーへ、結果 JSON は `--out` を指定しなければ標準出力へ出す。
-
-`--check-timeout-ms` / `--recheck-timeout-ms` は、この CLI では従来どおり打ち切りの上限そのもの。
-Web UI 側のオーケストレーター経路では同名の設定値の意味が異なり、超えた時点で打ち切るのではなく
-「生成が遅延している」と通知する閾値になる（実際のハード上限は復旧確認の待機時間を加えた値。
-仕様書 8.2節、決定7）。
-
-`--mode full-text` では本文全体が 1 要求になるため、`--max-input-graphemes` を本文の書記素数より
-大きい値に上げる必要がある（既定の 12,000 では長い原稿で停止する）。
-
-`--reasoning-effort` の既定は `none`（思考なし）で、未指定でも `reasoning_effort: "none"` を明示的に送る。
-思考ありで動かすときは `--reasoning-effort low|medium|high` を渡す（決定記録 [0003](docs/decisions/0003-lm-studio-connection.md) の 2026-09-09 の追記）。
-
-分割長などの既定値は実原稿での評価（決定記録 [0004](docs/decisions/0004-evaluation-settings.md)）に基づく仮置きで、使用の中で見直す。`--max-tokens` の既定は 4,000（分割方式向け。`--mode full-text` では 16,000 程度を明示する）。
-
-### `evaluate` / `aggregate`：正解データと突き合わせる
-
-正解ファイル（`--truth`）の書き方は [docs/reference/truth-format.md](docs/reference/truth-format.md)。
-原稿・正解ファイル・結果 JSON の本文ハッシュが一致していることを確認してから採点する
-（`pnpm eval hash` でハッシュ値を取れる。後述）。
-
-```sh
-pnpm eval evaluate --manuscript <原稿> --truth <正解.json> --result <結果.json> \
-                   [--out <指標.json>] [--report <レポート.md>]
-pnpm eval aggregate --manuscript <原稿> --truth <正解.json> \
-                    --result <結果1.json> --result <結果2.json> [--result ...] \
-                    [--out <集計.json>] [--report <レポート.md>]
-```
-
-`evaluate` は 1 回の実行を仕様書 10 節の指標（誤りの検出率、誤検出、位置特定失敗率、許容語の抑制、
-実行性能）で採点する。率はすべて `{ numerator, denominator, rate }` で、分母が 0 なら `rate` は `null`。
-人手で判断する指標（修正案の妥当性、人間の確認負担、診断候補の正誤）はレポートに空欄の列として示す。
-指標 JSON には持たない。
-
-`aggregate` は同じ条件で複数回実行した結果のぶれを、`--result`（2 本以上必須）から集計する。
-各指標の最小・中央値・最大と、正解項目ごとの検出回数 k/N を出す。実行条件（モデル・観点・分割設定・
-タイムアウトなど）が 1 本でも食い違うと、ぶれを測れないため集計せずエラーになる。
-
-どちらも `--out` を指定しなければ指標 JSON を標準出力に書く。`--report` を指定すると Markdown の
-レポート（人手の欄を含む）を追加で書く。品質の合否は判定しない（終了コードは指標の良し悪しでは変わらない。
-数値目標は未決のまま。仕様書 10・13 節）。
-
-**`--export`（サーバー経由の実行結果）を使う場合。** `--result`（CLI が書いた結果 JSON）の代わりに、
-`GET /api/runs/:id/export` が返すエクスポート JSON を渡せる。本文がエクスポートに埋め込まれているため、
-`--export` を使うときは `--manuscript` を渡さない。
-
-```sh
-pnpm eval evaluate --export <エクスポート.json> --truth <正解.json> \
-                   [--out <指標.json>] [--report <レポート.md>]
-pnpm eval aggregate --export <エクスポート1.json> --export <エクスポート2.json> [--export ...] \
-                    --truth <正解.json> [--out <集計.json>] [--report <レポート.md>]
-```
-
-`aggregate` は `--result` と `--export` を混ぜて渡すこともできるが、CLI 経由の実行とサーバー経由の
-実行を混ぜた集計は、実行条件（`versions.result`）が異なるため必ず条件不一致で止まる。同じ種類どうし
-（`--result` どうし／`--export` どうし）なら集計できる。
-
-エクスポートは、サーバーが待ち受けているアドレスに対して次のように取得する
-（実行 ID は `GET /api/runs` などで確認する）。
-
-```sh
-curl http://localhost:<ポート>/api/runs/<実行ID>/export -o export.json
-```
-
-### `full-chat`：全文チャット方式で 1 回生成する
-
-仕様書 10 節が比較対象としている「現在の全文チャット方式」を、同じ条件で記録できるようにしたもの。
-現在の全文チャット方式とは、利用者が LM Studio のチャットに原稿を貼り、自分の指示で校正させている運用を指す。
-
-```sh
-pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロンプト.txt> \
-                    [--system-prompt-file <system.txt>] \
-                    [--out <結果.json>] [--max-tokens N] [--temperature X] [--seed N] \
-                    [--reasoning-effort none|low|medium|high] [--check-timeout-ms N]
-```
-
-**プロンプトは利用者が書く**。こちらでは書かない（書いた時点で比較対象ではなく別のアプリの
-プロンプトになる）。プロンプトファイルには原稿を差し込む位置を `{{manuscript}}` で示す。
-1 つも無ければエラーになり、2 つ以上あればすべて置換される。
-
-- 構造化出力は使わない。分割も参考文脈も許容語の抑制も位置特定も通らない
-- 既定では `user` 1 通だけ。`--system-prompt-file` を渡すとその内容をそのまま `system` として
-  先頭に付ける（差し込みはしない）。普段 system に指示を置いて原稿を user で貼っている運用を
-  再現するには、`--prompt-file` に `{{manuscript}}` だけを書いたファイルを渡す
-- 生成は **1 回だけ**。`run` と違って再試行しない
-- `--max-tokens` の既定は 16,000 で、`run` の既定（4,000。分割方式向け）とは別。応答全体を 1 要求で
-  受けるため長く、打ち切り（`length`）は失敗になるので、必要なら上げる
-- `finish_reason` が `stop` 以外（打ち切り `length`、`tool_calls` など）はすべて失敗として記録し、
-  打ち切られた本文を成功として保存しない
-- 結果 JSON に**原稿本文もプロンプトも入れない**。どのプロンプトで取ったかは `promptHash`
-  （差し込み前のプロンプトのハッシュ）で照合する。`systemPromptHash`（未指定なら `null`）も同様
-- 終了コードは 0 = 成功、1 = 引数・入出力の誤り、2 = 生成の失敗。失敗でも結果 JSON は書く
-
-**`evaluate` / `aggregate` には渡せない**。自由形式の応答から指摘を機械的に取り出すことはできないため
-自動採点しない（結果 JSON の `formatVersion` は `"full-chat/2"` で、`"full-chat/"` 始まりはすべて拒否される）。
-応答は人が読んで正解ファイルと突き合わせる。
-
-1 万字を 1 要求で投げるので、既定のタイムアウト（300 秒）では足りない場合がある。
-`--check-timeout-ms` で伸ばすこと。
-
-### `check-truth`：正解ファイルを検証する
-
-```sh
-pnpm eval check-truth --manuscript <原稿> --truth <正解.json> [--report <失敗レポート.md>]
-```
-
-利用者が手で書く正解ファイルを、LLM を回さず・結果 JSON も無しで検証する。検査するのは次の 4 点。
-
-- 正解ファイルの形式（zod 検証。`docs/reference/truth-format.md`）
-- 原稿との `bodyHash` 照合（`hash` で取った値と正解ファイルの `manuscript.bodyHash` が一致するか）
-- `paragraphId` が原稿の段落数の範囲内か
-- `quote` が該当する段落の本文に存在し、`occurrence` 番目の出現まで足りているか
-
-LM Studio には接続しない。
-
-終了コードは 0 = 検証を通った、1 = 引数・入出力の誤り（読み込めない、出力先の衝突、レポートの
-書き出し失敗を含む）、2 = 正解ファイルの内容の誤り（JSON 構文、zod 検証、`bodyHash` 不一致、
-位置解決の失敗）。両方が起きたとき（内容に誤りがあり、かつレポートを書けなかったとき）は 1 を返す。
-
-標準エラーに出るのは失敗した項目の `id`・段落番号・件数だけ。**本文の該当箇所を添えた詳細は
-`--report` を指定したときだけ**そのファイルに出す（引用や原稿本文を標準出力・標準エラーに出さない
-ため）。
-
-`evaluate` は結果 JSON が無いと使えない（LLM を回す必要がある）ため、正解ファイルを書きながら
-繰り返し検証したいときはこちらを使う。
-
-### `hash`：原稿の本文ハッシュを出す
-
-```sh
-pnpm eval hash --manuscript <原稿>
-```
-
-正解ファイルの `manuscript.bodyHash` に貼るハッシュ値を標準出力に 1 行だけ出す。LM Studio には接続しない。
-`sha256sum` の結果とは一致しない（BOM を除いた本文文字列のハッシュのため）ので、必ずこのコマンドで取る。
+接続先と API キーは引数では渡さず、環境変数 `SHUTEN_LM_STUDIO_URL` と `SHUTEN_LM_STUDIO_API_KEY` から読む。
+オプション・既定値・終了コードは [docs/reference/eval-cli.md](docs/reference/eval-cli.md)、
+正解ファイルの書き方は [docs/reference/truth-format.md](docs/reference/truth-format.md) にある。
 
 Windows での確認手順は [docs/guides/windows-verification.md](docs/guides/windows-verification.md)。
 
