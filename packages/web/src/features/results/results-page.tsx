@@ -817,9 +817,6 @@ export function ResultsPage() {
   // 跳ねさせる必要が無い。本文へ移動する経路は `handleSelectFindingFromList` と `FindingDetail` の
   // `onNavigate` の 2 つだけ。Task 9）、一覧の該当行を見える位置へ送る（UI の見直し 1 節）。
   // 詳細内の「関連する他の指摘」のリンクからも同じ関数で選ぶので、その場合も一覧の行を送る。
-  // 右の列の「絞り込み＋一覧」の容器。一覧の行をここから探す。
-  const findingsPaneRef = useRef<HTMLDivElement | null>(null);
-
   const handleSelectFinding = useCallback((findingId: string) => {
     setSelectedFindingId(findingId);
     const pane = findingsPaneRef.current;
@@ -833,6 +830,8 @@ export function ResultsPage() {
   const bodyContainerRef = useRef<HTMLDivElement | null>(null);
   // 詳細の枠（`.detailPane`）。選択が替わったときにスクロールを先頭へ戻すのに使う。
   const detailPaneRef = useRef<HTMLDivElement | null>(null);
+  // 右の列の「絞り込み＋一覧」の容器。一覧の行をここから探す。
+  const findingsPaneRef = useRef<HTMLDivElement | null>(null);
 
   // 移動先（`NavigationTarget`）が決まったあと、実際に DOM 要素を探してスクロールする共通処理。
   const scrollToTarget = useCallback((target: NavigationTarget) => {
