@@ -22,7 +22,7 @@ describe("AdvancedSettingsSection: 初期値と単位表示（W7-1）", () => {
     expect(screen.getByLabelText("初回検査のタイムアウト（秒）")).toHaveValue(300); // 秒表示
     expect(screen.getByLabelText("再確認のタイムアウト（秒）")).toHaveValue(300);
     expect(screen.getByLabelText("段落境界への丸め許容（%）")).toHaveValue(20); // パーセント表示
-    expect(screen.getByLabelText("最大トークン数")).toHaveValue(16_000);
+    expect(screen.getByLabelText("最大トークン数")).toHaveValue(4_000);
     expect(screen.getByLabelText("温度")).toHaveValue(0);
     expect(screen.getByLabelText("入力上限（字）")).toHaveValue(12_000);
     // type="number" の空欄は jest-dom の toHaveValue では null になる。
