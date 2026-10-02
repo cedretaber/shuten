@@ -19,7 +19,7 @@
  *   `ApiRequestError` 以外の例外は既定の文に落ちる。
  */
 
-import type { ProgressDto, RunDto, RunUnitsDto } from "@shuten/shared";
+import type { ProgressDto, RunDto, RunUnitsDto, UnitStatusCounts } from "@shuten/shared";
 import { ApiRequestError } from "../../api/errors.ts";
 
 /**
@@ -145,15 +145,21 @@ export function statusNotice(run: RunDto, progress?: ProgressDto): string | null
     if (progress === undefined) {
       return "停止中です。未処理の範囲が残っている可能性があります。";
     }
-    return remainingUnits(progress) > 0 ? "停止中です。未処理の範囲があります。" : "停止中です。";
+    if (unfinished(progress.checkUnits) > 0) {
+      return "停止中です。未処理の範囲があります。";
+    }
+    // 検査は済んでいて再確認だけが残っているときは、原稿の範囲は処理済みなので「範囲」とは書かない。
+    if (unfinished(progress.recheckUnits) > 0) {
+      return "停止中です。再確認が済んでいない指摘があります。";
+    }
+    return "停止中です。";
   }
   return null;
 }
 
-/** 検査・再確認のうち、完了も対象外もしていない単位（未処理・処理中・失敗）の数。 */
-function remainingUnits(progress: ProgressDto): number {
-  const of = (c: ProgressDto["checkUnits"]) => c.pending + c.running + c.failed;
-  return of(progress.checkUnits) + of(progress.recheckUnits);
+/** 完了も対象外もしていない単位（未処理・処理中・失敗）の数。 */
+function unfinished(counts: UnitStatusCounts): number {
+  return counts.pending + counts.running + counts.failed;
 }
 
 /** 決定 8：操作の失敗を案内文に写す。追加で出すリンク（`"home"` = 新しい検査、`"settings"` = 接続設定）。 */
