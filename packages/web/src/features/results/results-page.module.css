@@ -373,7 +373,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   min-width: 0;
 }
 
@@ -384,7 +384,8 @@
   width: 100%;
   min-width: 0;
   text-align: left;
-  padding: var(--space-xs) var(--space-sm);
+  /* クリックする行なので、内側を広めに取る（PR14c）。 */
+  padding: var(--space-sm) var(--space-smd);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background-color: var(--color-bg);
@@ -463,7 +464,9 @@
 .detail {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  /* 余白は近接の原則で付ける（PR14c）。見出しと中身の間（.detail section の xs）より、
+     区画どうしの間（ここと .member の smd）を広くして、まとまりが分かるようにする。 */
+  gap: var(--space-smd);
   min-width: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -492,8 +495,13 @@
 
 /* 同じ範囲の指摘のまとめ（PR14b）。指摘ごとの区画を線で区切る。案の見出し（h4）は、
    `.detail h3, .detail h4` より詳細度を上げて通常の文字の大きさ・色にする。 */
+/* 指摘 1 件ぶんの区画（修正案・採否・理由…）を並べる入れ物。区画どうしの間を広く取る。 */
+.detail .member {
+  gap: var(--space-smd);
+}
+
 .groupMember {
-  padding-top: var(--space-sm);
+  padding-top: var(--space-smd);
   border-top: 1px dashed var(--color-border);
 }
 

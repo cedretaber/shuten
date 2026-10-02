@@ -25,6 +25,8 @@
   /* 余白 */
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
+  /* sm と md の間。詳細欄の区画の間など、高さに限りがある所で使う */
+  --space-smd: 0.75rem;
   --space-md: 1rem;
   --space-lg: 1.5rem;
   --space-xl: 2rem;

@@ -185,7 +185,7 @@ export function FindingDetail(props: FindingDetailProps) {
           // 書きかけを作り直さないため）。見出しの有無と階層だけを変える。
           <section
             key={member.finding.id}
-            className={grouped ? styles.groupMember : undefined}
+            className={grouped ? `${styles.member} ${styles.groupMember}` : styles.member}
             aria-label={grouped ? label : undefined}
           >
             {grouped ? <h3 className={styles.groupMemberHeading}>{label}</h3> : null}
