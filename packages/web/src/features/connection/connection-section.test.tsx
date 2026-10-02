@@ -11,6 +11,7 @@ import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { ConnectionProvider } from "../../app/connection-context.tsx";
+import controls from "../../styles/controls.module.css";
 import { ConnectionSection } from "./connection-section.tsx";
 
 /**
@@ -90,6 +91,16 @@ async function waitForLoaded() {
 }
 
 describe("ConnectionSection", () => {
+  it("PR14c: 「保存」は主な操作のボタン、URL の入力欄は共通の入力欄", async () => {
+    renderPage(makeClient());
+    await waitForLoaded();
+
+    expect(screen.getByRole("button", { name: "保存" }).className).toContain(
+      controls.primaryButton,
+    );
+    expect(screen.getByLabelText("接続先 URL").className).toContain(controls.input);
+  });
+
   it("W5-1: API キー欄を空のまま保存すると、要求に apiKey を含めない（維持）", async () => {
     const putConnection = vi.fn((_body: PutConnectionRequest) =>
       Promise.resolve(makeSettings({ hasApiKey: true })),

@@ -10,13 +10,6 @@
   padding: var(--space-lg);
 }
 
-.error {
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius);
-}
-
 .runList {
   list-style: none;
   margin: 0;

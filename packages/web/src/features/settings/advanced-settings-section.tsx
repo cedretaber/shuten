@@ -19,6 +19,7 @@
 import type { ReasoningEffort } from "@shuten/shared";
 import { type ChangeEvent, useEffect, useState } from "react";
 import { readAdvancedRunSettings, writeAdvancedRunSettings } from "../../storage/run-settings.ts";
+import controls from "../../styles/controls.module.css";
 import { REASONING_EFFORT_LABELS, REASONING_EFFORTS } from "./advanced-settings-description.ts";
 import styles from "./settings.module.css";
 import {
@@ -87,7 +88,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-max-tokens"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={1}
           value={maxTokens}
@@ -101,7 +102,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-temperature"
-          className={styles.input}
+          className={controls.input}
           type="number"
           step="any"
           value={temperature}
@@ -115,7 +116,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-seed"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={0}
           value={seedInput}
@@ -129,7 +130,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <select
           id="settings-reasoning-effort"
-          className={styles.select}
+          className={controls.input}
           value={reasoningEffort}
           onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
         >
@@ -147,7 +148,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-rounding-tolerance"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={0}
           max={99}
@@ -162,7 +163,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-max-input-graphemes"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={1}
           value={maxInputGraphemes}
@@ -176,7 +177,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-check-seconds"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={1}
           max={MAX_TIMEOUT_SECONDS}
@@ -191,7 +192,7 @@ export function AdvancedSettingsSection(): React.JSX.Element {
         </label>
         <input
           id="settings-recheck-seconds"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={1}
           max={MAX_TIMEOUT_SECONDS}

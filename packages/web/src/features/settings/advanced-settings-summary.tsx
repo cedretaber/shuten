@@ -12,6 +12,7 @@
 import { Link } from "react-router";
 import { ROUTES } from "../../app/routes.ts";
 import type { AdvancedRunSettings } from "../../storage/run-settings.ts";
+import controls from "../../styles/controls.module.css";
 import { type AdvancedChange, describeAdvancedChanges } from "./advanced-settings-description.ts";
 import styles from "./settings.module.css";
 
@@ -48,7 +49,7 @@ export function AdvancedSettingsSummary(props: AdvancedSettingsSummaryProps): Re
         <Link to={ROUTES.settings}>設定を開く</Link>
         <button
           type="button"
-          className={styles.advancedResetButton}
+          className={controls.secondaryButton}
           onClick={onReset}
           disabled={changes.length === 0}
         >

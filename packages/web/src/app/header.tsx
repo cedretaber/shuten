@@ -8,6 +8,7 @@
 
 import { Link } from "react-router";
 import { formatTime } from "../features/results/format-date-time.ts";
+import controls from "../styles/controls.module.css";
 import { useConnection } from "./connection-context.tsx";
 import styles from "./header.module.css";
 import { ROUTES } from "./routes.ts";
@@ -46,10 +47,10 @@ export function Header() {
         <span>{connectionStatusLabel(connection)}</span>
         <span>選択モデル：{connection.selectedModelId ?? "未選択"}</span>
         <span>最後に確認：{formatCheckedAt(connection.checkedAt)}</span>
-        {connection.error !== null && <span className={styles.error}>{connection.error}</span>}
+        {connection.error !== null && <span className={controls.errorBox}>{connection.error}</span>}
         <button
           type="button"
-          className={styles.recheckButton}
+          className={controls.secondaryButton}
           onClick={handleRecheck}
           disabled={connection.checking}
         >

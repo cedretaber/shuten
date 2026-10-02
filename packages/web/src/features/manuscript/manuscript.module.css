@@ -47,17 +47,8 @@
   color: var(--color-fg-muted);
 }
 
-.input,
-.textarea {
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  font-size: var(--font-size-md);
-  color: var(--color-fg);
-  background-color: var(--color-bg);
-}
-
-.textarea {
+/* 共通の入力欄（controls.input の font: inherit）より後に効かせるため、要素名を足して詳細度を上げる。 */
+textarea.textarea {
   min-height: 12rem;
   resize: vertical;
   font-family: monospace;
@@ -70,25 +61,6 @@
 
 .confirmButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent-line);
-  border-radius: var(--radius);
-  background-color: var(--color-accent);
-  color: var(--color-bg);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.confirmButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.error {
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius);
 }
 
 .summary {
@@ -143,11 +115,4 @@
 
 .resetButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background-color: var(--color-bg);
-  color: var(--color-fg);
-  font-size: var(--font-size-md);
-  cursor: pointer;
 }

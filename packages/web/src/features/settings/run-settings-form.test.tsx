@@ -34,6 +34,7 @@ import {
   ADVANCED_RUN_SETTINGS_DEFAULTS,
   writeAdvancedRunSettings,
 } from "../../storage/run-settings.ts";
+import controls from "../../styles/controls.module.css";
 import { RunSettingsForm } from "./run-settings-form.tsx";
 import type { StartRunApi } from "./use-start-run.ts";
 import { useStartRun } from "./use-start-run.ts";
@@ -232,6 +233,26 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
 });
 
 describe("RunSettingsForm: 失敗時の設定画面へのリンク（決定 8。S6-3）", () => {
+  it("PR14c: 「検査を開始する」は主な操作のボタン、開始の失敗はエラーの枠で出る", () => {
+    render(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId="model-a"
+          restoring={false}
+          startApi={makeStartApi({
+            outcome: { kind: "failed", message: "設定を見直してください", hint: "none" },
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", { name: "検査を開始する" }).className).toContain(
+      controls.primaryButton,
+    );
+    expect(screen.getByRole("alert").className).toContain(controls.errorBox);
+  });
+
   it("S6-3: hint が settings のときだけ、エラーの下に設定画面へのリンクが出る", () => {
     const { rerender } = render(
       <MemoryRouter>

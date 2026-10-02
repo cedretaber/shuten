@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { ROUTES, runPath } from "../../app/routes.ts";
+import controls from "../../styles/controls.module.css";
 import { formatDateTime } from "../results/format-date-time.ts";
 import { RUN_STATUS_LABELS } from "../results/labels.ts";
 import styles from "./run-list.module.css";
@@ -76,7 +77,7 @@ export function RunListPage() {
 
       {state.kind === "loading" && <p>読み込み中…</p>}
 
-      {state.kind === "error" && <p className={styles.error}>{state.message}</p>}
+      {state.kind === "error" && <p className={controls.errorBox}>{state.message}</p>}
 
       {state.kind === "loaded" &&
         (state.runs.length === 0 ? (

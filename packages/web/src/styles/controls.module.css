@@ -1,0 +1,74 @@
+/**
+ * 全画面で共通の部品の見た目（UI の見直し 3 節、PR14c）。各画面の TSX が直接 import して使う。
+ * feature の CSS Modules には配置（余白・並び・幅）だけを置き、色・枠・角丸はここに 1 回だけ書く。
+ * `composes` は使わない（Vitest は CSS を処理しないので、テストと本番でクラス名が変わる）。
+ */
+
+/* 主な操作（検査を開始する、確定、保存など）：朱の塗り。 */
+.primaryButton {
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius);
+  background-color: var(--color-accent);
+  color: var(--color-bg);
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* それ以外の操作：枠だけ。 */
+.secondaryButton {
+  padding: var(--space-xs) var(--space-lg);
+  border: 1px solid var(--color-accent-line);
+  border-radius: var(--radius);
+  background-color: var(--color-bg);
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 入力欄（1 行・複数行・選択）。 */
+.input {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font: inherit;
+}
+
+.input:focus {
+  border-color: var(--color-accent-line);
+}
+
+.input:disabled {
+  background-color: var(--color-bg-muted);
+  cursor: not-allowed;
+}
+
+/* エラー：色だけで見分けず、枠で囲み、先頭に「エラー」と出す。文言は DOM に足さない
+   （各画面の文言を変えないため。読み上げでも ::before の文字は読まれる）。 */
+.errorBox {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius);
+  background-color: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+
+.errorBox::before {
+  content: "エラー";
+  margin-right: var(--space-sm);
+  font-weight: bold;
+}
+
+/* 指摘やモデルの状態を伝える短い注記：臙脂の文字だけ。文言で意味が分かるので枠は付けない。 */
+.dangerNote {
+  color: var(--color-danger);
+}

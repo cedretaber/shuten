@@ -22,6 +22,7 @@ import { type SubmitEvent, useEffect, useRef, useState } from "react";
 import { useApiClient } from "../../api/context.tsx";
 import { ApiRequestError } from "../../api/errors.ts";
 import { useConnection } from "../../app/connection-context.tsx";
+import controls from "../../styles/controls.module.css";
 import styles from "./connection.module.css";
 
 function errorMessageFrom(cause: unknown): string {
@@ -124,7 +125,7 @@ export function ConnectionSection() {
         「保存」を押した時点でサーバーへ反映します。検査の実行中は変更できません。
       </p>
 
-      {loadError !== null && <p className={styles.error}>{loadError}</p>}
+      {loadError !== null && <p className={controls.errorBox}>{loadError}</p>}
 
       <form onSubmit={handleSubmit}>
         <div className={styles.field}>
@@ -133,7 +134,7 @@ export function ConnectionSection() {
           </label>
           <input
             id="connection-url"
-            className={styles.input}
+            className={controls.input}
             type="text"
             value={endpointUrl}
             onChange={(event) => {
@@ -150,7 +151,7 @@ export function ConnectionSection() {
           </label>
           <input
             id="connection-api-key"
-            className={styles.input}
+            className={controls.input}
             type="password"
             value={apiKeyInput}
             disabled={clearApiKey}
@@ -169,11 +170,15 @@ export function ConnectionSection() {
           </label>
         </div>
 
-        <button type="submit" className={styles.saveButton} disabled={saving}>
+        <button
+          type="submit"
+          className={`${controls.primaryButton} ${styles.saveButton}`}
+          disabled={saving}
+        >
           保存
         </button>
 
-        {saveError !== null && <p className={styles.error}>{saveError}</p>}
+        {saveError !== null && <p className={controls.errorBox}>{saveError}</p>}
         {saved && <p className={styles.success}>保存しました</p>}
       </form>
     </section>

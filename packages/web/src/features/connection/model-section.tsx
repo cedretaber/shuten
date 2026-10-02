@@ -9,6 +9,7 @@
 
 import { isGenerationCapable, type ModelInfoDto } from "@shuten/shared";
 import { useConnection } from "../../app/connection-context.tsx";
+import controls from "../../styles/controls.module.css";
 import styles from "./connection.module.css";
 
 /** モデル一覧の選択肢に出すのは `llm` / `vlm` だけ（決定 9）。`embeddings` と `null` は出さない。 */
@@ -51,7 +52,7 @@ export function ModelSection() {
                 {model.id}
               </label>
               {!isGenerationCapable(model) && (
-                <p className={styles.modelNote}>
+                <p className={`${controls.dangerNote} ${styles.modelNote}`}>
                   LM Studio でロードしてください（現在の状態：
                   {modelStateLabel(model.state)}）。ロードするまで検査を開始できません。
                 </p>

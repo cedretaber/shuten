@@ -44,6 +44,7 @@ import {
   resetAdvancedRunSettings,
   writeBasicRunSettings,
 } from "../../storage/run-settings.ts";
+import controls from "../../styles/controls.module.css";
 import { AdvancedSettingsSummary } from "./advanced-settings-summary.tsx";
 import styles from "./settings.module.css";
 import type { StartRunApi } from "./use-start-run.ts";
@@ -209,7 +210,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
         </label>
         <input
           id="settings-target-graphemes"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={1}
           value={targetGraphemes}
@@ -223,7 +224,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
         </label>
         <input
           id="settings-context-graphemes"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={0}
           value={contextGraphemes}
@@ -247,7 +248,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
         </label>
         <input
           id="settings-recheck-context-graphemes"
-          className={styles.input}
+          className={controls.input}
           type="number"
           min={0}
           value={recheckContextGraphemes}
@@ -261,7 +262,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
         </label>
         <textarea
           id="settings-allowed-words"
-          className={styles.textarea}
+          className={`${controls.input} ${styles.textarea}`}
           value={allowedWordsRaw}
           onChange={(event) => handleAllowedWordsChange(event.target.value)}
           disabled={manuscriptVersionId === null}
@@ -284,7 +285,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
 
       <button
         type="button"
-        className={styles.startButton}
+        className={`${controls.primaryButton} ${styles.startButton}`}
         disabled={startDisabled}
         onClick={handleStart}
       >
@@ -292,7 +293,7 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
       </button>
 
       {startApi.outcome.kind === "failed" && (
-        <div role="alert" className={styles.error}>
+        <div role="alert" className={`${controls.errorBox} ${styles.error}`}>
           <p>{startApi.outcome.message}</p>
           {startApi.outcome.hint === "settings" && (
             <p>
@@ -308,11 +309,11 @@ export function RunSettingsForm(props: RunSettingsFormProps): React.JSX.Element 
         ものになるが、再送できるのは前回の（結果不明のままの）開始操作である。
       */}
       {startApi.canRetry && startApi.outcome.kind !== "sending" && (
-        <div role="alert" className={styles.retryNotice}>
+        <div role="alert" className={`${controls.errorBox} ${styles.retryNotice}`}>
           <p>前回の開始操作は結果が不明のままです。同じ内容で再送できます。</p>
           <button
             type="button"
-            className={styles.retryButton}
+            className={`${controls.primaryButton} ${styles.retryButton}`}
             onClick={() => {
               void startApi.retry();
             }}
