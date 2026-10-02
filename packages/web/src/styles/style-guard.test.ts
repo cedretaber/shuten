@@ -61,7 +61,7 @@ describe("色の変数のコントラスト比", () => {
     ["--color-fg-muted", "--color-bg-muted", 4.5],
     ["--color-accent-line", "--color-bg", 3],
     ["--color-accent-line", "--color-bg-muted", 3],
-    // 選択中の下線と枠は accent で描く。
+    // 選択中の下線と枠、選択中の行のフォーカスの枠は accent で描く。
     ["--color-accent", "--color-accent-bg", 3],
     ["--color-notice-border", "--color-notice-bg", 3],
   ] as const)("%s on %s ≥ %d", (fg, bg, min) => {

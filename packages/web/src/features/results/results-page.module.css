@@ -410,6 +410,12 @@
   box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
+/* 選択中の行の濃い地の上では、フォーカスの枠の朱の線（accent-line）の比が 3 を割るので、
+   選択の枠と同じ accent で描く（PR #37 のレビュー）。 */
+.findingRowSelected:focus-visible {
+  outline-color: var(--color-accent);
+}
+
 .findingMeta {
   display: flex;
   flex-wrap: wrap;
