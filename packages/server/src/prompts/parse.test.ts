@@ -123,6 +123,21 @@ describe("parseCheckResponse", () => {
     expectMalformed(() => parseCheckResponse(result));
   });
 
+  it("P17: JSON の文字列の中にある <think> などの引用は、そのまま残る（仕様 11 節）", () => {
+    // 本文に `<think>` が書かれていれば、引用・前後文脈・修正案にもそのまま現れる。
+    // 応答から思考のタグを剥がす処理をしないので、文字列の中身を変えてはならない。
+    const finding = {
+      ...VALID_FINDING,
+      quote: "<think>考え中</think>",
+      before: "彼は「",
+      after: "」と書いた",
+      reason: "タグ <think> の閉じ忘れ </think>",
+      suggestion: "<think>考えちゅう</think>",
+    };
+    const result = makeResult(JSON.stringify({ findings: [finding] }));
+    expect(parseCheckResponse(result)).toEqual({ findings: [finding] });
+  });
+
   it("P10: 例外に usage・finishReason・raw が載り、status が null", () => {
     const result = makeResult("{not json", {
       usage: VALID_USAGE,
