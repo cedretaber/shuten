@@ -466,6 +466,29 @@
   color: var(--color-fg);
 }
 
+/* 引用と「n 案」の印を 1 行に並べる（PR14b）。引用は残りの幅で省略表示する。 */
+.findingQuoteLine {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  width: 100%;
+  min-width: 0;
+}
+
+.findingQuoteLine .findingQuote {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.findingGroupCount {
+  flex: none;
+  padding: 0 var(--space-xs);
+  border: 1px solid var(--color-accent);
+  border-radius: 999px;
+  font-size: var(--font-size-sm);
+  color: var(--color-accent);
+}
+
 /*
  * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.detailPane` の中に置く。
  * 引用・修正案・理由・判断メモは `.findingQuote` と違い**折り返して全文を表示する**
@@ -490,7 +513,8 @@
   gap: var(--space-xs);
 }
 
-.detail h3 {
+.detail h3,
+.detail h4 {
   margin: 0;
   font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
@@ -499,6 +523,23 @@
 .detail p,
 .detail ul {
   margin: 0;
+}
+
+/* 同じ範囲の指摘のまとめ（PR14b）。指摘ごとの区画を線で区切る。案の見出し（h4）は、
+   `.detail h3, .detail h4` より詳細度を上げて通常の文字の大きさ・色にする。 */
+.groupMember {
+  padding-top: var(--space-sm);
+  border-top: 1px dashed var(--color-border);
+}
+
+.detail .groupMemberHeading {
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+.hiddenSameRange {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
 }
 
 .judgmentControl fieldset {

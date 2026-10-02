@@ -15,39 +15,43 @@
  * どちらも書記素境界ではなく、結合文字・異体字セレクタ・ZWJ の絵文字を途中で割りうる。
  * 書記素境界を計算する道（`Intl.Segmenter`）はこのリポジトリでは閉じているので、
  * 「切らない」のが唯一の整合した解になる。
+ *
+ * PR14b：同じ範囲の指摘は 1 つの「まとめ」（`finding-group.ts`）として 1 行で描く。行と選択は
+ * まとめの先頭の ID で表し、引用の横に「n 案」を添える。分類・採否・再確認状態は、まとめの中で
+ * 違えば要約して並べる。
  */
 
-import type { FindingDto } from "@shuten/shared";
-import { RECHECK_STATE_LABELS, recheckStateOf } from "./finding-filter.ts";
+import type { FindingGroup } from "./finding-group.ts";
 import {
-  FINDING_CATEGORY_LABELS,
-  FINDING_LOCATE_STATUS_LABELS,
-  JUDGMENT_STATUS_LABELS,
-} from "./labels.ts";
+  summarizeCategories,
+  summarizeJudgments,
+  summarizeRecheckStates,
+} from "./finding-group.ts";
+import { FINDING_LOCATE_STATUS_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
 
 export interface FindingListProps {
-  /** 絞り込み後、一覧に出す指摘（呼び出し側が渡した順のまま描く）。 */
-  readonly findings: readonly FindingDto[];
-  /** 選択中の指摘 ID。無ければ null。 */
+  /** 絞り込み後の指摘を同じ範囲ごとにまとめたもの（呼び出し側が渡した順のまま描く）。 */
+  readonly groups: readonly FindingGroup[];
+  /** 選択中の指摘 ID（まとめの先頭の ID）。無ければ null。 */
   readonly selectedFindingId: string | null;
   readonly onSelectFinding: (findingId: string) => void;
 }
 
 export function FindingList(props: FindingListProps) {
-  const { findings, selectedFindingId, onSelectFinding } = props;
+  const { groups, selectedFindingId, onSelectFinding } = props;
 
-  if (findings.length === 0) {
+  if (groups.length === 0) {
     return <p>絞り込みに一致する指摘はありません</p>;
   }
 
   return (
     <ul className={styles.findingList}>
-      {findings.map((finding) => (
+      {groups.map((group) => (
         <FindingListItem
-          key={finding.id}
-          finding={finding}
-          selected={finding.id === selectedFindingId}
+          key={group.head.id}
+          group={group}
+          selected={group.head.id === selectedFindingId}
           onSelectFinding={onSelectFinding}
         />
       ))}
@@ -56,34 +60,40 @@ export function FindingList(props: FindingListProps) {
 }
 
 function FindingListItem(props: {
-  readonly finding: FindingDto;
+  readonly group: FindingGroup;
   readonly selected: boolean;
   readonly onSelectFinding: (findingId: string) => void;
 }) {
-  const { finding, selected, onSelectFinding } = props;
+  const { group, selected, onSelectFinding } = props;
+  const { head, members } = group;
   const rowClassName = selected
     ? `${styles.findingRow} ${styles.findingRowSelected}`
     : styles.findingRow;
 
   return (
-    <li data-finding-id={finding.id}>
+    <li data-finding-id={head.id}>
       <button
         type="button"
         className={rowClassName}
         aria-current={selected ? "true" : undefined}
-        onClick={() => onSelectFinding(finding.id)}
+        onClick={() => onSelectFinding(head.id)}
       >
         <span className={styles.findingMeta}>
-          <span>{FINDING_CATEGORY_LABELS[finding.category]}</span>
-          <span>{JUDGMENT_STATUS_LABELS[finding.judgment.status]}</span>
-          <span>{RECHECK_STATE_LABELS[recheckStateOf(finding)]}</span>
-          {finding.locateStatus !== "located" && (
+          <span>{summarizeCategories(members)}</span>
+          <span>{summarizeJudgments(members)}</span>
+          <span>{summarizeRecheckStates(members)}</span>
+          {head.locateStatus !== "located" && (
             <span className={styles.findingLocateFailure}>
-              {FINDING_LOCATE_STATUS_LABELS[finding.locateStatus]}
+              {FINDING_LOCATE_STATUS_LABELS[head.locateStatus]}
             </span>
           )}
         </span>
-        <span className={styles.findingQuote}>{finding.quote}</span>
+        <span className={styles.findingQuoteLine}>
+          <span className={styles.findingQuote}>{head.quote}</span>
+          {members.length > 1 && (
+            <span className={styles.findingGroupCount}>{members.length} 案</span>
+          )}
+        </span>
       </button>
     </li>
   );

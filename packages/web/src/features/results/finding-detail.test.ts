@@ -1,13 +1,12 @@
 /**
  * 指摘詳細の表示規則（`finding-detail.ts`）の純関数テスト（Task 7、R4）。
  *
- * `describeRecheck` は決定 12 の表の 5 行を 1 件ずつ検査する。`relatedFindings` は決定 8 の
- * 2 群（同じ範囲・重なるが一致しない）と、隣接するだけの範囲がどちらにも入らないことを検査する。
+ * `describeRecheck` は決定 12 の表の 5 行を 1 件ずつ検査する。
  */
 
 import type { FindingDto } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
-import { describeRecheck, relatedFindings } from "./finding-detail.ts";
+import { describeRecheck } from "./finding-detail.ts";
 
 function makeFinding(overrides: Partial<FindingDto> = {}): FindingDto {
   return {
@@ -199,58 +198,5 @@ describe("describeRecheck: suggestionUsable（決定 12）", () => {
     });
 
     expect(describeRecheck(finding).suggestionUsable).toBe(true);
-  });
-});
-
-describe("relatedFindings: 決定 8 の 2 群", () => {
-  it("range.start と range.end が完全一致するものは sameRange、自分自身は含めない", () => {
-    const selected = makeFinding({ id: "selected", range: { start: 0, end: 10 } });
-    const same = makeFinding({ id: "same", range: { start: 0, end: 10 } });
-    const other = makeFinding({ id: "other", range: { start: 20, end: 30 } });
-
-    const result = relatedFindings(selected, [selected, same, other]);
-
-    expect(result.sameRange.map((f) => f.id)).toEqual(["same"]);
-    expect(result.overlapping.map((f) => f.id)).toEqual([]);
-  });
-
-  it("重なるが一致しないものは overlapping（[0,10) と [9,20)）", () => {
-    const selected = makeFinding({ id: "selected", range: { start: 0, end: 10 } });
-    const overlapping = makeFinding({ id: "overlapping", range: { start: 9, end: 20 } });
-
-    const result = relatedFindings(selected, [selected, overlapping]);
-
-    expect(result.sameRange.map((f) => f.id)).toEqual([]);
-    expect(result.overlapping.map((f) => f.id)).toEqual(["overlapping"]);
-  });
-
-  it("隣接するだけ（[0,10) と [10,20)）はどちらにも入らない", () => {
-    const selected = makeFinding({ id: "selected", range: { start: 0, end: 10 } });
-    const adjacent = makeFinding({ id: "adjacent", range: { start: 10, end: 20 } });
-
-    const result = relatedFindings(selected, [selected, adjacent]);
-
-    expect(result.sameRange.map((f) => f.id)).toEqual([]);
-    expect(result.overlapping.map((f) => f.id)).toEqual([]);
-  });
-
-  it("選択中の指摘が位置未確定（range === null）のとき、どちらも空", () => {
-    const selected = makeFinding({ id: "selected", range: null, locateStatus: "not-found" });
-    const other = makeFinding({ id: "other", range: { start: 0, end: 10 } });
-
-    const result = relatedFindings(selected, [selected, other]);
-
-    expect(result.sameRange).toEqual([]);
-    expect(result.overlapping).toEqual([]);
-  });
-
-  it("visible 側が位置未確定（range === null）の要素は比較対象から除く", () => {
-    const selected = makeFinding({ id: "selected", range: { start: 0, end: 10 } });
-    const unlocated = makeFinding({ id: "unlocated", range: null, locateStatus: "not-found" });
-
-    const result = relatedFindings(selected, [selected, unlocated]);
-
-    expect(result.sameRange).toEqual([]);
-    expect(result.overlapping).toEqual([]);
   });
 });

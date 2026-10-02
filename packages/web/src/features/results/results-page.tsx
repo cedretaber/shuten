@@ -26,8 +26,13 @@
  * 絞り込みの状態（`filter`）はこのコンポーネントのローカル状態で、URL にも `localStorage` にも
  * 保存しない。選択中の指摘が可視集合（`visible` = 絞り込み後に一覧へ出ている指摘）から消えたら
  * 選択を `null` に戻す——絞り込みの変更・採否の保存・データの再取得（更新ボタン）のどの経路でも
- * 起こりうるため、個別の経路ごとに解除処理を持たず `[visible, selectedFindingId]` を見る 1 つの
- * `useEffect` に一本化する（最終レビュー Important 2）。
+ * 起こりうるため、個別の経路ごとに解除処理を持たず、まとめを見て選択を決め直す
+ * `effectiveSelectedId`（`nextSelection`）に一本化する（最終レビュー Important 2）。
+ *
+ * PR14b：一覧は、同じ範囲の指摘を 1 行にまとめた「まとめ」（`finding-group.ts`）で描く。選択は
+ * まとめの先頭の ID にそろえる（本文の強調から別の指摘を選んでも先頭になる）。選択中の指摘が
+ * 絞り込みから外れても、同じ範囲で表示中の指摘が残っていれば選択をそちらへ引き継ぎ、残って
+ * いなければ今までどおり外す。引き継ぎ先は描画の中で `effectiveSelectedId` として求める。
  *
  * 更新（再取得）の失敗（最終レビュー Important 1）：取り直し（`performRefresh`）が失敗しても、
  * 表示中の `loaded` の内容（本文・一覧・詳細・選択）はそのまま残し、`refreshError` にエラーを
@@ -46,21 +51,23 @@
  * （`error.message` は画面に出さない）。`slowUnitIds`（決定 10）を実際に埋めるのは
  * Task 8 の `generation-slow`（下記「自動更新」節）。
  *
- * 指摘詳細（Task 7、決定 3・9・12）：選択中の指摘 ID が変わるたびに `getFinding` を 1 回呼ぶ
- * （キャッシュしない。持ち越し「詳細をキャッシュしない」のとおり）。専用の世代番号
- * （`detailGenerationRef`）で古い応答を捨てる——`requestGenerationRef`（4 つの取得）とは別の
- * カウンタにする。選択を解除しても・別の指摘を選び直しても本編の再取得は要らないため。
- * 取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲（引用・理由・判定など）は
- * 描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする（`FindingDetail` の責務）。
+ * 指摘詳細（Task 7、決定 3・9・12。PR14b で `useFindingDetails` に移した）：選択中のまとめの
+ * 指摘ごとに `getFinding` を 1 回ずつ呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」の
+ * とおり）。取得の世代管理と、選び直しのときに値を捨てるかどうかは `use-finding-details.ts` が
+ * 持つ（`requestGenerationRef`（4 つの取得）とは別の仕組み。選択を解除しても・別の指摘を選び直しても
+ * 本編の再取得は要らないため）。取得中・取得失敗の間も、`finding`（一覧が持つ情報）から分かる範囲
+ * （引用・理由・判定など）は描き続け、元候補・位置診断の欄だけを「読み込み中」またはエラーにする
+ * （`FindingDetail` の責務）。
  *
- * **PR21 レビュー指摘 1**：選択中の指摘の詳細（`getFinding`）は、選択が変わったときだけでなく
- * 「最新の状態を取得」が成功したときにも取り直す（同じ指摘が選ばれたままだと `selectedFindingId`
- * 自体は変化しないため、選択変更だけを見る仕組みでは再取得されない。失敗単位の再試行で同じ指摘に
- * 元候補が増える経路があるため、実際に古びる）。取得処理そのものは `fetchDetail` に切り出し、
- * 「選択が変わったとき」と「更新が成功し、選択中の指摘があるとき」の両方から呼ぶ。`fetchDetail`
- * 自身が `detailGenerationRef` を進めるので、古い応答の破棄は従来どおり効く。`performRefresh` から
- * `selectedFindingId` を直接読まない（`filter` と同じ理由で deps に含めていないため、
- * 古い値を読んでしまう）。代わりに毎レンダーで同期するだけの `selectedFindingIdRef` を介す。
+ * **PR21 レビュー指摘 1**：選択中のまとめの詳細（`getFinding`）は、選択が変わったときだけでなく
+ * 「最新の状態を取得」が成功したときにも取り直す（同じまとめが選ばれたままだと選択自体は変化しない
+ * ため、選択変更だけを見る仕組みでは再取得されない。失敗単位の再試行で同じ指摘に元候補が増える
+ * 経路があるため、実際に古びる）。フックの `refresh` を、フックより前に定義する `performRefresh`
+ * から呼ぶので、`refreshDetailsRef` を介す。`performRefresh` から選択を直接読まない
+ * （`filter` と同じ理由で deps に含めていないため、古い値を読んでしまう）。
+ *
+ * **レビュー M-1**：取り直しでは前の値を残す（`null` に戻すと、実行中は `check-finished` /
+ * `target-merged` が届くたびに元候補・位置診断の欄が点滅する）。これもフックの責務。
  *
  * 本文への移動（Task 9、決定 9、仕様 4 の手順 5・5.3）：本文の容器（`.bodyColumn`）に
  * `bodyContainerRef` を持たせ、`navigationTargetOf`（`navigate.ts`）で移動先を決めて
@@ -68,7 +75,7 @@
  * 「一覧の行をクリックしたとき」（`handleSelectFindingFromList`）と「詳細の『本文の該当箇所へ
  * 移動』を押したとき」（`FindingDetail` の `onNavigate`）の 2 経路だけ。本文の強調をクリックして
  * 選んだとき（`handleSelectFinding`、`BodyView` に渡す方）は本文へ移動しない（すでに見えている場所なので
- * 画面を跳ねさせる必要が無い）。代わりに一覧の該当行を見える位置へ送る。詳細内の「関連する他の指摘」の
+ * 画面を跳ねさせる必要が無い）。代わりに一覧の該当行を見える位置へ送る。詳細内の「範囲が重なる他の指摘」の
  * リンク（`FindingDetail` の `onSelectFinding`）も同じ関数で選ぶので、同様に一覧の行を送る。
  * 該当する検査対象が `targets` に無い（`navigationTargetOf` が
  * `null` を返す）ときは `FindingDetail` に `onNavigate` を渡さず、移動の操作子そのものを出さない。
@@ -134,7 +141,6 @@
  */
 
 import type {
-  FindingDetailDto,
   FindingDto,
   JudgmentStatus,
   ManuscriptVersionDto,
@@ -152,7 +158,6 @@ import { ROUTES } from "../../app/routes.ts";
 import { buildBodyView } from "./body-view.ts";
 import { BodyView } from "./body-view.tsx";
 import { FailedUnits } from "./failed-units.tsx";
-import { relatedFindings } from "./finding-detail.ts";
 import { FindingDetail } from "./finding-detail.tsx";
 import type { FindingFilter } from "./finding-filter.ts";
 import {
@@ -162,6 +167,14 @@ import {
   visibleFindings,
 } from "./finding-filter.ts";
 import { FindingFilterControls } from "./finding-filter.tsx";
+import {
+  type FindingGroup,
+  groupContaining,
+  groupFindings,
+  hiddenSameRangeCount,
+  nextSelection,
+  overlappingGroups,
+} from "./finding-group.ts";
 import { FindingList } from "./finding-list.tsx";
 import { RUN_STATUS_LABELS } from "./labels.ts";
 import type { NavigationTarget } from "./navigate.ts";
@@ -175,6 +188,7 @@ import styles from "./results-page.module.css";
 import { type ControlFailure, controlFailureOf, type PendingControlAction } from "./run-control.ts";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
 import { pruneSlowUnitIds } from "./run-progress.ts";
+import { PENDING_DETAIL, useFindingDetails } from "./use-finding-details.ts";
 import type { RefreshKind, StreamConnectionState } from "./use-run-stream.ts";
 import { useRunStream } from "./use-run-stream.ts";
 
@@ -208,6 +222,10 @@ function errorMessageFrom(cause: unknown): string {
 
 /** `state.kind !== "loaded"` の間、`findings` の代わりに使う空配列。毎回同じ参照にする。 */
 const EMPTY_FINDINGS: readonly FindingDto[] = [];
+/** 同じく、まとめ（`groups`）の初期値。 */
+const EMPTY_GROUPS: readonly FindingGroup[] = [];
+/** 選択中のまとめが無いときの、指摘 ID の空配列。 */
+const EMPTY_IDS: readonly string[] = [];
 
 /** 遅延通知（決定 10）の初期値・リセット値。参照を固定して無駄な再描画を作らない。 */
 const EMPTY_SLOW_UNIT_IDS: ReadonlySet<string> = new Set();
@@ -304,13 +322,14 @@ export function ResultsPage() {
   const [filter, setFilter] = useState<FindingFilter>(DEFAULT_FINDING_FILTER);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
 
-  // 取り直し（`performRefresh`）の成功コールバックから「今選ばれている指摘」を読むための ref
-  // （PR21 レビュー指摘 1）。`performRefresh` の deps に `selectedFindingId` を含めたくない
-  // （`filter` と同じ理由——選択のたびに作り直したくない）ため、レンダーのたびに素直に同期する
-  // だけの ref で渡す（`useEffect` を挟まない。値を読むのは非同期コールバックの中だけなので、
-  // コミット前のタイミングでも実害は無い）。
-  const selectedFindingIdRef = useRef<string | null>(selectedFindingId);
-  selectedFindingIdRef.current = selectedFindingId;
+  // 選択中のまとめの詳細を取り直す関数（`useFindingDetails` の `refresh`）。フックは `groups` を
+  // 作った後で呼ぶので、それより前に定義する `performRefresh` からは ref で呼ぶ。
+  const refreshDetailsRef = useRef<() => void>(() => {});
+
+  // 今のまとめ（PR14b）。選択のハンドラーが「選んだ指摘を含むまとめの先頭」を引くために読む。
+  // ハンドラーの参照を安定させたまま最新の値を読めるよう、毎レンダーで同期するだけの ref にする
+  // （`refreshDetailsRef` と同じ作法）。値は下で `groups` を作った直後に入れる。
+  const groupsRef = useRef<readonly FindingGroup[]>(EMPTY_GROUPS);
 
   // 同一コンポーネントインスタンスのまま id が変わる（別の実行への直リンク遷移）ことがある。
   // 古い要求の応答が後から届いて新しい要求の結果を上書きしないよう、要求ごとに世代を数える。
@@ -352,41 +371,10 @@ export function ResultsPage() {
     clearControlFailureRef.current = false;
   }
 
-  // 指摘詳細（Task 7、決定 3・9・12）。選択中の指摘 ID が変わるたびに、または更新が成功した
-  // ときに `getFinding` を 1 回呼ぶ（キャッシュしない。持ち越し「詳細をキャッシュしない」の
-  // とおり）。`requestGenerationRef`（本編の取得）とは別の世代カウンタで、呼び直すたびに世代を
-  // 進めて古い応答を捨てる。`performRefresh` から呼ぶため、それより前に定義する。
-  const [findingDetail, setFindingDetail] = useState<FindingDetailDto | null>(null);
-  const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
-  const detailGenerationRef = useRef(0);
-
-  const fetchDetail = useCallback(
-    (findingId: string, mode: "select" | "refresh") => {
-      const generation = ++detailGenerationRef.current;
-      if (mode === "select") {
-        // 別の指摘を選び直したときは、前の指摘の詳細を出したままにしない（取得中は
-        // 「一覧が持つ情報だけで描く」状態にする。`FindingDetail` 側が `detail === null` を
-        // 「読み込み中」として扱う）。
-        setFindingDetail(null);
-        setFindingDetailError(null);
-      }
-      // レビュー M-1：取り直し（`mode === "refresh"`）では前の値を残す。同じ指摘の詳細を
-      // 取り直しているだけなので、`null` に戻すと実行中は `check-finished` / `target-merged` が
-      // 届くたびに元候補・位置診断の欄が点滅する（自動更新では高頻度で起きる）。
-      invoke(() => apiClient.getFinding(findingId)).then(
-        (detail) => {
-          if (detailGenerationRef.current !== generation) return; // 古い応答
-          setFindingDetail(detail);
-          setFindingDetailError(null);
-        },
-        (cause: unknown) => {
-          if (detailGenerationRef.current !== generation) return;
-          // 詳細の取得失敗は詳細パネルの当該欄にだけエラーを出す（詳細全体を消さない）。
-          // 取り直しの失敗では前の値が残っているので、`FindingDetail` は引き続きそれを描く。
-          setFindingDetailError(errorMessageFrom(cause));
-        },
-      );
-    },
+  // 指摘詳細の取得関数（Task 7、決定 3・9・12）。フックに安定した参照を渡すため、`apiClient` だけに
+  // 依存する `useCallback` にする。世代管理と、値を残すか捨てるかは `useFindingDetails` が持つ。
+  const loadFindingDetail = useCallback(
+    (findingId: string) => invoke(() => apiClient.getFinding(findingId)),
     [apiClient],
   );
 
@@ -548,12 +536,9 @@ export function ResultsPage() {
                   current.kind !== "loaded" ? current : { ...current, findings },
                 );
                 setFindingsFreshness("current");
-                // PR21 レビュー指摘 1：選択中の指摘があれば詳細も取り直す（同じ指摘が選ばれた
-                // ままだと `selectedFindingId` は変化せず、選択変更だけを見る useEffect では
-                // 再取得されない）。`fetchDetail` 自身が世代を進めるので古い応答は捨てられる。
-                if (selectedFindingIdRef.current !== null) {
-                  fetchDetail(selectedFindingIdRef.current, "refresh");
-                }
+                // PR21 レビュー指摘 1：選択中のまとめがあれば、詳細も取り直す（選択が変わらないと
+                // フックは取り直さないため）。フックの `refresh` は下で作るので ref 経由で呼ぶ。
+                refreshDetailsRef.current();
               },
               (cause: unknown) => {
                 if (requestGenerationRef.current !== generation) {
@@ -597,7 +582,7 @@ export function ResultsPage() {
         }
       });
     },
-    [apiClient, id, fetchDetail],
+    [apiClient, id],
   );
 
   /** 門が空になるのを待っている呼び出し元を、その世代ぶんだけ解決する。 */
@@ -816,13 +801,15 @@ export function ResultsPage() {
   // 本文の強調から選んだときは、本文へは移動せず（すでに見えている場所をクリックしたので、画面を
   // 跳ねさせる必要が無い。本文へ移動する経路は `handleSelectFindingFromList` と `FindingDetail` の
   // `onNavigate` の 2 つだけ。Task 9）、一覧の該当行を見える位置へ送る（UI の見直し 1 節）。
-  // 詳細内の「関連する他の指摘」のリンクからも同じ関数で選ぶので、その場合も一覧の行を送る。
+  // 詳細内の「範囲が重なる他の指摘」のリンクからも同じ関数で選ぶので、その場合も一覧の行を送る。
   const handleSelectFinding = useCallback((findingId: string) => {
-    setSelectedFindingId(findingId);
+    // 同じ範囲の指摘はまとめの先頭を選択中とする（UI の見直し 2 節）。
+    const headId = groupContaining(groupsRef.current, findingId)?.head.id ?? findingId;
+    setSelectedFindingId(headId);
     const pane = findingsPaneRef.current;
     if (pane === null) return;
     // 絞り込みで一覧に無い指摘なら行は見つからず、何もしない。
-    const row = findListRow(pane, findingId);
+    const row = findListRow(pane, headId);
     if (row !== null) scrollIntoViewIfPossible(row);
   }, []);
 
@@ -847,9 +834,10 @@ export function ResultsPage() {
   // 選択だけ行い、移動はしない。
   const handleSelectFindingFromList = useCallback(
     (findingId: string) => {
-      setSelectedFindingId(findingId);
+      const headId = groupContaining(groupsRef.current, findingId)?.head.id ?? findingId;
+      setSelectedFindingId(headId);
       if (state.kind !== "loaded") return;
-      const finding = state.findings.find((f) => f.id === findingId);
+      const finding = state.findings.find((f) => f.id === headId);
       if (finding === undefined) return;
       const target = navigationTargetOf(finding, state.targets, state.manuscript.body);
       if (target === null) return;
@@ -858,30 +846,13 @@ export function ResultsPage() {
     [state, scrollToTarget],
   );
 
-  // 絞り込みの変更を反映するだけ。選択中の指摘が新しい絞り込みで可視集合から消えたときの解除は
-  // `[visible, selectedFindingId]` を見る `useEffect`（下）が一本化して受け持つ（最終レビュー
+  // 絞り込みの変更を反映するだけ。選択中の指摘が新しい絞り込みで可視集合から消えたときの
+  // 引き継ぎ・解除は `effectiveSelectedId`（下。`nextSelection`）が一本化して受け持つ（最終レビュー
   // Important 2。以前はここで個別に解除していたが、絞り込み以外の経路（採否の保存・再取得）では
   // 選択が残ってしまう抜け穴があったため、経路を 1 つに集約した）。
   const handleFilterChange = useCallback((next: FindingFilter) => {
     setFilter(next);
   }, []);
-
-  // 選択中の指摘 ID が変わるたびに詳細を取り直す（`fetchDetail` に切り出し済み。上記コメント参照）。
-  useEffect(() => {
-    if (selectedFindingId === null) {
-      setFindingDetail(null);
-      setFindingDetailError(null);
-      return;
-    }
-    fetchDetail(selectedFindingId, "select");
-  }, [selectedFindingId, fetchDetail]);
-
-  // 選ぶ指摘が変わったら、詳細の中のスクロールを先頭に戻す（前の指摘の途中の位置が残らないように）。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `selectedFindingId` の変化だけを合図に走らせる（effect の中では読まない）
-  useEffect(() => {
-    const pane = detailPaneRef.current;
-    if (pane !== null) pane.scrollTop = 0;
-  }, [selectedFindingId]);
 
   // 採否の保存に失敗した指摘の一覧（PR21 レビュー指摘 2）。`findingId` をキーにする——同じ指摘で
   // 保存をやり直せば、成功時にも新しい失敗時にもこのキーが上書き・削除されるので二重に残らない。
@@ -942,33 +913,68 @@ export function ResultsPage() {
   const visible = useMemo(() => visibleFindings(findings, filter), [findings, filter]);
   const highlights = useMemo(() => toHighlights(visible), [visible]);
 
-  // 選択中の指摘が可視集合（`visible`）に無ければ選択を外す（最終レビュー Important 2）。
-  // 絞り込みの変更・採否の保存で条件から外れる・再取得で再確認が確定し既定の絞り込みから
-  // 外れる、の 3 経路すべてがここを通る唯一の解除処理（経路ごとに個別の解除処理を持たない）。
-  // 取得の成功時にここで潰そうとしないこと——`fetchInitial` / `performRefresh` の deps に `filter` が無く、
-  // 古い値を読んでしまう。この `useEffect` はレンダー後の `visible`（常に最新の `filter` で
-  // 計算済み）を見るので、その問題が起きない。
-  useEffect(() => {
-    if (selectedFindingId === null) return;
-    const stillVisible = visible.some((f) => f.id === selectedFindingId);
-    if (!stillVisible) {
-      setSelectedFindingId(null);
-    }
-  }, [visible, selectedFindingId]);
+  // 絞り込みを通った指摘を、同じ範囲ごとにまとめる（PR14b）。一覧はまとめを 1 行で描く。
+  // 件数（「n / m 件」）は今どおり指摘の数で数える（`visible.length`）。
+  const groups = useMemo(() => groupFindings(visible), [visible]);
+  groupsRef.current = groups;
 
-  // 選択中の指摘そのもの（一覧から探す。可視集合から消えていても選択は一瞬残りうるが、上の
-  // `useEffect` が次のレンダーで null に戻す）。
-  const selectedFinding = useMemo(
-    () =>
-      selectedFindingId === null
-        ? null
-        : (findings.find((f) => f.id === selectedFindingId) ?? null),
-    [findings, selectedFindingId],
+  // 選択中の指摘を、今のまとめに合わせて決め直す（最終レビュー Important 2、UI の見直し 2 節）。
+  // 表示中なら、そのまとめの先頭にそろえる。絞り込みから外れても、同じ範囲で表示中の指摘が
+  // 残っていれば、そのまとめの先頭へ移す。残っていなければ選択を外す。絞り込みの変更・採否の
+  // 保存・再取得の 3 経路すべてがここを通る（経路ごとに個別の処理を持たない）。
+  // 画面（一覧・本文・詳細）には、描画の中で求めた `effectiveSelectedId` を使う。state を
+  // `useEffect` で合わせるのを待つと、先頭が外れた直後の 1 回の描画で詳細が閉じ、残った指摘の
+  // 採否・判断メモの書きかけが作り直しで消えるため。
+  const effectiveSelectedId = useMemo(
+    () => nextSelection(selectedFindingId, findings, groups),
+    [selectedFindingId, findings, groups],
   );
-  // 決定 8 の 2 群。「可視の指摘」（絞り込み後に一覧へ出ているもの）から作り、自分自身を除く。
-  const related = useMemo(
-    () => (selectedFinding === null ? null : relatedFindings(selectedFinding, visible)),
-    [selectedFinding, visible],
+  // state も合わせる（絞り込みを戻したときに、引き継いだ先が選ばれたままになるように）。
+  // 取得の成功時にここで潰そうとしないこと——`fetchInitial` / `performRefresh` の deps に
+  // `filter` が無く、古い値を読んでしまう。移った先は表示中のまとめの先頭なので、次の回では
+  // 値が変わらず止まる。
+  useEffect(() => {
+    if (effectiveSelectedId !== selectedFindingId) {
+      setSelectedFindingId(effectiveSelectedId);
+    }
+  }, [effectiveSelectedId, selectedFindingId]);
+
+  // 選択中のまとめ（PR14b）。`effectiveSelectedId` から引くので、先頭が絞り込みから外れた直後の
+  // 描画でも、引き継ぎ先のまとめになる（外れて残りもなければ null）。
+  const selectedGroup = useMemo(
+    () => (effectiveSelectedId === null ? null : groupContaining(groups, effectiveSelectedId)),
+    [groups, effectiveSelectedId],
+  );
+  const selectedFinding = selectedGroup === null ? null : selectedGroup.head;
+  const memberIds = useMemo(
+    () => (selectedGroup === null ? EMPTY_IDS : selectedGroup.members.map((member) => member.id)),
+    [selectedGroup],
+  );
+  const { entries: detailEntries, refresh: refreshDetails } = useFindingDetails(
+    loadFindingDetail,
+    errorMessageFrom,
+    memberIds,
+  );
+  refreshDetailsRef.current = refreshDetails;
+
+  // 別のまとめを選んだら、詳細の中のスクロールを先頭に戻す（前のまとめの途中の位置が残らないように）。
+  // 先頭が絞り込みから外れて同じまとめの中で引き継いだとき・絞り込みを戻して先頭が増えたときは、
+  // メンバーが重なるので戻さない（useFindingDetails の「同じまとめ」と同じ判定）。
+  const previousMemberIdsRef = useRef<readonly string[]>([]);
+  useEffect(() => {
+    const previous = previousMemberIdsRef.current;
+    previousMemberIdsRef.current = memberIds;
+    if (memberIds.some((id) => previous.includes(id))) return;
+    const pane = detailPaneRef.current;
+    if (pane !== null) pane.scrollTop = 0;
+  }, [memberIds]);
+  const overlapping = useMemo(
+    () => (selectedGroup === null ? EMPTY_GROUPS : overlappingGroups(selectedGroup, groups)),
+    [selectedGroup, groups],
+  );
+  const hiddenCount = useMemo(
+    () => (selectedGroup === null ? 0 : hiddenSameRangeCount(selectedGroup, findings)),
+    [selectedGroup, findings],
   );
 
   // 選択中の指摘の移動先（Task 9）。`null` なら `FindingDetail` に `onNavigate` を渡さず、
@@ -1086,7 +1092,7 @@ export function ResultsPage() {
               <div className={styles.bodyColumn} ref={bodyContainerRef}>
                 <BodyView
                   paragraphs={paragraphs}
-                  selectedFindingId={selectedFindingId}
+                  selectedFindingId={effectiveSelectedId}
                   onSelectFinding={handleSelectFinding}
                 />
               </div>
@@ -1094,14 +1100,15 @@ export function ResultsPage() {
                 {/* 詳細は右の列の上に固定する（UI の見直し 1 節）。本文を読みながら強調を選んだとき、
                     一覧の長さに関係なくすぐ見える位置に出すため。長いときはこの中だけでスクロールする。 */}
                 <div className={styles.detailPane} ref={detailPaneRef}>
-                  {selectedFinding !== null && related !== null ? (
+                  {selectedGroup !== null ? (
                     <FindingDetail
-                      finding={selectedFinding}
-                      detail={findingDetail}
-                      detailError={findingDetailError}
+                      members={selectedGroup.members.map((member) => {
+                        const entry = detailEntries.get(member.id) ?? PENDING_DETAIL;
+                        return { finding: member, detail: entry.detail, detailError: entry.error };
+                      })}
+                      hiddenSameRangeCount={hiddenCount}
                       body={state.manuscript.body}
-                      sameRange={related.sameRange}
-                      overlapping={related.overlapping}
+                      overlapping={overlapping}
                       onSelectFinding={handleSelectFinding}
                       // `onNavigate` は省略可（`exactOptionalPropertyTypes` の下では `undefined` を
                       // 明示的に渡すのと「キー自体を省く」のは別物）。移動先が無いときはキーごと省き、
@@ -1119,9 +1126,10 @@ export function ResultsPage() {
                     findings={state.findings}
                     freshness={findingsFreshness}
                     visible={visible}
+                    groups={groups}
                     filter={filter}
                     onFilterChange={handleFilterChange}
-                    selectedFindingId={selectedFindingId}
+                    selectedFindingId={effectiveSelectedId}
                     onSelectFinding={handleSelectFindingFromList}
                   />
                 </div>
@@ -1149,6 +1157,7 @@ function FindingsPanel(props: {
   /** レビュー I-1：一覧が実行の状態に追いついているか。0 件の文言の分岐にだけ効く。 */
   readonly freshness: FindingsFreshness;
   readonly visible: readonly FindingDto[];
+  readonly groups: readonly FindingGroup[];
   readonly filter: FindingFilter;
   readonly onFilterChange: (next: FindingFilter) => void;
   readonly selectedFindingId: string | null;
@@ -1159,6 +1168,7 @@ function FindingsPanel(props: {
     findings,
     freshness,
     visible,
+    groups,
     filter,
     onFilterChange,
     selectedFindingId,
@@ -1202,7 +1212,7 @@ function FindingsPanel(props: {
         <FindingFilterControls filter={filter} onChange={onFilterChange} />
       </details>
       <FindingList
-        findings={visible}
+        groups={groups}
         selectedFindingId={selectedFindingId}
         onSelectFinding={onSelectFinding}
       />

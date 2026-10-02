@@ -11,10 +11,11 @@
  * `finding-list.tsx` の連携。単体の検査は `finding-filter.test.ts`・`finding-list.test.tsx`）が
  * `ResultsPage` に正しく組み込まれていることまでを見る。
  *
- * 指摘詳細（Task 7、決定 3・9・12）の表示規則そのもの（`describeRecheck`・`relatedFindings`・
+ * 指摘詳細（Task 7、決定 3・9・12）の表示規則そのもの（`describeRecheck`・`overlappingGroups`・
  * 決定 9 の `paragraphId` 非表示など）は `finding-detail.test.ts`・`finding-detail.test.tsx` の役割。
- * ここでは選択と `getFinding` の配線（1 回だけ呼ばれること、取得前でも一覧が持つ情報から
- * 引用・理由が出ること、関連する他の指摘のリンクで選択が移ること）だけを見る。
+ * ここでは選択と `getFinding` の配線（まとめた指摘が `useFindingDetails` で 1 件ずつ取られること、
+ * 取得前でも一覧が持つ情報から引用・理由が出ること、範囲が重なる他の指摘のリンクで選択が移ること）
+ * だけを見る。
  *
  * 実行制御（停止・再開・失敗単位の再試行・復旧確認。PR12b Task 5、決定 6・7・8）の配線
  * （操作後に必ず取り直すこと、`pending` の間ボタンが disabled になること、409 の `code` ごとに
@@ -804,37 +805,6 @@ describe("ResultsPage: Task 7 指摘詳細の取得配線", () => {
     // 元候補・位置診断の欄だけが「読み込み中」。
     expect(within(detailPanel).getByText("読み込み中…")).toBeInTheDocument();
   });
-
-  it("他の指摘（同じ範囲）のリンクをクリックすると選択が移り、getFinding がその指摘で呼ばれる", async () => {
-    const user = userEvent.setup();
-    const finding1 = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "あ" });
-    const finding2 = makeFinding({ id: "finding-2", range: { start: 0, end: 1 }, quote: "い" });
-    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
-    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
-    const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
-    const getFinding = vi.fn((findingId: string) =>
-      Promise.resolve(makeFindingDetail({ id: findingId })),
-    );
-    const client = makeClient({ getRun, getManuscript, getFindings, getFinding });
-
-    renderPage(client);
-
-    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
-    const rows = document.querySelectorAll(`.${findingListStyles.findingRow}`);
-    await user.click(rows[0] as HTMLElement);
-
-    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
-    // finding-1 と finding-2 は range が完全一致するので「同じ範囲の他の指摘」に finding-2 が出る。
-    // 一覧側の行（finding-2）の見出しにも「い」を含むボタンがあるため、完全一致の名前で
-    // 詳細パネル側のリンクだけを狙う（`誤字・表記：い`）。
-    const relatedButton = await screen.findByRole("button", { name: "誤字・表記：い" });
-    await user.click(relatedButton);
-
-    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
-    // 一覧側の選択表示も finding-2 に移っている。
-    const rowsAfter = document.querySelectorAll(`.${findingListStyles.findingRow}`);
-    expect((rowsAfter[1] as HTMLElement).getAttribute("aria-current")).toBe("true");
-  });
 });
 
 // Task 8（採否と判断メモ、決定 13）：`putJudgment` の呼び出しは `results-page.tsx` に閉じ、
@@ -1053,7 +1023,12 @@ describe("ResultsPage: PR21 レビュー指摘 2 保存の失敗は選択を変�
   it("保存中に別の指摘へ切り替えたあとで保存が失敗しても、失敗がヘッダー直下に表示される", async () => {
     const user = userEvent.setup();
     const finding1 = makeFinding({ id: "finding-1", quote: "あ" });
-    const finding2 = makeFinding({ id: "finding-2", quote: "い" });
+    const finding2 = makeFinding({
+      id: "finding-2",
+      quote: "い",
+      range: { start: 5, end: 6 },
+      paragraphId: 1,
+    });
     const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
     const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
     const getFindings = vi.fn(() => Promise.resolve([finding1, finding2]));
@@ -2319,7 +2294,7 @@ describe("ResultsPage: 最終レビュー Important 1 恒久的な切断の案�
   });
 });
 
-// レビュー M-1：`fetchDetail` が毎回 `setFindingDetail(null)` すると、実行中に
+// レビュー M-1：詳細の取得が毎回値を null に戻すと、実行中に
 // `check-finished` / `target-merged` が届くたびに元候補・位置診断の欄が点滅する。
 // 手動更新だけだった頃は目立たなかったが、自動更新では高頻度で起きる。
 describe("ResultsPage: Task 8 取り直しで詳細を点滅させない（レビュー M-1）", () => {
@@ -2744,5 +2719,411 @@ describe("ResultsPage: 右の列の 2 段（UI の見直し 1 節）", () => {
     await waitFor(() =>
       expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument(),
     );
+  });
+});
+
+// PR14b（UI の見直し 2 節）：同じ範囲の指摘のまとめ。まとめる規則そのものは
+// finding-group.test.ts、一覧の行の描き方は finding-list.test.tsx の役割。ここでは配線
+// （選択を先頭にそろえること、絞り込みから外れたときの引き継ぎ）を見る。
+describe("ResultsPage: 同じ範囲の指摘のまとめ（PR14b）", () => {
+  function sameRangePair(
+    first: Partial<FindingDto> = {},
+    second: Partial<FindingDto> = {},
+  ): [FindingDto, FindingDto] {
+    return [
+      makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一", ...first }),
+      makeFinding({
+        id: "finding-2",
+        range: { start: 0, end: 1 },
+        quote: "一",
+        ...second,
+        judgment: {
+          findingId: "finding-2",
+          status: "undecided",
+          note: null,
+          updatedAt: "2026-09-10T00:00:00.000Z",
+          ...second.judgment,
+        },
+      }),
+    ];
+  }
+
+  function setup(findings: readonly FindingDto[], extra: Partial<ApiClient> = {}) {
+    const getFinding = vi.fn((findingId: string) =>
+      Promise.resolve(makeFindingDetail({ id: findingId })),
+    );
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "completed" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings: () => Promise.resolve([...findings]),
+      getFinding,
+      ...extra,
+    });
+    return { client, getFinding };
+  }
+
+  function rows() {
+    return Array.from(document.querySelectorAll<HTMLElement>(`.${findingListStyles.findingRow}`));
+  }
+
+  it("同じ範囲の指摘は一覧で 1 行になり、件数は指摘の数のまま、先頭が選ばれる", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup(sameRangePair());
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    expect(rows()).toHaveLength(1);
+    expect(within(rows()[0] as HTMLElement).getByText("2 案")).toBeInTheDocument();
+
+    await user.click(rows()[0] as HTMLElement);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    expect(rows()[0]?.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("本文の強調から選んでも、まとめの先頭が選ばれる", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup(sameRangePair());
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    const span = document.querySelector('[data-findings~="finding-2"]') as HTMLElement;
+    await user.click(span);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    expect(rows()[0]?.getAttribute("aria-current")).toBe("true");
+    expect(span.className).toContain("highlightSelected");
+  });
+
+  it("分類の絞り込みで先頭だけが外れたら、同じ範囲で残った指摘へ選択が移る", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup(
+      sameRangePair({ category: "notation" }, { category: "grammar" }),
+    );
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    // まとめた 2 件目の詳細は、選んだ時点で取られている。
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+
+    await user.click(screen.getByRole("checkbox", { name: "誤字・表記" }));
+
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    // 先頭が外れて引き継いでも、2 件目の詳細は取り直さない（1 回だけ）。
+    expect(getFinding.mock.calls.filter(([id]) => id === "finding-2")).toHaveLength(1);
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]?.getAttribute("aria-current")).toBe("true");
+    expect(rows()[0]?.closest("li")?.getAttribute("data-finding-id")).toBe("finding-2");
+    expect(document.querySelector(`.${findingListStyles.detail}`)).not.toBeNull();
+  });
+
+  it("採否を「未判断」だけに絞り、先頭を却下にしたら、詳細は閉じずに残った指摘へ移る", async () => {
+    const user = userEvent.setup();
+    const rejected: JudgmentDto = {
+      findingId: "finding-1",
+      status: "rejected",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(rejected));
+    const { client, getFinding } = setup(sameRangePair(), { putJudgment });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "採用予定" }));
+    await user.click(screen.getByRole("checkbox", { name: "却下" }));
+    await user.click(screen.getByRole("checkbox", { name: "保留" }));
+    await user.click(rows()[0] as HTMLElement);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    // まとめた 2 件目の詳細は、選んだ時点で取られている。
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+
+    // 先頭（finding-1）の採否の操作子は、詳細の中で最初に出る（Task 4 でまとめた指摘を
+    // 並べたあとも、先頭が最初に来る）。
+    await user.click(screen.getAllByRole("radio", { name: "却下" })[0] as HTMLElement);
+    await user.click(screen.getAllByRole("button", { name: "保存" })[0] as HTMLElement);
+    await waitFor(() =>
+      expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" }),
+    );
+
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    // 先頭が外れて引き継いでも、2 件目の詳細は取り直さない（1 回だけ）。
+    expect(getFinding.mock.calls.filter(([id]) => id === "finding-2")).toHaveLength(1);
+    expect(rows()[0]?.getAttribute("aria-current")).toBe("true");
+    expect(document.querySelector(`.${findingListStyles.detail}`)).not.toBeNull();
+  });
+
+  it("再確認状態の絞り込みで先頭だけが外れたら、同じ範囲で残った指摘へ選択が移る", async () => {
+    const user = userEvent.setup();
+    const recheckBase = {
+      id: "recheck-1",
+      notApplicableReason: null,
+      reasonKind: null,
+      reason: null,
+      suggestionValid: null,
+      failure: null,
+    } as const;
+    const { client, getFinding } = setup(
+      sameRangePair(
+        { recheck: { ...recheckBase, status: "done", verdict: "keep" } },
+        { recheck: { ...recheckBase, id: "recheck-2", status: "pending", verdict: null } },
+      ),
+    );
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+    // まとめた 2 件目の詳細は、選んだ時点で取られている。
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+
+    await user.click(screen.getByRole("checkbox", { name: "再確認済み" }));
+
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    // 先頭が外れて引き継いでも、2 件目の詳細は取り直さない（1 回だけ）。
+    expect(getFinding.mock.calls.filter(([id]) => id === "finding-2")).toHaveLength(1);
+    expect(rows()[0]?.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("同じ範囲の指摘が全部外れたら、今どおり選択を外す", async () => {
+    const user = userEvent.setup();
+    const { client } = setup(sameRangePair());
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    await waitFor(() =>
+      expect(document.querySelector(`.${findingListStyles.detail}`)).not.toBeNull(),
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "誤字・表記" }));
+
+    await waitFor(() => expect(screen.getByText("0 / 2 件")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument(),
+    );
+  });
+
+  it("まとめた指摘は詳細に全部並び、getFinding はそれぞれの ID で 1 回ずつ呼ばれる", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup(
+      sameRangePair({ category: "grammar" }, { category: "particle" }),
+    );
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+    expect(getFinding).toHaveBeenCalledWith("finding-1");
+    expect(getFinding).toHaveBeenCalledWith("finding-2");
+    expect(screen.getByRole("region", { name: "案 1：文法" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "案 2：助詞" })).toBeInTheDocument();
+  });
+
+  it("2 件目の採否を保存すると、2 件目の ID で putJudgment が呼ばれ、一覧の要約が変わる", async () => {
+    const user = userEvent.setup();
+    const held: JudgmentDto = {
+      findingId: "finding-2",
+      status: "held",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(held));
+    const { client } = setup(sameRangePair({ category: "grammar" }, { category: "particle" }), {
+      putJudgment,
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    const second = await screen.findByRole("region", { name: "案 2：助詞" });
+    await user.click(within(second).getByRole("radio", { name: "保留" }));
+    await user.click(within(second).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(putJudgment).toHaveBeenCalledWith("finding-2", { status: "held" }));
+    await waitFor(() =>
+      expect(within(rows()[0] as HTMLElement).getByText("未判断 1・保留 1")).toBeInTheDocument(),
+    );
+  });
+
+  it("同じ範囲で絞り込みに隠れた指摘があれば、詳細の末尾に件数を出す", async () => {
+    const user = userEvent.setup();
+    const { client } = setup(sameRangePair({ category: "notation" }, { category: "grammar" }));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "文法" }));
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+
+    expect(await screen.findByText("絞り込みで非表示：1 件")).toBeInTheDocument();
+  });
+
+  it("2 件目の判断メモを書きかけたまま先頭が絞り込みから外れても、書きかけは消えない", async () => {
+    const user = userEvent.setup();
+    const rejected: JudgmentDto = {
+      findingId: "finding-1",
+      status: "rejected",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(rejected));
+    const { client } = setup(sameRangePair({ category: "grammar" }, { category: "particle" }), {
+      putJudgment,
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "採用予定" }));
+    await user.click(screen.getByRole("checkbox", { name: "却下" }));
+    await user.click(screen.getByRole("checkbox", { name: "保留" }));
+    await user.click(rows()[0] as HTMLElement);
+
+    const first = await screen.findByRole("region", { name: "案 1：文法" });
+    const second = screen.getByRole("region", { name: "案 2：助詞" });
+    await user.type(within(second).getByRole("textbox"), "書きかけ");
+    await user.click(within(first).getByRole("radio", { name: "却下" }));
+    await user.click(within(first).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "案 1：文法" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("書きかけ");
+  });
+
+  // 詳細の枠のスクロール（最終レビュー Important 2）。jsdom は layout を持たないが、scrollTop は
+  // 代入した値をそのまま保つので、「戻したかどうか」はその値で見られる。
+  describe("詳細の枠のスクロール", () => {
+    function detailPaneElement(): HTMLElement {
+      return document.querySelector(`.${findingListStyles.detailPane}`) as HTMLElement;
+    }
+
+    it("同じまとめの中で先頭が引き継がれても、スクロールは先頭に戻らない", async () => {
+      const user = userEvent.setup();
+      const { client, getFinding } = setup(
+        sameRangePair({ category: "notation" }, { category: "grammar" }),
+      );
+      renderPage(client);
+
+      await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+      await user.click(rows()[0] as HTMLElement);
+      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+      detailPaneElement().scrollTop = 300;
+      expect(detailPaneElement().scrollTop).toBe(300);
+
+      await user.click(screen.getByRole("checkbox", { name: "誤字・表記" }));
+      await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+      await waitFor(() =>
+        expect(rows()[0]?.closest("li")?.getAttribute("data-finding-id")).toBe("finding-2"),
+      );
+
+      expect(detailPaneElement().scrollTop).toBe(300);
+    });
+
+    it("別のまとめを選んだら、スクロールは先頭に戻る", async () => {
+      const user = userEvent.setup();
+      const { client, getFinding } = setup([
+        makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一" }),
+        makeFinding({ id: "finding-2", range: { start: 5, end: 6 }, quote: "二" }),
+      ]);
+      renderPage(client);
+
+      await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+      await user.click(rows()[0] as HTMLElement);
+      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
+      detailPaneElement().scrollTop = 300;
+      expect(detailPaneElement().scrollTop).toBe(300);
+
+      await user.click(rows()[1] as HTMLElement);
+      await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+
+      expect(detailPaneElement().scrollTop).toBe(0);
+    });
+  });
+
+  // 計画の Review Focus 3：選択中のまとめに自動更新で同じ範囲の指摘が増えても（新しい指摘が
+  // 先頭になっても）、すでに出ている指摘の詳細は点滅させず、増えた指摘だけ取る。
+  it("自動更新で同じ範囲の指摘が増えても、出ている元候補は消えず、増えた指摘だけ取る", async () => {
+    const user = userEvent.setup();
+    const stream = fakeStream();
+    const MARK = "既にある指摘の候補の理由";
+    const first = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一" });
+    const added = makeFinding({
+      id: "finding-2",
+      range: { start: 0, end: 1 },
+      quote: "一",
+      category: "grammar",
+    });
+    let findingsCalls = 0;
+    const getFindings = vi.fn(() => {
+      findingsCalls += 1;
+      return Promise.resolve(findingsCalls === 1 ? [first] : [added, first]);
+    });
+    let firstDetailCalls = 0;
+    const getFinding = vi.fn((findingId: string) => {
+      if (findingId === "finding-1") {
+        firstDetailCalls += 1;
+        // 2 回目以降（取り直し）は返さない。前の値が残るかどうかだけを見る。
+        if (firstDetailCalls > 1) return new Promise<FindingDetailDto>(() => {});
+        return Promise.resolve(
+          makeFindingDetail({
+            ...first,
+            candidates: [makeCandidate({ llm: { ...makeCandidate().llm, reason: MARK } })],
+          }),
+        );
+      }
+      return Promise.resolve(makeFindingDetail({ ...added }));
+    });
+    const client = makeClient({
+      getRun: () => Promise.resolve(makeRunDetail({ status: "running" })),
+      getManuscript: () => Promise.resolve(makeManuscript()),
+      getFindings,
+      getFinding,
+      subscribeRunEvents: stream.subscribeRunEvents,
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    await waitFor(() => expect(screen.getByText(MARK)).toBeInTheDocument());
+
+    await fireStream(stream, (h) => h.onEvent(CHECK_FINISHED));
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-2"));
+
+    expect(screen.getByText(MARK)).toBeInTheDocument();
+    expect(screen.queryByText("読み込み中…")).not.toBeInTheDocument();
+    expect(getFinding.mock.calls.filter(([id]) => id === "finding-2")).toHaveLength(1);
+  });
+
+  it("重なるまとめのリンクから選んでも、そのまとめの先頭が選ばれる", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup([
+      makeFinding({ id: "finding-1", range: { start: 0, end: 2 }, quote: "一段" }),
+      makeFinding({
+        id: "finding-2",
+        range: { start: 1, end: 3 },
+        quote: "段落",
+        category: "grammar",
+      }),
+      makeFinding({
+        id: "finding-3",
+        range: { start: 1, end: 3 },
+        quote: "段落",
+        category: "particle",
+      }),
+    ]);
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("3 / 3 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    await user.click(await screen.findByRole("button", { name: "文法／助詞：段落（2 案）" }));
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-3"));
+    expect(rows()[1]?.getAttribute("aria-current")).toBe("true");
+    expect(rows()[1]?.closest("li")?.getAttribute("data-finding-id")).toBe("finding-2");
   });
 });
