@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 作成日：2026-10-02
-状態：計画（ユーザーの確認待ち）
+状態：計画（ユーザー承認済み、2026-10-02）
 
 **Goal:** 全画面の配色と部品の形を、朱筆（白地・朱・本文明朝）にそろえる。項目・文言・動きは変えない。
 
@@ -31,7 +31,7 @@
 1. **共通の部品は `styles/controls.module.css` に置き、TSX から直接使う。** CSS Modules の `composes` で各 feature の CSS から読み込む形も試した。しかし、Vitest は CSS を処理しないので `composes` が効かず、テストと本番でクラス名が変わる。さらに `vite build` で PostCSS の警告が出る。そこで、TSX で `className={controls.primaryButton}` のように付ける。配置の指定（`align-self` など）が要るときは、feature のクラスと並べて付ける（`` className={`${controls.primaryButton} ${styles.startButton}`} ``）。
 2. **エラーの先頭の「エラー」は CSS で付ける。** 設計書は「枠で囲み、先頭に『エラー』と書く」と「文言を変えない」の両方を求めている。`.errorBox::before { content: "エラー" }` にすると、DOM の文言は今のままで、画面と読み上げには「エラー」が出る。今のエラーの文言に「エラー」で始まるものはない（確認済み）。
 3. **枠で囲むエラーと、臙脂の文字だけの注記を分ける。** 操作や取得の失敗を伝えるものはエラーの枠にする（下の表の「エラー」）。指摘やモデルの状態を伝える短い注記（「位置未特定」「この修正案は再確認で不適切と判定されました」「LM Studio でロードしてください…」）は、文言だけで意味が分かるので、枠を付けず臙脂の文字のままにする。一覧の行の中に枠が入ると、行の見た目が崩れるためでもある。
-4. **再試行のボタン（検査設定の「再試行」）の扱い。** 今は臙脂（赤）の塗りで、「検査を開始する」より目立たせている（結果不明のときは、新しく開始するより同じ操作の再送のほうが正しいため）。ボタンを 2 種類にすると、この差がなくなる。次のどちらにするかを決めてほしい。
+4. **再試行のボタン（検査設定の「再試行」）の扱い。** 今は臙脂（赤）の塗りで、「検査を開始する」より目立たせている（結果不明のときは、新しく開始するより同じ操作の再送のほうが正しいため）。ボタンを 2 種類にすると、この差がなくなる。ユーザーの決定（2026-10-02）で A にした。
    - **A**（推奨）：朱の塗り（主な操作）にし、太字は残す。エラーの枠の中、説明のすぐ横にあるので、見つけやすさは保てる。「検査を開始する」も朱の塗りのままで、2 つは同じ強さになる。
    - **B**：臙脂の塗りを、ボタンの 3 種類目の例外として残す。今の「再試行のほうを目立たせる」意図は保てるが、「臙脂＝エラー」の役割分担が崩れる。
 5. **案内文（停止中・遅延・復旧待ちなど）は朱にしない。** 今は本文の強調と同じ黄色を借りている。設計書は朱を「指摘・操作」に使うと決めているので、案内文は生成りの地（`#f7f3ea`）と灰茶の枠（`#8a8170`）にする。
@@ -65,7 +65,7 @@
 | `confirmButton`（manuscript） | 原稿を確定する など | 主な操作 |
 | `saveButton`（connection） | 保存 | 主な操作 |
 | `judgmentSaveButton`（results） | 保存 | 主な操作 |
-| `retryButton`（settings） | 再試行 | 決めたこと 4（A なら主な操作） |
+| `retryButton`（settings） | 再試行 | 主な操作（決めたこと 4 の A） |
 | `controlButton`（results：run-control・recovery-notice・failed-units） | 停止・再開・再実行 など | 枠だけ |
 | `refreshButton`（results） | 更新・再読み込み | 枠だけ |
 | `detailNavigateButton`（results） | 本文の該当箇所へ移動 | 枠だけ |
@@ -465,7 +465,7 @@ Run: 該当のテストファイル → FAIL
 
 - 「部品の割り当て」の表のとおりに `controls.*` を付ける。配置の指定が残るクラス（`align-self: flex-start` など）は `` className={`${controls.primaryButton} ${styles.startButton}`} `` のように並べる。配置の指定も残らないクラスは、TSX から外し、CSS からも消す。
 - feature の CSS からは、共通の部品と重複する宣言（`padding`・`border`・`border-radius`・`background-color`・`color`・`font-size`・`cursor`・`:disabled`）を消す。`.error` は全部消す（配置の指定がないため）。settings の `.error`（`display: flex` と `gap`）と `.retryNotice` は配置だけ残す。
-- `run-settings-form.tsx` の再試行のボタンは、決めたこと 4 の結論に従う（A なら `controls.primaryButton` と配置用の `styles.retryButton`。直前のコメントも合わせて直す）。
+- `run-settings-form.tsx` の再試行のボタンは、決めたこと 4 の A に従う（`controls.primaryButton` と配置用の `styles.retryButton`。直前のコメントも合わせて直す）。
 - connection の `modelNote`（LM Studio でロードしてください…）は `controls.dangerNote` にする。settings の `modelNote` は変えない。
 - `settings.module.css` の `.pageSection` のコメントにある「`connection.module.css` と宣言を二重に持っている」は、この PR では触らない（配置の話で、部品の話ではない）。
 
