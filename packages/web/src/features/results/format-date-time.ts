@@ -1,6 +1,6 @@
 /**
  * ISO 8601 の日時文字列を `YYYY-MM-DD HH:mm:ss` の形に決定的に整形する（`run-header.tsx`・
- * `run-list-page.tsx` が使う）。
+ * `run-list-page.tsx`・`manuscript-confirmed.tsx`・`app/header.tsx` が使う）。
  *
  * 裁定（最終レビュー Important 3）：単一利用者のローカル Windows アプリで、常に UTC のまま
  * 表示し UTC だと分かる印も無いのは実害がある（JST の利用者には全画面の時刻が 9 時間ずれて
@@ -31,4 +31,13 @@ export function formatDateTime(iso: string | null, offsetMinutes: number): strin
   const seconds = pad(shifted.getUTCSeconds());
 
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+/**
+ * `formatDateTime` の時刻部分（`HH:mm:ss`）だけを返す。ヘッダーの「最後に確認」のように
+ * 日付まで出すと長すぎる箇所で使う。書式と時差の扱いは `formatDateTime` と同じ。
+ */
+export function formatTime(iso: string, offsetMinutes: number): string {
+  // `formatDateTime` は非 null の入力に対して常に `YYYY-MM-DD HH:mm:ss` を返す。
+  return (formatDateTime(iso, offsetMinutes) ?? "").slice("YYYY-MM-DD ".length);
 }

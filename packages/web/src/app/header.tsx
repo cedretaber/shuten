@@ -7,13 +7,15 @@
  */
 
 import { Link } from "react-router";
+import { formatTime } from "../features/results/format-date-time.ts";
 import { useConnection } from "./connection-context.tsx";
 import styles from "./header.module.css";
 import { ROUTES } from "./routes.ts";
 
 function formatCheckedAt(checkedAt: Date | null): string {
   if (checkedAt === null) return "未確認";
-  return `${checkedAt.toLocaleTimeString()} 時点`;
+  // 他の画面と同じ書式にそろえる（`toLocaleTimeString` はブラウザのロケールで書式が変わる）。
+  return `${formatTime(checkedAt.toISOString(), -checkedAt.getTimezoneOffset())} 時点`;
 }
 
 function connectionStatusLabel(state: {

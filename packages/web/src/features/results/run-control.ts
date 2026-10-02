@@ -19,7 +19,7 @@
  *   `ApiRequestError` 以外の例外は既定の文に落ちる。
  */
 
-import type { RunDto, RunUnitsDto } from "@shuten/shared";
+import type { ProgressDto, RunDto, RunUnitsDto } from "@shuten/shared";
 import { ApiRequestError } from "../../api/errors.ts";
 
 /**
@@ -127,7 +127,7 @@ export function showStopButton(run: RunDto): boolean {
  * `completed` かつ他の条件に当たらないときだけ null になり、そのときは未処理が無いことを
  * 前提にした表示（「指摘はありません」を含む）を許す。
  */
-export function statusNotice(run: RunDto): string | null {
+export function statusNotice(run: RunDto, progress?: ProgressDto): string | null {
   if (run.status === "running" && run.stopRequestedAt !== null) {
     return "停止を要求しました。実行中の要求の終了を待っています。";
   }
@@ -141,9 +141,19 @@ export function statusNotice(run: RunDto): string | null {
     return "一部の検査が失敗しました。未処理の範囲があります。";
   }
   if (run.status === "stopped") {
-    return "停止中です。未処理の範囲が残っている可能性があります。";
+    // 件数が分かるなら言い切る。分からないときだけ従来どおり可能性として書く。
+    if (progress === undefined) {
+      return "停止中です。未処理の範囲が残っている可能性があります。";
+    }
+    return remainingUnits(progress) > 0 ? "停止中です。未処理の範囲があります。" : "停止中です。";
   }
   return null;
+}
+
+/** 検査・再確認のうち、完了も対象外もしていない単位（未処理・処理中・失敗）の数。 */
+function remainingUnits(progress: ProgressDto): number {
+  const of = (c: ProgressDto["checkUnits"]) => c.pending + c.running + c.failed;
+  return of(progress.checkUnits) + of(progress.recheckUnits);
 }
 
 /** 決定 8：操作の失敗を案内文に写す。追加で出すリンク（`"home"` = 新しい検査、`"settings"` = 接続設定）。 */

@@ -36,7 +36,17 @@ export function RunProgress(props: RunProgressProps) {
       <UnitTallySection label="検査" tally={checkTally} />
 
       {recheckEnabled ? (
-        <UnitTallySection label="再確認" tally={recheckTally} />
+        <UnitTallySection
+          label="再確認"
+          tally={recheckTally}
+          // 再確認の単位は検査が終わった範囲の指摘から作られるので、検査が残っている間は
+          // 総数が増えていく。「完了 3 / 全 3 件」を終わったと読まれないよう、そのことを添える。
+          note={
+            checkTally.done + checkTally.notApplicable < checkTally.total
+              ? "検査が進むと件数が増えます"
+              : null
+          }
+        />
       ) : (
         <p className={styles.progressLine}>再確認なし</p>
       )}
@@ -70,8 +80,13 @@ export function RunProgress(props: RunProgressProps) {
   );
 }
 
-function UnitTallySection(props: { readonly label: string; readonly tally: UnitTally }) {
-  const { label, tally } = props;
+function UnitTallySection(props: {
+  readonly label: string;
+  readonly tally: UnitTally;
+  /** 件数の後ろに括弧で添える補足。無ければ null か省略。 */
+  readonly note?: string | null;
+}) {
+  const { label, tally, note = null } = props;
 
   if (tally.total === 0) {
     return <p className={styles.progressLine}>{label}: 準備中</p>;
@@ -81,6 +96,7 @@ function UnitTallySection(props: { readonly label: string; readonly tally: UnitT
     <div className={styles.progressSection}>
       <p className={styles.progressLine}>
         {label}: {formatCount(tally)}
+        {note !== null && `（${note}）`}
       </p>
       {/* 決定 11：対象外（not-applicable）は分母に含めたうえで内訳として別に出す。ついでに
           失敗・処理中・未処理も内訳として出す（割合ではなく件数のみ）。 */}

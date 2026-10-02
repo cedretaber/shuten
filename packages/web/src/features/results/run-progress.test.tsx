@@ -102,6 +102,56 @@ describe("RunProgress: 再確認の有無", () => {
   });
 });
 
+describe("RunProgress: 再確認の総数が増えうることの注記", () => {
+  it("検査が残っている間は、再確認の件数に「検査が進むと件数が増えます」を添える", () => {
+    // 実機の確認（2026-10-02）で、途中の「再確認: 完了 3 / 全 3 件」が終わったように見えた。
+    const progress = makeProgress({
+      checkUnits: makeCounts({ done: 2, running: 1, pending: 9 }),
+      recheckUnits: makeCounts({ done: 3 }),
+    });
+    render(
+      <RunProgress progress={progress} units={null} recheckEnabled={true} slowUnitCount={0} />,
+    );
+    expect(
+      screen.getByText("再確認: 完了 3 / 全 3 件（検査が進むと件数が増えます）"),
+    ).toBeInTheDocument();
+  });
+
+  it("検査が残っていなければ（完了と対象外だけなら）注記を出さない", () => {
+    const progress = makeProgress({
+      checkUnits: makeCounts({ done: 10, "not-applicable": 2 }),
+      recheckUnits: makeCounts({ done: 3, running: 1 }),
+    });
+    render(
+      <RunProgress progress={progress} units={null} recheckEnabled={true} slowUnitCount={0} />,
+    );
+    expect(screen.getByText("再確認: 完了 3 / 全 4 件")).toBeInTheDocument();
+    expect(screen.queryByText(/検査が進むと/)).not.toBeInTheDocument();
+  });
+
+  it("失敗した検査が残っていれば注記を出す（再試行すると再確認が増えうる）", () => {
+    const progress = makeProgress({
+      checkUnits: makeCounts({ done: 11, failed: 1 }),
+      recheckUnits: makeCounts({ done: 3 }),
+    });
+    render(
+      <RunProgress progress={progress} units={null} recheckEnabled={true} slowUnitCount={0} />,
+    );
+    expect(screen.getByText(/検査が進むと件数が増えます/)).toBeInTheDocument();
+  });
+
+  it("検査の行には注記を出さない", () => {
+    const progress = makeProgress({
+      checkUnits: makeCounts({ done: 2, pending: 10 }),
+      recheckUnits: makeCounts({ done: 1 }),
+    });
+    render(
+      <RunProgress progress={progress} units={null} recheckEnabled={true} slowUnitCount={0} />,
+    );
+    expect(screen.getByText("検査: 完了 2 / 全 12 件")).toBeInTheDocument();
+  });
+});
+
 describe("B8: RunProgress の観点別の内訳（決定 5・11）", () => {
   it("units から観点別の件数が出る（決定 5）", () => {
     const progress = makeProgress();

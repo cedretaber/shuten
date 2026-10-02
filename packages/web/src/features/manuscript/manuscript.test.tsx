@@ -9,6 +9,7 @@ import { createApiClient } from "../../api/client.ts";
 import { ApiRequestError, ApiTransportError } from "../../api/errors.ts";
 import { STORAGE_KEYS } from "../../storage/keys.ts";
 import { readStored, writeStored } from "../../storage/local.ts";
+import { formatDateTime } from "../results/format-date-time.ts";
 import { ManuscriptConfirmed } from "./manuscript-confirmed.tsx";
 import { ManuscriptEditor } from "./manuscript-editor.tsx";
 import type { ManuscriptApi } from "./use-manuscript.ts";
@@ -262,7 +263,9 @@ describe("ManuscriptConfirmed", () => {
 
     expect(screen.getByText("私の原稿")).toBeInTheDocument();
     expect(screen.getByText("3 字")).toBeInTheDocument();
-    expect(screen.getByText(new Date(createdAt).toLocaleString("ja-JP"))).toBeInTheDocument();
+    expect(
+      screen.getByText(formatDateTime(createdAt, -new Date(createdAt).getTimezoneOffset()) ?? ""),
+    ).toBeInTheDocument();
     expect(screen.getByText("確定後の本文は変更できません。")).toBeInTheDocument();
   });
 
