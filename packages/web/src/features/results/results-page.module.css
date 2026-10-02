@@ -272,9 +272,6 @@
 .bodyColumn {
   flex: 1 1 60%;
   min-width: 0;
-  /* 本文の 1 行を 40 字前後に抑える（日本語の本文で読みやすいとされる長さ。PR14c）。
-     40 字ぶんに、段落の字下げとスクロールバーのぶんを足した幅。余った幅は右の列が使う。 */
-  max-width: calc(42em + var(--space-md));
   overflow-y: auto;
 }
 
