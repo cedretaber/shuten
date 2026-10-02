@@ -209,7 +209,7 @@ PR14c   web         全画面の見た目の朱筆化（配色・本文の明朝
 
 ```
 PR1 → PR2 → PR3 → PR4 ──┬→ PR6 ──┐
-PR5 ────────────────────┘        ├→ PR7（PR1〜PR6）→ PR9a（PR7、PR8）→ PR9b → PR10 → PR11 → [Windows] → PR11c → PR11b → [スパイク] → PR12a → PR12b → PR12c → PR13b
+PR5 ────────────────────┘        ├→ PR7（PR1〜PR6）→ PR9a（PR7、PR8）→ PR9b → PR10 → PR11 → [Windows] → PR11c → PR11b → [スパイク] → PR12a → PR12b → PR12c → PR13b → PR14a → PR14b → PR14c
 PR1 → PR8 ───────────────────────┘                                                    └→ PR13a-1（PR10 の後いつでも。PR13b の前）─┬→ PR13a-2 ─┐
                                                                                                                                  └→ PR13a-3 ─┴→ PR13b
 ```
