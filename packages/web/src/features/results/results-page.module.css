@@ -325,7 +325,7 @@
 
 /* 詳細：右の列の上に固定。高さは列のおよそ半分まで、超えたらこの中だけでスクロール。 */
 .detailPane {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   max-height: 50%;
   overflow-y: auto;
   min-height: 0;
@@ -473,11 +473,35 @@
 .detail {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-sm);
   min-width: 0;
   border: 1px solid var(--color-border);
   border-radius: 4px;
-  padding: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+}
+
+/* 詳細の区画を詰める（PR14a。右の列の上の限られた高さで、採否まで見えるようにする）。
+   finding-detail.tsx の素の section / h3 / p にブラウザ既定の余白が付いていたため。項目と並び順は変えない。 */
+.detail section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detail h3 {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.detail p,
+.detail ul {
+  margin: 0;
+}
+
+.judgmentControl fieldset {
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
 }
 
 /*
