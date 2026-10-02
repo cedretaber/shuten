@@ -293,6 +293,8 @@ pnpm eval full-chat --manuscript <原稿> --model <id> --prompt-file <プロン�
   先頭に付ける（差し込みはしない）。普段 system に指示を置いて原稿を user で貼っている運用を
   再現するには、`--prompt-file` に `{{manuscript}}` だけを書いたファイルを渡す
 - 生成は **1 回だけ**。`run` と違って再試行しない
+- `--max-tokens` の既定は 16,000 で、`run` の既定（4,000。分割方式向け）とは別。応答全体を 1 要求で
+  受けるため長く、打ち切り（`length`）は失敗になるので、必要なら上げる
 - `finish_reason` が `stop` 以外（打ち切り `length`、`tool_calls` など）はすべて失敗として記録し、
   打ち切られた本文を成功として保存しない
 - 結果 JSON に**原稿本文もプロンプトも入れない**。どのプロンプトで取ったかは `promptHash`

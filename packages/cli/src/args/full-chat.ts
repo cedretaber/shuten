@@ -42,12 +42,20 @@ const REASONING_EFFORTS: readonly ReasoningEffort[] = ["none", "low", "medium", 
 const TIMEOUT_MS_MAX = MAX_TIMEOUT_MS;
 
 /**
+ * 全文チャット方式の `max_tokens` の既定。分割方式の既定（`RUN_SETTINGS_DEFAULTS`。4,000）には
+ * 追随させない。この方式は原稿全体への指摘を 1 応答で受けるので、分割方式の 1 検査単位より
+ * 応答が長く、評価（`docs/decisions/0004-evaluation-settings.md`）も 16,000 で取った。
+ * 4,000 に下げると長い応答が `finish_reason: length` で失敗する境界が静かに変わる。
+ */
+export const FULL_CHAT_MAX_TOKENS_DEFAULT = 16_000;
+
+/**
  * `RUN_SETTINGS_DEFAULTS`（`@shuten/shared`。CLI と web が共有する既定値）のうち、
- * この方式が使う項目だけを取る。数値をここにハードコードしない。
+ * この方式が使う項目を取る。`maxTokens` だけは上記の理由でこの方式固有の値を使う。
  */
 const DEFAULTS = {
   outPath: null as string | null,
-  maxTokens: RUN_SETTINGS_DEFAULTS.generation.maxTokens,
+  maxTokens: FULL_CHAT_MAX_TOKENS_DEFAULT,
   temperature: RUN_SETTINGS_DEFAULTS.generation.temperature,
   reasoningEffort: RUN_SETTINGS_DEFAULTS.generation.reasoningEffort as ReasoningEffort,
   checkTimeoutMs: RUN_SETTINGS_DEFAULTS.timeouts.checkMs,
