@@ -680,8 +680,12 @@
   min-height: 4em;
 }
 
-.judgmentSaveButton {
-  align-self: flex-start;
+/* 採否の保存の状況（「保存中…」「保存しました」）。操作した時点で保存するので、控えめに出す。 */
+.judgmentSaveStatus {
+  margin: 0;
+  min-height: 1.5em;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
 }
 
 /*

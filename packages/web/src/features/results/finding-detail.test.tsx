@@ -476,7 +476,6 @@ describe("FindingDetail: 同じ範囲の指摘のまとめ（PR14b）", () => {
     const second = screen.getByRole("region", { name: "案 2：助詞" });
     expect(within(second).getByRole("radio", { name: "却下" })).toBeChecked();
     await user.click(within(second).getByRole("radio", { name: "保留" }));
-    await user.click(within(second).getByRole("button", { name: "保存" }));
     expect(onSaveJudgment).toHaveBeenCalledWith("m2", "held", null, "これ");
   });
 
@@ -531,7 +530,7 @@ describe("FindingDetail: onNavigate（Task 9 が渡すまで操作子を出さ�
 });
 
 describe("FindingDetail: 採否の操作子（Task 8、決定 13）", () => {
-  // 操作子そのもの（4 状態のラジオ・メモの null 送信・保存中の無効化・失敗時の巻き戻し・
+  // 操作子そのもの（4 状態のラジオ・メモの null 送信・操作した時点での保存と直列化・失敗時の巻き戻し・
   // 常時表示の注記）は judgment-control.test.tsx（R5）の役割。ここでは配線だけを見る：
   // 選択中の指摘の judgment が操作子の初期値になること、保存が finding.id 付きで
   // onSaveJudgment を呼ぶこと。
@@ -551,7 +550,7 @@ describe("FindingDetail: 採否の操作子（Task 8、決定 13）", () => {
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("著者へ確認済み");
   });
 
-  it("保存ボタンを押すと、選択中の指摘の ID・引用付きで onSaveJudgment が呼ばれる", async () => {
+  it("ラジオを選ぶと、選択中の指摘の ID・引用付きで onSaveJudgment が呼ばれる", async () => {
     const user = userEvent.setup();
     const onSaveJudgment = vi.fn(() => Promise.resolve());
     // `quote` は PR21 レビュー指摘 2（採否保存の失敗の持ち上げ）で追加された引数。呼び出し側
@@ -560,7 +559,6 @@ describe("FindingDetail: 採否の操作子（Task 8、決定 13）", () => {
     render(<FindingDetail {...baseProps({ finding, onSaveJudgment })} />);
 
     await user.click(screen.getByRole("radio", { name: "却下" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
 
     expect(onSaveJudgment).toHaveBeenCalledWith("finding-42", "rejected", null, "対象の引用");
   });
