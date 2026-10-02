@@ -20,9 +20,9 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 
 ## 現在の状態
 
-ロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR はすべて終わっている。最後の PR14a〜c では
-結果画面の配置と全画面の見た目を見直した。
-仕様は確定している（v0.9.3）。ブラウザの画面からは次のことができる。
+v1.0.0 をリリースした（変更の一覧は [CHANGELOG.md](CHANGELOG.md)）。仕様書は v1.0 で、MVP の機能範囲をすべて実装している。
+ロードマップ（`docs/plans/2026-09-07-mvp-roadmap.md`）の PR はすべて終わっている。
+ブラウザの画面からは次のことができる。
 
 - 設定（LM Studio への接続、生成に使うモデル、詳細な検査設定）
 - 原稿の確定（貼り付け／ファイル読み込み）と、検査の開始・停止・再開・失敗単位の個別再試行
@@ -43,6 +43,8 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
   （`docs/experiments/2026-10-02-browser-check/`）と、Windows 上のサーバーと Chromium 系のブラウザ
   （2026-10-02、`docs/decisions/0002-scaffold-conventions.md` の「検証状況」）で行った。
   後者では、同じ範囲の指摘を 1 行にまとめる表示だけが、該当する指摘が出ず未確認のまま残っている。
+- 採否をラジオを選んだ時点で保存する動き（v1.0.0 の直前に入れた）は、自動テストでだけ確かめている。
+  実ブラウザでは、WSL2 上でも Windows 上でもまだ触っていない。
 - 実原稿での評価（PR13b）では、命令文を含む原稿での取り直し、全文チャット方式の人手集計、
   確認時間の実測を行っていない。画面経由の実行は、採用モデル・既定の設定で 1 回行った。
 
@@ -76,6 +78,7 @@ PR ごとの経過は [docs/history.md](docs/history.md) に記録している�
 | [docs/experiments/](docs/experiments/) | 検証の手順・要求・結果。再検証できる形で残す |
 | [docs/plans/](docs/plans/) | 実装計画。PR 単位のロードマップと、各 PR の詳細計画 |
 | [docs/history.md](docs/history.md) | 開発の経過。PR ごとに何ができるようになったか |
+| [CHANGELOG.md](CHANGELOG.md) | リリースごとの変更点と既知の問題 |
 | [docs/guides/windows-verification.md](docs/guides/windows-verification.md) | Windows での動作確認手順 |
 | [AGENTS.md](AGENTS.md) | コーディングエージェントへの指示 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code 固有の事項 |

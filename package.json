@@ -1,7 +1,7 @@
 {
   "name": "shuten",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "日本語小説の誤字・脱字と不自然な日本語を検出する校正ツール",
   "type": "module",
   "packageManager": "pnpm@10.17.1",
