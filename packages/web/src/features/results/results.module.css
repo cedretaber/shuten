@@ -33,7 +33,8 @@
 
 .highlight {
   cursor: pointer;
-  border-radius: var(--radius);
+  /* 地を持たず下線だけなので、角丸を付けると下線の両端が細くなる。 */
+  border-radius: 0;
   box-shadow: inset 0 -0.15em 0 0 var(--color-accent-line);
 }
 

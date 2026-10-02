@@ -494,6 +494,25 @@ describe("RunSettingsForm × useStartRun: 開始要求は要約と同じ値か�
 });
 
 describe("RunSettingsForm × useStartRun: 再試行ボタン（決定 15、W7-15 のフォーム側）", () => {
+  it("PR14c: 「再試行」は主な操作のボタンで、その案内はエラーの枠で出る（計画の決めたこと 4 の A）", async () => {
+    const startRun = vi
+      .fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto))
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"));
+    renderHarness(makeFakeClient(startRun), makeConnectionApi());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const retry = await screen.findByRole("button", { name: "再試行" });
+    expect(retry.className).toContain(controls.primaryButton);
+    expect(
+      screen.getByText("前回の開始操作は結果が不明のままです。同じ内容で再送できます。")
+        .parentElement?.className,
+    ).toContain(controls.errorBox);
+  });
+
   it("「再試行」はフォームの現在値ではなく開始時のスナップショットを送り、checkConnection をやり直さない", async () => {
     const startRun = vi
       .fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto))

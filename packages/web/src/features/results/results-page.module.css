@@ -393,6 +393,11 @@
   cursor: pointer;
 }
 
+/* 一覧はスクロール領域の幅いっぱいなので、フォーカスの枠を内側に出して切れないようにする。 */
+.findingRow:focus-visible {
+  outline-offset: -2px;
+}
+
 .findingRowSelected {
   border-color: var(--color-accent-line);
   background-color: var(--color-accent-bg);
@@ -554,6 +559,10 @@
 
 /* 詳細の原文と修正案だけ明朝体にして、本文の列と見比べやすくする（UI の見直し 3 節）。
    同じ .detailQuote を使う理由・元候補・位置診断はゴシックのまま。 */
+.suggestionInvalidNote {
+  font-size: var(--font-size-sm);
+}
+
 .detailSerif {
   font-family: var(--font-family-serif);
 }

@@ -13,6 +13,8 @@
   color: var(--color-bg);
   font: inherit;
   font-weight: bold;
+  /* font: inherit で body の行の高さ（1.6）を受け継ぐと、ボタンが以前より高くなる。以前の高さに戻す。 */
+  line-height: 1.2;
   cursor: pointer;
 }
 
@@ -24,6 +26,7 @@
   background-color: var(--color-bg);
   color: var(--color-accent);
   font: inherit;
+  line-height: 1.2;
   cursor: pointer;
 }
 

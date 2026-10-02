@@ -263,7 +263,9 @@ function MemberSections(props: {
         ) : (
           <div>
             <p className={`${styles.detailQuote} ${styles.detailSerif}`}>{finding.suggestion}</p>
-            <p className={controls.dangerNote}>この修正案は再確認で不適切と判定されました</p>
+            <p className={`${controls.dangerNote} ${styles.suggestionInvalidNote}`}>
+              この修正案は再確認で不適切と判定されました
+            </p>
           </div>
         )}
       </section>
