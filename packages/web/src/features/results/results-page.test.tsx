@@ -2650,3 +2650,96 @@ describe("ResultsPage: Task 8 前タスクの申し送り 2・3", () => {
     );
   });
 });
+
+describe("ResultsPage: 右の列の 2 段（UI の見直し 1 節）", () => {
+  function setup(findings: FindingDto[]) {
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve(findings));
+    const getFinding = vi.fn((id: string) => Promise.resolve(makeFindingDetail({ id })));
+    return makeClient({ getRun, getManuscript, getFindings, getFinding });
+  }
+
+  it("選んでいないときは詳細の位置に案内が出て、選ぶと詳細に替わる", async () => {
+    const user = userEvent.setup();
+    renderPage(setup([makeFinding({ id: "finding-1", quote: "一", range: { start: 0, end: 1 } })]));
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument();
+
+    await user.click(document.querySelector('[data-findings~="finding-1"]') as HTMLElement);
+    await waitFor(() =>
+      expect(
+        screen.queryByText("本文の強調か一覧から指摘を選んでください"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("詳細は絞り込みと一覧より前（上）にある", async () => {
+    const user = userEvent.setup();
+    renderPage(setup([makeFinding({ id: "finding-1", quote: "一", range: { start: 0, end: 1 } })]));
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    await user.click(document.querySelector('[data-findings~="finding-1"]') as HTMLElement);
+
+    const detailPane = document.querySelector(`.${findingListStyles.detailPane}`) as HTMLElement;
+    const filterDetails = document.querySelector(
+      `.${findingListStyles.filterDetails}`,
+    ) as HTMLElement;
+    expect(detailPane).not.toBeNull();
+    expect(filterDetails).not.toBeNull();
+    // detailPane が filterDetails より前にある
+    expect(
+      detailPane.compareDocumentPosition(filterDetails) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("絞り込みは閉じた状態で件数を出し、既定から変えると「絞り込み中」が付き、戻すと消える", async () => {
+    const user = userEvent.setup();
+    renderPage(setup([makeFinding({ id: "finding-1", quote: "一", range: { start: 0, end: 1 } })]));
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+
+    const filterDetails = document.querySelector(
+      `.${findingListStyles.filterDetails}`,
+    ) as HTMLDetailsElement;
+    expect(filterDetails.open).toBe(false);
+    expect(within(filterDetails).getByText(/を表示中/)).toBeInTheDocument();
+    expect(screen.queryByText("・絞り込み中")).not.toBeInTheDocument();
+
+    const toggle = within(filterDetails).getByRole("checkbox", {
+      name: "抑制された指摘も表示する",
+    });
+    await user.click(toggle);
+    expect(screen.getByText("・絞り込み中")).toBeInTheDocument();
+    await user.click(toggle);
+    expect(screen.queryByText("・絞り込み中")).not.toBeInTheDocument();
+  });
+
+  it("絞り込みで選択中の指摘が消えると、詳細の位置に案内が戻る", async () => {
+    const user = userEvent.setup();
+    renderPage(
+      setup([
+        makeFinding({
+          id: "finding-1",
+          quote: "一",
+          range: { start: 0, end: 1 },
+          category: "notation",
+        }),
+      ]),
+    );
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    await user.click(document.querySelector('[data-findings~="finding-1"]') as HTMLElement);
+    await waitFor(() =>
+      expect(
+        screen.queryByText("本文の強調か一覧から指摘を選んでください"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // 分類「誤字・表記」（notation）を外す
+    const filterDetails = document.querySelector(
+      `.${findingListStyles.filterDetails}`,
+    ) as HTMLElement;
+    await user.click(within(filterDetails).getByRole("checkbox", { name: "誤字・表記" }));
+    await waitFor(() =>
+      expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument(),
+    );
+  });
+});

@@ -155,7 +155,12 @@ import { FailedUnits } from "./failed-units.tsx";
 import { relatedFindings } from "./finding-detail.ts";
 import { FindingDetail } from "./finding-detail.tsx";
 import type { FindingFilter } from "./finding-filter.ts";
-import { DEFAULT_FINDING_FILTER, toHighlights, visibleFindings } from "./finding-filter.ts";
+import {
+  DEFAULT_FINDING_FILTER,
+  isDefaultFilter,
+  toHighlights,
+  visibleFindings,
+} from "./finding-filter.ts";
 import { FindingFilterControls } from "./finding-filter.tsx";
 import { FindingList } from "./finding-list.tsx";
 import { RUN_STATUS_LABELS } from "./labels.ts";
@@ -812,6 +817,8 @@ export function ResultsPage() {
 
   // 本文の容器（`.bodyColumn`）。移動先の要素をここから探す（Task 9）。
   const bodyContainerRef = useRef<HTMLDivElement | null>(null);
+  // 詳細の枠（`.detailPane`）。選択が替わったときにスクロールを先頭へ戻すのに使う。
+  const detailPaneRef = useRef<HTMLDivElement | null>(null);
 
   // 移動先（`NavigationTarget`）が決まったあと、実際に DOM 要素を探してスクロールする共通処理。
   const scrollToTarget = useCallback((target: NavigationTarget) => {
@@ -1064,32 +1071,40 @@ export function ResultsPage() {
                 />
               </div>
               <div className={styles.sideColumn}>
-                <FindingsPanel
-                  run={state.run}
-                  findings={state.findings}
-                  freshness={findingsFreshness}
-                  visible={visible}
-                  filter={filter}
-                  onFilterChange={handleFilterChange}
-                  selectedFindingId={selectedFindingId}
-                  onSelectFinding={handleSelectFindingFromList}
-                />
-                {selectedFinding !== null && related !== null && (
-                  <FindingDetail
-                    finding={selectedFinding}
-                    detail={findingDetail}
-                    detailError={findingDetailError}
-                    body={state.manuscript.body}
-                    sameRange={related.sameRange}
-                    overlapping={related.overlapping}
-                    onSelectFinding={handleSelectFinding}
-                    // `onNavigate` は省略可（`exactOptionalPropertyTypes` の下では `undefined` を
-                    // 明示的に渡すのと「キー自体を省く」のは別物）。移動先が無いときはキーごと省き、
-                    // `FindingDetail` 側に「渡されていない」と判定させて操作子を出させない。
-                    {...(selectedNavigationTarget !== null ? { onNavigate: handleNavigate } : {})}
-                    onSaveJudgment={handleSaveJudgment}
+                {/* 詳細は右の列の上に固定する（UI の見直し 1 節）。本文を読みながら強調を選んだとき、
+                    一覧の長さに関係なくすぐ見える位置に出すため。長いときはこの中だけでスクロールする。 */}
+                <div className={styles.detailPane} ref={detailPaneRef}>
+                  {selectedFinding !== null && related !== null ? (
+                    <FindingDetail
+                      finding={selectedFinding}
+                      detail={findingDetail}
+                      detailError={findingDetailError}
+                      body={state.manuscript.body}
+                      sameRange={related.sameRange}
+                      overlapping={related.overlapping}
+                      onSelectFinding={handleSelectFinding}
+                      // `onNavigate` は省略可（`exactOptionalPropertyTypes` の下では `undefined` を
+                      // 明示的に渡すのと「キー自体を省く」のは別物）。移動先が無いときはキーごと省き、
+                      // `FindingDetail` 側に「渡されていない」と判定させて操作子を出させない。
+                      {...(selectedNavigationTarget !== null ? { onNavigate: handleNavigate } : {})}
+                      onSaveJudgment={handleSaveJudgment}
+                    />
+                  ) : (
+                    <p className={styles.detailEmpty}>本文の強調か一覧から指摘を選んでください</p>
+                  )}
+                </div>
+                <div className={styles.findingsPane}>
+                  <FindingsPanel
+                    run={state.run}
+                    findings={state.findings}
+                    freshness={findingsFreshness}
+                    visible={visible}
+                    filter={filter}
+                    onFilterChange={handleFilterChange}
+                    selectedFindingId={selectedFindingId}
+                    onSelectFinding={handleSelectFindingFromList}
                   />
-                )}
+                </div>
               </div>
             </div>
           )}
@@ -1153,10 +1168,19 @@ function FindingsPanel(props: {
 
   return (
     <div className={styles.findingsPanel}>
-      <p className={styles.findingCount}>
-        {visible.length} / {findings.length} 件
-      </p>
-      <FindingFilterControls filter={filter} onChange={onFilterChange} />
+      {/* 絞り込みは閉じておき、件数と「絞り込み中」だけを見せる（UI の見直し 1 節）。
+          件数は既存の表示「n / m 件」をそのまま独立した要素に残す（テストと読み手の目印）。 */}
+      <details className={styles.filterDetails}>
+        <summary className={styles.filterSummary}>
+          絞り込み（
+          <span className={styles.findingCount}>
+            {visible.length} / {findings.length} 件
+          </span>
+          を表示中）
+          {!isDefaultFilter(filter) && <span className={styles.filterActive}>・絞り込み中</span>}
+        </summary>
+        <FindingFilterControls filter={filter} onChange={onFilterChange} />
+      </details>
       <FindingList
         findings={visible}
         selectedFindingId={selectedFindingId}

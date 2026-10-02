@@ -315,17 +315,61 @@
 .bodyColumn,
 .sideColumn {
   height: calc(100vh - 3.5rem - (2 * var(--space-lg)));
-  overflow-y: auto;
 }
 
 .bodyColumn {
   flex: 1 1 60%;
   min-width: 0;
+  overflow-y: auto;
 }
 
 .sideColumn {
   flex: 1 1 40%;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* 詳細：右の列の上に固定。高さは列のおよそ半分まで、超えたらこの中だけでスクロール。 */
+.detailPane {
+  flex: 0 1 auto;
+  max-height: 50%;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.detailEmpty {
+  margin: 0;
+  padding: var(--space-md);
+  border: 1px dashed var(--color-border);
+  border-radius: 4px;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* 絞り込み＋一覧：詳細の下の残りの高さを使い、この中でスクロールする。 */
+.findingsPane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.filterDetails {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.filterSummary {
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.filterActive {
+  color: var(--color-accent);
+  font-weight: bold;
 }
 
 /*
@@ -429,7 +473,7 @@
 }
 
 /*
- * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.sideColumn` の中、`.findingsPanel` の下に置く。
+ * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.detailPane` の中に置く。
  * 引用・修正案・理由・判断メモは `.findingQuote` と違い**折り返して全文を表示する**
  * （一覧の見出しと違い、詳細では省略しない。ブリーフの指示）。
  */
