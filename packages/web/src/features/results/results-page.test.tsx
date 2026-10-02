@@ -29,13 +29,14 @@ import type {
   FindingDto,
   JudgmentDto,
   ManuscriptVersionDto,
+  PutJudgmentRequest,
   RunDetailDto,
   RunDto,
   RunEventDto,
   RunUnitsDto,
 } from "@shuten/shared";
 import { splitParagraphs } from "@shuten/shared";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -809,7 +810,7 @@ describe("ResultsPage: Task 7 指摘詳細の取得配線", () => {
 
 // Task 8（採否と判断メモ、決定 13）：`putJudgment` の呼び出しは `results-page.tsx` に閉じ、
 // 成功したら該当指摘の `judgment` を差し替える（一覧を取り直さない）。操作子そのものの規則
-// （4 状態・null 送信・保存中の無効化・失敗時の巻き戻し・常時表示の注記）は
+// （4 状態・null 送信・操作した時点での保存と直列化・失敗時の巻き戻し・常時表示の注記）は
 // judgment-control.test.tsx（R5）の役割。ここでは「状態の持ち主が 1 か所であること」の
 // 実質的な確認として、保存に成功すると一覧の行の採否表示も変わることを見る。
 describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新される", () => {
@@ -840,7 +841,6 @@ describe("ResultsPage: Task 8 採否の保存で一覧の行の表示も更新�
     expect(within(row).getByText("未判断")).toBeInTheDocument();
 
     await user.click(screen.getByRole("radio", { name: "却下" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(putJudgment).toHaveBeenCalledTimes(1));
     expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" });
@@ -1003,15 +1003,21 @@ describe("ResultsPage: PR21 レビュー指摘 1 更新で選択中の指摘の�
     await user.click(row);
     await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(1));
 
-    await user.click(screen.getByRole("radio", { name: "却下" }));
+    // ラジオは選んだ時点で保存されるので、「編集中」は判断メモの書きかけ（入力欄から離れる前）。
+    await user.type(screen.getByRole("textbox"), "書きかけ");
 
-    await user.click(screen.getByRole("button", { name: "最新の状態を取得" }));
+    // 入力欄にフォーカスを残したまま取り直す（`user.click` だと入力欄の blur でメモが保存されて
+    // しまうため、フォーカスを動かさない `fireEvent.click` で押す。自動更新で届いた場面に相当する）。
+    fireEvent.click(screen.getByRole("button", { name: "最新の状態を取得" }));
 
     await waitFor(() => expect(getFindings).toHaveBeenCalledTimes(2));
-    // 編集中の入力（却下）は保たれたまま、勝手に上書きされない。
-    expect(screen.getByRole("radio", { name: "却下" })).toBeChecked();
+    // 編集中の入力（書きかけのメモ・未判断）は保たれたまま、勝手に上書きされない。
+    await waitFor(() =>
+      expect(screen.getByText(/採否が別の場所で更新されました/)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("書きかけ");
+    expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "保留" })).not.toBeChecked();
-    expect(screen.getByText(/採否が別の場所で更新されました/)).toBeInTheDocument();
   });
 });
 
@@ -1047,7 +1053,6 @@ describe("ResultsPage: PR21 レビュー指摘 2 保存の失敗は選択を変�
     await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
 
     await user.click(screen.getByRole("radio", { name: "却下" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(putJudgment).toHaveBeenCalledTimes(1));
     expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" });
 
@@ -1121,7 +1126,6 @@ describe("ResultsPage: 最終レビュー Important 2 採否の保存で絞り�
     // 「却下」で保存する。応答の judgment.status が "rejected" になり、絞り込み
     // （未判断のみ）から外れる。
     await user.click(screen.getByRole("radio", { name: "却下" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(putJudgment).toHaveBeenCalledTimes(1));
 
@@ -2842,7 +2846,6 @@ describe("ResultsPage: 同じ範囲の指摘のまとめ（PR14b）", () => {
     // 先頭（finding-1）の採否の操作子は、詳細の中で最初に出る（Task 4 でまとめた指摘を
     // 並べたあとも、先頭が最初に来る）。
     await user.click(screen.getAllByRole("radio", { name: "却下" })[0] as HTMLElement);
-    await user.click(screen.getAllByRole("button", { name: "保存" })[0] as HTMLElement);
     await waitFor(() =>
       expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" }),
     );
@@ -2940,7 +2943,6 @@ describe("ResultsPage: 同じ範囲の指摘のまとめ（PR14b）", () => {
     await user.click(rows()[0] as HTMLElement);
     const second = await screen.findByRole("region", { name: "案 2：助詞" });
     await user.click(within(second).getByRole("radio", { name: "保留" }));
-    await user.click(within(second).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(putJudgment).toHaveBeenCalledWith("finding-2", { status: "held" }));
     await waitFor(() =>
@@ -2963,13 +2965,16 @@ describe("ResultsPage: 同じ範囲の指摘のまとめ（PR14b）", () => {
 
   it("2 件目の判断メモを書きかけたまま先頭が絞り込みから外れても、書きかけは消えない", async () => {
     const user = userEvent.setup();
-    const rejected: JudgmentDto = {
-      findingId: "finding-1",
-      status: "rejected",
-      note: null,
-      updatedAt: "2026-09-11T00:00:00.000Z",
-    };
-    const putJudgment = vi.fn(() => Promise.resolve(rejected));
+    // 指摘ごとに、送った値をそのまま保存した応答を返す（先頭のラジオのクリックで 2 件目の
+    // 入力欄の blur が起き、2 件目の書きかけも保存されるため、ID を取り違えない応答にする）。
+    const putJudgment = vi.fn((findingId: string, body: PutJudgmentRequest) =>
+      Promise.resolve<JudgmentDto>({
+        findingId,
+        status: body.status,
+        note: body.note ?? null,
+        updatedAt: "2026-09-11T00:00:00.000Z",
+      }),
+    );
     const { client } = setup(sameRangePair({ category: "grammar" }, { category: "particle" }), {
       putJudgment,
     });
@@ -2985,9 +2990,14 @@ describe("ResultsPage: 同じ範囲の指摘のまとめ（PR14b）", () => {
     const second = screen.getByRole("region", { name: "案 2：助詞" });
     await user.type(within(second).getByRole("textbox"), "書きかけ");
     await user.click(within(first).getByRole("radio", { name: "却下" }));
-    await user.click(within(first).getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    // 書きかけは入力欄から離れた時点で 2 件目の ID で保存され、先頭の却下も保存される。
+    expect(putJudgment).toHaveBeenCalledWith("finding-2", {
+      status: "undecided",
+      note: "書きかけ",
+    });
+    expect(putJudgment).toHaveBeenCalledWith("finding-1", { status: "rejected" });
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "案 1：文法" })).not.toBeInTheDocument(),
     );
