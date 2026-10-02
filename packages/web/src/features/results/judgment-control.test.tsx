@@ -358,6 +358,31 @@ describe("JudgmentControl: 失敗時にエラーを出し、入力をサーバ�
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("radio", { name: "未判断" })).toBeChecked();
   });
+
+  it("直列化した 1 本目が成功し 2 本目が失敗したら、1 本目の値へ戻す（PR #41 レビュー指摘 1）", async () => {
+    const user = userEvent.setup();
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const onSave = vi
+      .fn<OnSave>()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    // 親は judgment prop を更新しない（resolve の前に新しい prop が届く保証は無い）。
+    render(<JudgmentControl {...baseProps({ onSave })} />);
+
+    await user.click(screen.getByRole("radio", { name: "却下" }));
+    await user.click(screen.getByRole("radio", { name: "保留" }));
+
+    await act(async () => first.resolve());
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave).toHaveBeenLastCalledWith("held", null);
+
+    await act(async () => second.reject(new Error("保存に失敗しました")));
+
+    expect(await screen.findByText("保存に失敗しました")).toBeInTheDocument();
+    // サーバーに保存済みなのは 1 本目の「却下」。初期値の「未判断」へは戻さない。
+    expect(screen.getByRole("radio", { name: "却下" })).toBeChecked();
+  });
 });
 
 describe("JudgmentControl: PR21 レビュー指摘 1 未編集なら新しい judgment に追従する", () => {
@@ -476,6 +501,36 @@ describe("JudgmentControl: PR21 レビュー指摘 1 編集中は上書きせず
     expect(screen.queryByText(/採否が別の場所で更新されました/)).not.toBeInTheDocument();
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("書きかけ");
     expect(screen.getByRole("radio", { name: "却下" })).toBeChecked();
+  });
+
+  it("書きかけのメモと同じ値の更新が届いたあと、メモから離れたら注記を下ろす（PR #41 レビュー指摘 2）", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn<OnSave>(() => Promise.resolve());
+    const judgmentA: JudgmentDto = {
+      findingId: "finding-1",
+      status: "undecided",
+      note: null,
+      updatedAt: "2026-09-10T00:00:00.000Z",
+    };
+    const { rerender } = render(
+      <JudgmentControl {...baseProps({ judgment: judgmentA, onSave })} />,
+    );
+
+    await user.type(screen.getByRole("textbox"), "同じメモ");
+    const judgmentB: JudgmentDto = {
+      findingId: "finding-1",
+      status: "undecided",
+      note: "同じメモ",
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    rerender(<JudgmentControl {...baseProps({ judgment: judgmentB, onSave })} />);
+    expect(screen.getByText(/採否が別の場所で更新されました/)).toBeInTheDocument();
+
+    await user.tab(); // メモから離れる
+
+    // 入力はサーバーの値と同じなので送らず、注記も消える。
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.queryByText(/採否が別の場所で更新されました/)).not.toBeInTheDocument();
   });
 });
 

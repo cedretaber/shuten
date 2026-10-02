@@ -26,8 +26,9 @@
  *
  * 保存の実行（`putJudgment` の呼び出しと、一覧・詳細への反映）はこの操作子の責務ではなく、
  * 呼び出し側（`results-page.tsx`）が `onSave` を通じて行う（状態の持ち主を 1 か所にするため）。
- * `onSave` が reject したら、その場にエラーを出し、入力をサーバーの最新の値（`judgment` prop）に
- * 戻し、送信待ちの値も送らずに捨てる——「保存したつもりで保存されていない」を作らないため。
+ * `onSave` が reject したら、その場にエラーを出し、入力をサーバーで確定している最新の値
+ * （`lastConfirmedRef`）に戻し、送信待ちの値も送らずに捨てる——「保存したつもりで保存されて
+ * いない」を作らないため。
  *
  * 別の指摘を選び直したときに前の指摘の入力が残らないようにする責務は、呼び出し側が
  * `key={finding.id}` を付けて指摘ごとにこのコンポーネントを作り直すことで満たす
@@ -53,10 +54,14 @@
  * 応答が反映されただけ）か、保存の実行中・送信待ちの間は、入力を上書きしない（後の操作を優先する）。
  *
  * 編集中に新しい `judgment` が届いたときは、入力を勝手に上書きしない代わりに
- * `updatedElsewhere` を立てて短い注記を出す（文言は本ファイルの JSX を参照）。サーバーの最新の値を
- * 参照する箇所（失敗時の巻き戻し）は `judgment` prop を直接ではなく `latestJudgmentRef`
- * （毎レンダーで同期する ref）から読む——保存の応答が返ってくる頃には `judgment` prop が
- * さらに新しくなっている場合があるため、常に最新の値を読めるようにする。
+ * `updatedElsewhere` を立てて短い注記を出す（文言は本ファイルの JSX を参照）。その後メモから
+ * 離れたとき、入力が確定済みの値と同じで送る必要がなければ、注記も下ろす（PR #41 レビュー指摘 2）。
+ *
+ * 失敗時の巻き戻し先は `lastConfirmedRef`（サーバーで確定している最新の値）から読む。
+ * `judgment` prop だけを見ると、直列化した 1 本目が成功し、親の再描画が届く前に 2 本目が失敗した
+ * とき、1 本目より前の値へ戻してしまう（`onSave` の契約は、resolve の前に新しい `judgment` prop が
+ * 届くことを定めていない。PR #41 レビュー指摘 1）。そこで `lastConfirmedRef` を、保存の成功時と、
+ * 新しい `judgment` prop が届いた時点（保存の実行中も含む）の両方で、後に起きた方の値に更新する。
  *
  * MUST NOT：採否の記録は `judgments` への記録だけで、本文（原稿版）には一切触れない
  * （`docs/reference/invariants.md`）。このコンポーネントは原稿を書き換える経路を持たない。
@@ -105,10 +110,6 @@ export function JudgmentControl(props: JudgmentControlProps) {
   // 編集中に、別の場所（「最新の状態を取得」による再取得など）で採否が更新されたことを示す注記。
   const [updatedElsewhere, setUpdatedElsewhere] = useState(false);
 
-  // 毎レンダーで同期する「常に最新の judgment」参照（コメント冒頭を参照）。失敗時の巻き戻しで、
-  // クロージャに固定された古い `judgment` ではなく常に最新の値を読むために使う。
-  const latestJudgmentRef = useRef(judgment);
-  latestJudgmentRef.current = judgment;
   // 送信待ちの値を後から送るとき（アンマウントの後を含む）に、最新の `onSave` を読むための参照。
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
@@ -121,6 +122,8 @@ export function JudgmentControl(props: JudgmentControlProps) {
   // 保存の直列化（コメント冒頭を参照）。描画に使わないので ref で持つ。
   // 直近に保存に成功した、または実行中の値。送るかどうかの比較の基準。
   const lastSentRef = useRef<SaveValue>(toSaveValue(judgment.status, judgment.note ?? ""));
+  // サーバーで確定している最新の値。失敗時の巻き戻し先（コメント冒頭を参照）。
+  const lastConfirmedRef = useRef<SaveValue>(toSaveValue(judgment.status, judgment.note ?? ""));
   const inFlightRef = useRef(false);
   // 実行中に求められた保存のうち、最後のものだけ。
   const queuedRef = useRef<SaveValue | null>(null);
@@ -129,6 +132,7 @@ export function JudgmentControl(props: JudgmentControlProps) {
     if (processedUpdatedAtRef.current === judgment.updatedAt) return;
     processedUpdatedAtRef.current = judgment.updatedAt;
     const incoming = toSaveValue(judgment.status, judgment.note ?? "");
+    lastConfirmedRef.current = incoming;
     // 保存の実行中・送信待ちの間は、届いた値で入力を上書きしない（後の操作を優先する）。
     // 直近に保存した値と同じなら、自分の保存の応答が反映されただけなので何もしない。
     if (inFlightRef.current || queuedRef.current !== null) return;
@@ -151,6 +155,8 @@ export function JudgmentControl(props: JudgmentControlProps) {
     onSaveRef.current(value.status, value.note).then(
       () => {
         inFlightRef.current = false;
+        // 次を送る前に、成功した値を確定値として持つ（次が失敗したときの巻き戻し先）。
+        lastConfirmedRef.current = value;
         const next = queuedRef.current;
         queuedRef.current = null;
         if (next !== null) {
@@ -164,13 +170,12 @@ export function JudgmentControl(props: JudgmentControlProps) {
         inFlightRef.current = false;
         // 失敗したら送信待ちの値は送らずに捨てる。
         queuedRef.current = null;
-        // 入力をサーバーの最新の値に戻す（「保存したつもりで保存されていない」を作らない）。
-        // `judgment` ではなく `latestJudgmentRef.current` を読む——保存の応答が届く頃には
-        // `judgment` prop がさらに新しくなっている場合があるため。
-        const latest = latestJudgmentRef.current;
-        lastSentRef.current = toSaveValue(latest.status, latest.note ?? "");
-        setStatus(latest.status);
-        setNote(latest.note ?? "");
+        // 入力をサーバーで確定している最新の値に戻す（「保存したつもりで保存されていない」を
+        // 作らない）。`judgment` prop ではなく `lastConfirmedRef` を読む（コメント冒頭を参照）。
+        const confirmed = lastConfirmedRef.current;
+        lastSentRef.current = confirmed;
+        setStatus(confirmed.status);
+        setNote(confirmed.note ?? "");
         setError(cause instanceof Error ? cause.message : "保存に失敗しました");
         setSaveState("idle");
         setDirty(false);
@@ -183,7 +188,12 @@ export function JudgmentControl(props: JudgmentControlProps) {
     // メモを含めて保存を求めたので、もう「編集中」ではない。
     setDirty(false);
     const target = queuedRef.current ?? lastSentRef.current;
-    if (sameValue(value, target)) return;
+    if (sameValue(value, target)) {
+      // 保存の実行中・送信待ちでなければ、入力はサーバーの値と同じなので、「まだ保存されて
+      // いません」の注記も下ろす（PR #41 レビュー指摘 2）。
+      if (!inFlightRef.current && queuedRef.current === null) setUpdatedElsewhere(false);
+      return;
+    }
     if (inFlightRef.current) {
       // 実行中の値と同じなら、送信待ちを取り消すだけでよい（実行中の保存がその値になる）。
       queuedRef.current = sameValue(value, lastSentRef.current) ? null : value;
