@@ -961,7 +961,6 @@ export function ResultsPage() {
   // 先頭が絞り込みから外れて同じまとめの中で引き継いだとき・絞り込みを戻して先頭が増えたときは、
   // メンバーが重なるので戻さない（useFindingDetails の「同じまとめ」と同じ判定）。
   const previousMemberIdsRef = useRef<readonly string[]>([]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `memberIds` の変化だけを合図に走らせる（effect の中では読まない）
   useEffect(() => {
     const previous = previousMemberIdsRef.current;
     previousMemberIdsRef.current = memberIds;
