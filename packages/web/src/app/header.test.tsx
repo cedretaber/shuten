@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api/client.ts";
 import { STORAGE_KEYS } from "../storage/keys.ts";
 import { writeStored } from "../storage/local.ts";
+import controls from "../styles/controls.module.css";
 import { ConnectionProvider } from "./connection-context.tsx";
 import { Header } from "./header.tsx";
 
@@ -194,5 +195,24 @@ describe("Header", () => {
     expect(checkConnection.mock.calls[1]?.[0]).toBe("model-a");
 
     localStorage.removeItem(STORAGE_KEYS.selectedModelId);
+  });
+
+  it("PR14c: 「再確認」は枠だけのボタン、接続エラーはエラーの枠で出る", async () => {
+    const checkConnection = vi.fn(() => Promise.reject(new Error("接続できません")));
+    const client = makeFakeClient(checkConnection as ApiClient["checkConnection"]);
+
+    render(
+      <MemoryRouter>
+        <ConnectionProvider client={client}>
+          <Header />
+        </ConnectionProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", { name: "再確認" }).className).toContain(
+      controls.secondaryButton,
+    );
+    const message = await screen.findByText("接続できません");
+    expect(message.className).toContain(controls.errorBox);
   });
 });

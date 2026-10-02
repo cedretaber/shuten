@@ -13,5 +13,7 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-lg);
+  /* 広い画面では中身の幅に上限を付けて中央に置く（PR14c）。padding で寄せるので、
+     スクロールバーは画面の右端に残る。 */
+  padding: var(--space-lg) var(--content-padding-inline);
 }

@@ -46,6 +46,7 @@
 import type { JudgmentDto, JudgmentStatus } from "@shuten/shared";
 import { JUDGMENT_STATUSES } from "@shuten/shared";
 import { useEffect, useId, useRef, useState } from "react";
+import controls from "../../styles/controls.module.css";
 import { JUDGMENT_STATUS_LABELS } from "./labels.ts";
 import styles from "./results-page.module.css";
 
@@ -163,7 +164,7 @@ export function JudgmentControl(props: JudgmentControlProps) {
       <label className={styles.judgmentNoteLabel}>
         判断メモ（任意）
         <textarea
-          className={styles.judgmentNoteTextarea}
+          className={`${controls.input} ${styles.judgmentNoteTextarea}`}
           maxLength={2000}
           value={note}
           disabled={saving}
@@ -171,11 +172,11 @@ export function JudgmentControl(props: JudgmentControlProps) {
         />
       </label>
 
-      {error !== null && <p className={styles.error}>{error}</p>}
+      {error !== null && <p className={controls.errorBox}>{error}</p>}
 
       <button
         type="button"
-        className={styles.judgmentSaveButton}
+        className={`${controls.primaryButton} ${styles.judgmentSaveButton}`}
         disabled={saving}
         onClick={handleSave}
       >

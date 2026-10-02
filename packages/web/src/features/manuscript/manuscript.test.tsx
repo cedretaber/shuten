@@ -9,6 +9,7 @@ import { createApiClient } from "../../api/client.ts";
 import { ApiRequestError, ApiTransportError } from "../../api/errors.ts";
 import { STORAGE_KEYS } from "../../storage/keys.ts";
 import { readStored, writeStored } from "../../storage/local.ts";
+import controls from "../../styles/controls.module.css";
 import { formatDateTime } from "../results/format-date-time.ts";
 import { ManuscriptConfirmed } from "./manuscript-confirmed.tsx";
 import { ManuscriptEditor } from "./manuscript-editor.tsx";
@@ -124,6 +125,15 @@ afterEach(() => {
 });
 
 describe("ManuscriptEditor", () => {
+  it("PR14c: 確定のボタンは主な操作、本文の入力欄は共通の入力欄", () => {
+    renderEditor(makeManuscriptApi());
+
+    expect(screen.getByRole("button", { name: "この原稿を確定する" }).className).toContain(
+      controls.primaryButton,
+    );
+    expect(screen.getByLabelText("本文").className).toContain(controls.input);
+  });
+
   it("W6-1: 本文が空だと「この原稿を確定する」が disabled", async () => {
     const api = makeManuscriptApi();
     renderEditor(api);

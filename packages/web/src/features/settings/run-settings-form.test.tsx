@@ -34,6 +34,7 @@ import {
   ADVANCED_RUN_SETTINGS_DEFAULTS,
   writeAdvancedRunSettings,
 } from "../../storage/run-settings.ts";
+import controls from "../../styles/controls.module.css";
 import { RunSettingsForm } from "./run-settings-form.tsx";
 import type { StartRunApi } from "./use-start-run.ts";
 import { useStartRun } from "./use-start-run.ts";
@@ -232,6 +233,26 @@ describe("RunSettingsForm: 開始ボタンの無効化（W7-17）", () => {
 });
 
 describe("RunSettingsForm: 失敗時の設定画面へのリンク（決定 8。S6-3）", () => {
+  it("PR14c: 「検査を開始する」は主な操作のボタン、開始の失敗はエラーの枠で出る", () => {
+    render(
+      <MemoryRouter>
+        <RunSettingsForm
+          manuscriptVersionId="mv-1"
+          modelId="model-a"
+          restoring={false}
+          startApi={makeStartApi({
+            outcome: { kind: "failed", message: "設定を見直してください", hint: "none" },
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", { name: "検査を開始する" }).className).toContain(
+      controls.primaryButton,
+    );
+    expect(screen.getByRole("alert").className).toContain(controls.errorBox);
+  });
+
   it("S6-3: hint が settings のときだけ、エラーの下に設定画面へのリンクが出る", () => {
     const { rerender } = render(
       <MemoryRouter>
@@ -473,6 +494,25 @@ describe("RunSettingsForm × useStartRun: 開始要求は要約と同じ値か�
 });
 
 describe("RunSettingsForm × useStartRun: 再試行ボタン（決定 15、W7-15 のフォーム側）", () => {
+  it("PR14c: 「再試行」は主な操作のボタンで、その案内はエラーの枠で出る（計画の決めたこと 4 の A）", async () => {
+    const startRun = vi
+      .fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto))
+      .mockRejectedValueOnce(new ApiRequestError(500, "unknown", "サーバー内部エラー"));
+    renderHarness(makeFakeClient(startRun), makeConnectionApi());
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "検査を開始する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const retry = await screen.findByRole("button", { name: "再試行" });
+    expect(retry.className).toContain(controls.primaryButton);
+    expect(
+      screen.getByText("前回の開始操作は結果が不明のままです。同じ内容で再送できます。")
+        .parentElement?.className,
+    ).toContain(controls.errorBox);
+  });
+
   it("「再試行」はフォームの現在値ではなく開始時のスナップショットを送り、checkConnection をやり直さない", async () => {
     const startRun = vi
       .fn((_body: StartRunRequest) => Promise.resolve({ id: "run-1" } as RunDto))

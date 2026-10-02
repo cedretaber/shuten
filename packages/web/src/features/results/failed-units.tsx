@@ -28,6 +28,7 @@
  */
 
 import type { CheckUnitDto, RecheckUnitDto, RunDto, RunUnitsDto } from "@shuten/shared";
+import controls from "../../styles/controls.module.css";
 import { formatDateTime } from "./format-date-time.ts";
 import {
   FAILURE_ORIGIN_LABELS,
@@ -198,7 +199,7 @@ function RetryControl(props: {
   return (
     <button
       type="button"
-      className={styles.controlButton}
+      className={controls.secondaryButton}
       onClick={() => onRetry(unitId)}
       disabled={disabled}
     >

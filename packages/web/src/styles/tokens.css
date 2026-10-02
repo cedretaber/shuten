@@ -1,21 +1,32 @@
-/** 色・余白・文字サイズのカスタムプロパティ。feature 固有のスタイルはここを参照する。 */
+/** 色・余白・文字サイズ・角丸・書体のカスタムプロパティ。feature 固有のスタイルはここを参照する。
+ *  色の値はこのファイルにだけ書く（style-guard.test.ts が見張る）。比は PR14c の計画に記録した。 */
 :root {
-  /* 色 */
+  /* 色：地と文字 */
   --color-bg: #ffffff;
   --color-bg-muted: #f5f5f5;
   --color-fg: #1a1a1a;
   --color-fg-muted: #595959;
   --color-border: #d9d9d9;
-  --color-accent: #1d4ed8;
-  --color-danger: #b91c1c;
-  --color-danger-bg: #fef2f2;
-  --color-highlight-bg: #fef3c7;
-  --color-highlight-border: #f59e0b;
-  --color-highlight-selected-bg: #bfdbfe;
+
+  /* 色：朱（指摘と操作）。文字・塗りは accent、線は accent-line、選択中の地は accent-bg。
+     選択中は地の濃さだけに頼らず、太い下線・太い枠でも示す（地は白地との比が小さいため） */
+  --color-accent: #c23a22;
+  --color-accent-line: #d9452b;
+  --color-accent-bg: #f6cdbd;
+
+  /* 色：臙脂（エラー）。色だけで見分けず、枠と「エラー」の文字を添える */
+  --color-danger: #9f1239;
+  --color-danger-bg: #fdf2f4;
+
+  /* 色：案内文（エラーでも指摘でもない知らせ）。朱を使わない */
+  --color-notice-bg: #f7f3ea;
+  --color-notice-border: #8a8170;
 
   /* 余白 */
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
+  /* sm と md の間。詳細欄の区画の間など、高さに限りがある所で使う */
+  --space-smd: 0.75rem;
   --space-md: 1rem;
   --space-lg: 1.5rem;
   --space-xl: 2rem;
@@ -25,4 +36,20 @@
   --font-size-md: 1rem;
   --font-size-lg: 1.25rem;
   --font-size-xl: 1.75rem;
+
+  /* アプリの中身の幅の上限。広い画面では中身を中央に置き、左右を余白にする */
+  --content-max-width: 1400px;
+  /* 中身を --content-max-width に収め、中央に置くための左右の余白（最小は lg）。
+     ヘッダーと main で同じ値を使い、左右の端をそろえる */
+  --content-padding-inline: max(var(--space-lg), calc((100% - var(--content-max-width)) / 2));
+
+  /* 角丸 */
+  --radius: 4px;
+  --radius-pill: 999px;
+
+  /* 書体。明朝は本文の列と、詳細の原文・修正案だけに使う */
+  --font-family-sans:
+    system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  --font-family-serif:
+    "游明朝", "Yu Mincho", YuMincho, "Hiragino Mincho ProN", "Noto Serif JP", serif;
 }

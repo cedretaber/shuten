@@ -13,6 +13,7 @@
 import type { ManuscriptVersionDto } from "@shuten/shared";
 import { countGraphemes } from "@shuten/shared";
 import { useMemo, useState } from "react";
+import controls from "../../styles/controls.module.css";
 import { formatDateTime } from "../results/format-date-time.ts";
 import styles from "./manuscript.module.css";
 import { buildPreview } from "./preview.ts";
@@ -67,7 +68,11 @@ export function ManuscriptConfirmed(props: {
         </details>
       )}
 
-      <button type="button" className={styles.resetButton} onClick={onReset}>
+      <button
+        type="button"
+        className={`${controls.secondaryButton} ${styles.resetButton}`}
+        onClick={onReset}
+      >
         別の原稿を選ぶ
       </button>
     </div>

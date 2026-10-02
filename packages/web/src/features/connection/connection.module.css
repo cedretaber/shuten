@@ -22,20 +22,6 @@
   color: var(--color-fg-muted);
 }
 
-.input {
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: var(--font-size-md);
-  color: var(--color-fg);
-  background-color: var(--color-bg);
-}
-
-.input:disabled {
-  background-color: var(--color-bg-muted);
-  cursor: not-allowed;
-}
-
 .checkboxField {
   display: flex;
   align-items: center;
@@ -51,25 +37,6 @@
 
 .saveButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent);
-  border-radius: 4px;
-  background-color: var(--color-accent);
-  color: var(--color-bg);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.saveButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.error {
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
 }
 
 .success {
@@ -103,7 +70,6 @@
 .modelNote {
   margin: 0 0 0 1.5rem;
   font-size: var(--font-size-sm);
-  color: var(--color-danger);
 }
 
 .empty {

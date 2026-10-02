@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client.ts";
 import { ApiClientProvider } from "../../api/context.tsx";
 import { ROUTES, runPath } from "../../app/routes.ts";
+import controls from "../../styles/controls.module.css";
 import { formatDateTime } from "../results/format-date-time.ts";
 import { RunListPage } from "./run-list-page.tsx";
 
@@ -115,6 +116,14 @@ describe("RunListPage", () => {
 
     const link = await screen.findByRole("link", { name: /原稿A/ });
     expect(link).toHaveAttribute("href", runPath("run-1"));
+  });
+
+  it("PR14c: 取得の失敗はエラーの枠で出る", async () => {
+    const getRuns = vi.fn(() => Promise.reject(new Error("実行一覧の取得に失敗しました")));
+    renderPage(makeClient({ getRuns }));
+
+    const message = await screen.findByText("実行一覧の取得に失敗しました");
+    expect(message.className).toContain(controls.errorBox);
   });
 
   it("R8: 取得に失敗したらエラーを表示する（空一覧として見せない）", async () => {

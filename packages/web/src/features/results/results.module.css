@@ -1,6 +1,8 @@
 /**
  * 本文の描画（body-view.tsx）が使うスタイル。
  *
+ * 本文の列は明朝体（PR14c）。
+ *
  * 選択の塗り分けは props 経由で React に描かせる設計（決定 6）なので、ここでは
  * 「選択用 class が付いているかどうか」で見た目を変えるだけで、DOM を直接書き換える
  * スタイル切り替え（例: ref から class を付け外し）は行わない。
@@ -11,7 +13,7 @@
      改行を担う。white-space は継承されるので <p> 側では指定しない。 */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: inherit;
+  font-family: var(--font-family-serif);
   line-height: 1.7;
 }
 
@@ -31,12 +33,13 @@
 
 .highlight {
   cursor: pointer;
-  border-radius: 2px;
-  background-color: var(--color-highlight-bg);
-  box-shadow: inset 0 -0.15em 0 0 var(--color-highlight-border);
+  /* 地を持たず下線だけなので、角丸を付けると下線の両端が細くなる。 */
+  border-radius: 0;
+  box-shadow: inset 0 -0.15em 0 0 var(--color-accent-line);
 }
 
 .highlightSelected {
-  background-color: var(--color-highlight-selected-bg);
-  box-shadow: inset 0 -0.15em 0 0 var(--color-accent);
+  background-color: var(--color-accent-bg);
+  /* 地の濃さだけでは選択していない強調と見分けにくいので、下線も太くする。 */
+  box-shadow: inset 0 -0.25em 0 0 var(--color-accent);
 }

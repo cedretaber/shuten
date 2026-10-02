@@ -22,6 +22,7 @@
 import type { RunDto, RunUnitsDto } from "@shuten/shared";
 import { Link } from "react-router";
 import { ROUTES } from "../../app/routes.ts";
+import controls from "../../styles/controls.module.css";
 import { RecoveryNotice } from "./recovery-notice.tsx";
 import styles from "./results-page.module.css";
 import {
@@ -74,7 +75,7 @@ export function RunControl(props: RunControlProps) {
           {showStop && (
             <button
               type="button"
-              className={styles.controlButton}
+              className={controls.secondaryButton}
               onClick={onStop}
               disabled={busy || !availability.canStop}
             >
@@ -86,7 +87,7 @@ export function RunControl(props: RunControlProps) {
             <div className={styles.controlAction}>
               <button
                 type="button"
-                className={styles.controlButton}
+                className={controls.secondaryButton}
                 onClick={onResume}
                 disabled={busy}
               >
@@ -101,7 +102,7 @@ export function RunControl(props: RunControlProps) {
           {availability.canRetryFailed && (
             <button
               type="button"
-              className={styles.controlButton}
+              className={controls.secondaryButton}
               onClick={onRetryFailed}
               disabled={busy}
             >
@@ -122,7 +123,7 @@ export function RunControl(props: RunControlProps) {
       )}
 
       {failure !== null && (
-        <div className={styles.controlFailure}>
+        <div className={`${controls.errorBox} ${styles.controlFailure}`}>
           {/* `failure.message` は `controlFailureOf` の定型文だけ（サーバーの `error.message` は
               画面に出さない。決定 8）。 */}
           <p className={styles.controlFailureMessage}>{failure.message}</p>

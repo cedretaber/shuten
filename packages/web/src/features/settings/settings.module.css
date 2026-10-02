@@ -46,18 +46,8 @@
   color: var(--color-fg-muted);
 }
 
-.input,
-.select,
-.textarea {
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  font-size: var(--font-size-md);
-  color: var(--color-fg);
-  background-color: var(--color-bg);
-}
-
-.textarea {
+/* 共通の入力欄（controls.input の font: inherit）より後に効かせるため、要素名を足して詳細度を上げる。 */
+textarea.textarea {
   min-height: 6rem;
   resize: vertical;
   font-family: monospace;
@@ -99,7 +89,7 @@
   flex-direction: column;
   gap: var(--space-xs);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: var(--space-sm) var(--space-md);
 }
 
@@ -116,21 +106,6 @@
   font-size: var(--font-size-sm);
 }
 
-.advancedResetButton {
-  padding: var(--space-xs) var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-fg);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-}
-
-.advancedResetButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
 .modelNote {
   font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
@@ -138,28 +113,12 @@
 
 .startButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent);
-  border-radius: 4px;
-  background-color: var(--color-accent);
-  color: var(--color-bg);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.startButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 .error {
   display: flex;
   align-items: center;
   gap: var(--space-md);
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
 }
 
 .error p {
@@ -174,10 +133,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-md);
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
   margin-top: var(--space-sm);
 }
 
@@ -188,17 +143,10 @@
 /*
  * 結果不明（5xx など）からの正しい回収経路は、同じ startOperationId での再送（「再試行」）。
  * 「検査を開始する」を押すと新しい実行 ID になり、元の実行がサーバー側で成功していた場合に
- * 実行が 2 つになりうる（その操作自体は仕様上禁止しない）。塗り潰しにして「検査を開始する」
- * より視覚的に優先し、利用者が正しいほうを選びやすくする（レビュー対応）。
+ * 実行が 2 つになりうる（その操作自体は仕様上禁止しない）。見た目は主な操作（朱の塗り）にそろえる
+ * （PR14c 決定 4 の A）。エラーの枠の中で説明のすぐ横に出るので、見つけやすさは保てる。
+ * ここには配置（縮まない）だけを置く。
  */
 .retryButton {
   flex-shrink: 0;
-  padding: var(--space-xs) var(--space-md);
-  border: 1px solid var(--color-danger);
-  border-radius: 4px;
-  background-color: var(--color-danger);
-  color: var(--color-bg);
-  font-size: var(--font-size-md);
-  font-weight: bold;
-  cursor: pointer;
 }

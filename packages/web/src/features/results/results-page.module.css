@@ -9,6 +9,8 @@
  * `results.module.css` は冒頭コメントのとおり `body-view.tsx` 専用（他のどのコンポーネントも
  * 使っていない）で、ここに置くと既存の役割分担と食い違う。一覧・操作ボタンのスタイルは他の
  * 全コンポーネントと同じくこちらに置く（作業報告に記録）。
+ *
+ * 色・枠・角丸は `styles/controls.module.css`（PR14c）。ここには配置だけを置く。
  */
 
 .page {
@@ -16,13 +18,6 @@
   flex-direction: column;
   gap: var(--space-md);
   height: 100%;
-}
-
-.error {
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
 }
 
 .header {
@@ -64,14 +59,14 @@
   color: var(--color-fg-muted);
 }
 
-/* 中間状態の案内（Task 5、決定 9。`run-control.ts` の `statusNotice`）。エラーではないので
-   `.error`（赤系）ではなく、本文の強調と同じ配色（注意を引くが警告ではない）を使う。 */
+/* 中間状態の案内（Task 5、決定 9。`run-control.ts` の `statusNotice`）。
+   エラーではなく、指摘でもないので、朱でも臙脂でもない案内文の配色を使う（PR14c）。 */
 .statusNotice {
   margin: 0;
   padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
-  background-color: var(--color-highlight-bg);
-  border: 1px solid var(--color-highlight-border);
+  border-radius: var(--radius);
+  background-color: var(--color-notice-bg);
+  border: 1px solid var(--color-notice-border);
   color: var(--color-fg);
   font-size: var(--font-size-sm);
 }
@@ -93,21 +88,6 @@
   gap: var(--space-sm);
 }
 
-.controlButton {
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent);
-  border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.controlButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
 .controlAction {
   display: flex;
   flex-direction: column;
@@ -124,10 +104,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
 }
 
 .controlFailureMessage {
@@ -239,23 +215,11 @@
 
 .refreshButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent);
-  border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.refreshButton:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 /*
  * 採否の保存の失敗（PR21 レビュー指摘 2）。選択を変えても消えない場所（ヘッダー直下）に出す。
- * `.error`（更新失敗のエラーと同じ配色）をベースに、複数件を積める一覧にする。
+ * エラーの枠（`controls.errorBox`）と並べて付け、複数件を積める一覧にする。
  */
 .judgmentErrorList {
   list-style: none;
@@ -272,10 +236,6 @@
   align-items: baseline;
   gap: var(--space-xs);
   min-width: 0;
-  color: var(--color-danger);
-  background-color: var(--color-danger-bg);
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
 }
 
 /* どの指摘の保存が失敗したかを示す引用。文字列自体は切り詰めず、はみ出しだけ CSS で省略する
@@ -310,8 +270,12 @@
  * 右の列は全体ではなく、中の `.detailPane` と `.findingsPane` がそれぞれスクロールする。
  */
 .bodyColumn {
-  flex: 1 1 60%;
+  /* 本文の 1 行を 40 字前後に抑える（日本語の本文で読みやすいとされる長さ。PR14c）。
+     40 字ぶんに、右の余白とスクロールバーのぶんを足した幅にし、残りは右の列が使う。
+     狭い画面では縮む。 */
+  flex: 0 1 calc(40em + var(--space-md) + 1rem);
   min-width: 0;
+  padding-right: var(--space-md);
   overflow-y: auto;
 }
 
@@ -337,7 +301,7 @@
   margin: 0;
   padding: var(--space-md);
   border: 1px dashed var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   color: var(--color-fg-muted);
   font-size: var(--font-size-sm);
 }
@@ -351,7 +315,7 @@
 
 .filterDetails {
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: var(--space-xs) var(--space-sm);
 }
 
@@ -394,7 +358,7 @@
   flex-wrap: wrap;
   gap: var(--space-xs) var(--space-sm);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: var(--space-xs) var(--space-sm);
 }
 
@@ -413,7 +377,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   min-width: 0;
 }
 
@@ -424,18 +388,32 @@
   width: 100%;
   min-width: 0;
   text-align: left;
-  padding: var(--space-xs) var(--space-sm);
+  /* クリックする行なので、内側を広めに取る（PR14c）。 */
+  padding: var(--space-sm) var(--space-smd);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background-color: var(--color-bg);
   color: var(--color-fg);
   font: inherit;
   cursor: pointer;
 }
 
+/* 一覧はスクロール領域の幅いっぱいなので、フォーカスの枠を内側に出して切れないようにする。 */
+.findingRow:focus-visible {
+  outline-offset: -2px;
+}
+
 .findingRowSelected {
   border-color: var(--color-accent);
-  background-color: var(--color-highlight-selected-bg);
+  background-color: var(--color-accent-bg);
+  /* 枠を内側に 1px 足して 2px に見せる（border を太くすると行の大きさが変わるため）。 */
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+/* 選択中の行の濃い地の上では、フォーカスの枠の朱の線（accent-line）の比が 3 を割るので、
+   選択の枠と同じ accent で描く（PR #37 のレビュー）。 */
+.findingRowSelected:focus-visible {
+  outline-color: var(--color-accent);
 }
 
 .findingMeta {
@@ -445,10 +423,6 @@
   min-width: 0;
   font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
-}
-
-.findingLocateFailure {
-  color: var(--color-danger);
 }
 
 /*
@@ -483,8 +457,10 @@
 .findingGroupCount {
   flex: none;
   padding: 0 var(--space-xs);
-  border: 1px solid var(--color-accent);
-  border-radius: 999px;
+  border: 1px solid var(--color-accent-line);
+  border-radius: var(--radius-pill);
+  /* 選択中の行の濃い地の上では朱の文字が読みにくいので、白地で抜く。 */
+  background-color: var(--color-bg);
   font-size: var(--font-size-sm);
   color: var(--color-accent);
 }
@@ -498,10 +474,12 @@
 .detail {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  /* 余白は近接の原則で付ける（PR14c）。見出しと中身の間（.detail section の xs）より、
+     区画どうしの間（ここと .member の smd）を広くして、まとまりが分かるようにする。 */
+  gap: var(--space-smd);
   min-width: 0;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: var(--space-sm) var(--space-md);
 }
 
@@ -527,8 +505,13 @@
 
 /* 同じ範囲の指摘のまとめ（PR14b）。指摘ごとの区画を線で区切る。案の見出し（h4）は、
    `.detail h3, .detail h4` より詳細度を上げて通常の文字の大きさ・色にする。 */
+/* 指摘 1 件ぶんの区画（修正案・採否・理由…）を並べる入れ物。区画どうしの間を広く取る。 */
+.detail .member {
+  gap: var(--space-smd);
+}
+
 .groupMember {
-  padding-top: var(--space-sm);
+  padding-top: var(--space-smd);
   border-top: 1px dashed var(--color-border);
 }
 
@@ -596,9 +579,14 @@
   word-break: break-word;
 }
 
+/* 詳細の原文と修正案だけ明朝体にして、本文の列と見比べやすくする（UI の見直し 3 節）。
+   同じ .detailQuote を使う理由・元候補・位置診断はゴシックのまま。 */
 .suggestionInvalidNote {
-  color: var(--color-danger);
   font-size: var(--font-size-sm);
+}
+
+.detailSerif {
+  font-family: var(--font-family-serif);
 }
 
 .detailReasonList {
@@ -624,7 +612,7 @@
   text-align: left;
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background-color: var(--color-bg);
   color: var(--color-fg);
   font: inherit;
@@ -633,15 +621,12 @@
   word-break: break-word;
 }
 
+.detailRelatedButton:hover {
+  border-color: var(--color-accent-line);
+}
+
 .detailNavigateButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent);
-  border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
 }
 
 /* 採否と判断メモの操作子（Task 8、決定 13）。 */
@@ -656,7 +641,7 @@
   flex-wrap: wrap;
   gap: var(--space-xs) var(--space-sm);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: var(--space-xs) var(--space-sm);
 }
 
@@ -693,34 +678,16 @@
 .judgmentNoteTextarea {
   resize: vertical;
   min-height: 4em;
-  font: inherit;
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-fg);
 }
 
 .judgmentSaveButton {
   align-self: flex-start;
-  padding: var(--space-xs) var(--space-lg);
-  border: 1px solid var(--color-accent);
-  border-radius: 4px;
-  background-color: var(--color-bg);
-  color: var(--color-accent);
-  font-size: var(--font-size-md);
-  cursor: pointer;
-}
-
-.judgmentSaveButton:disabled {
-  opacity: 0.6;
-  cursor: default;
 }
 
 /*
  * 失敗単位の一覧（Task 6、決定 6・12。`failed-units.tsx`）。`RunHeader` の下、2 カラムの
- * レイアウト（`.layout`）より上に置く（裁定 R3）。ボタンは `.controlButton`（`run-control.tsx`
- * と同じ見た目）をそのまま使う。
+ * レイアウト（`.layout`）より上に置く（裁定 R3）。ボタンは `controls.secondaryButton`（`run-control.tsx`
+ * と同じ部品）をそのまま使う。
  */
 .failedUnits {
   display: flex;
@@ -747,7 +714,7 @@
   flex-direction: column;
   gap: var(--space-xs);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: var(--space-sm);
 }
 

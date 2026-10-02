@@ -12,6 +12,7 @@
 import type { ChangeEvent } from "react";
 import { useState } from "react";
 import { ApiRequestError } from "../../api/errors.ts";
+import controls from "../../styles/controls.module.css";
 import styles from "./manuscript.module.css";
 import type { ManuscriptApi } from "./use-manuscript.ts";
 
@@ -72,7 +73,7 @@ export function ManuscriptEditor(props: { api: ManuscriptApi }): React.JSX.Eleme
     <div className={styles.editor}>
       <h2>原稿</h2>
 
-      {api.restoreError !== null && <p className={styles.error}>{api.restoreError}</p>}
+      {api.restoreError !== null && <p className={controls.errorBox}>{api.restoreError}</p>}
 
       <fieldset className={styles.section}>
         <legend className={styles.legend}>入力方法</legend>
@@ -107,7 +108,7 @@ export function ManuscriptEditor(props: { api: ManuscriptApi }): React.JSX.Eleme
           </label>
           <textarea
             id="manuscript-body"
-            className={styles.textarea}
+            className={`${controls.input} ${styles.textarea}`}
             value={pasteBody}
             onChange={(event) => setPasteBody(event.target.value)}
           />
@@ -128,7 +129,7 @@ export function ManuscriptEditor(props: { api: ManuscriptApi }): React.JSX.Eleme
         </label>
         <input
           id="manuscript-name"
-          className={styles.input}
+          className={controls.input}
           type="text"
           value={name}
           onChange={(event) => setName(event.target.value)}
@@ -137,7 +138,7 @@ export function ManuscriptEditor(props: { api: ManuscriptApi }): React.JSX.Eleme
 
       <button
         type="button"
-        className={styles.confirmButton}
+        className={`${controls.primaryButton} ${styles.confirmButton}`}
         disabled={confirmDisabled}
         onClick={() => {
           void handleConfirm();
@@ -146,7 +147,7 @@ export function ManuscriptEditor(props: { api: ManuscriptApi }): React.JSX.Eleme
         この原稿を確定する
       </button>
 
-      {confirmError !== null && <p className={styles.error}>{confirmError}</p>}
+      {confirmError !== null && <p className={controls.errorBox}>{confirmError}</p>}
     </div>
   );
 }
