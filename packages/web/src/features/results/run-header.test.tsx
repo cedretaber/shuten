@@ -11,9 +11,10 @@
  */
 
 import type { ProgressDto, RunDto, RunUnitsDto, UnitStatusCounts } from "@shuten/shared";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
+import styles from "./results-page.module.css";
 import { RunHeader, type RunHeaderProps } from "./run-header.tsx";
 
 function makeRun(overrides: Partial<RunDto> = {}): RunDto {
@@ -204,5 +205,38 @@ describe("RunHeader: RunControl への配線", () => {
       }),
     );
     expect(screen.getByText("すでに実行中です。最新の状態を取得しました。")).toBeInTheDocument();
+  });
+});
+
+describe("RunHeader: 2 行の構成（UI の見直し 1 節）", () => {
+  it("1 行目に名前・状態・進捗・操作、2 行目にモデルと時刻が入る", () => {
+    const { container } = render(
+      <MemoryRouter>
+        <RunHeader
+          run={makeRun({ status: "running" })}
+          manuscriptName="原稿 A"
+          progress={makeProgress({ checkUnits: makeCounts({ done: 1, pending: 1 }) })}
+          units={null}
+          slowUnitCount={0}
+          onRefresh={() => {}}
+          refreshing={false}
+          onStop={() => {}}
+          onResume={() => {}}
+          onRetryFailed={() => {}}
+          onConfirmRecovery={() => {}}
+          pending={null}
+          failure={null}
+        />
+      </MemoryRouter>,
+    );
+    const main = container.querySelector(`.${styles.headerMain}`) as HTMLElement;
+    const meta = container.querySelector(`.${styles.headerMeta}`) as HTMLElement;
+    expect(within(main).getByRole("heading", { name: "原稿 A" })).toBeInTheDocument();
+    expect(within(main).getByText("状態: 実行中")).toBeInTheDocument();
+    expect(within(main).getByText(/^検査: 完了 1 \/ 全 2 件/)).toBeInTheDocument();
+    expect(within(main).getByRole("button", { name: "停止" })).toBeInTheDocument();
+    expect(within(main).getByRole("button", { name: "最新の状態を取得" })).toBeInTheDocument();
+    expect(within(meta).getByText("モデル: model-a")).toBeInTheDocument();
+    expect(within(meta).getByText(/^開始: /)).toBeInTheDocument();
   });
 });

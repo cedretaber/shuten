@@ -6,6 +6,9 @@
  * なるため）。数値はすべて「n / m 件」の形で出し、`total === 0` のときだけ「準備中」と出す
  * （`0 / 0` を「完了」に見せないため）。
  *
+ * 件数の行は常に見せ、内訳と観点別は「詳しい進捗」に折りたたむ（UI の見直し 1 節。仕様 5.3 の
+ * 上部の観点別の進捗は折りたたみの中で満たす）。
+ *
  * `results-page.tsx`（Task 5）が `run-header.tsx` の中に埋め込む想定だが、ここでは単独の
  * コンポーネントとして完結させる。
  */
@@ -30,46 +33,50 @@ export function RunProgress(props: RunProgressProps) {
   const checkTally = tallyOf(progress.checkUnits);
   const recheckTally = tallyOf(progress.recheckUnits);
   const perspectives = perspectiveTallies(units);
+  const recheckNote =
+    checkTally.done + checkTally.notApplicable < checkTally.total
+      ? "検査が進むと件数が増えます"
+      : null;
 
   return (
     <div className={styles.progress}>
-      <UnitTallySection label="検査" tally={checkTally} />
+      <div className={styles.progressSummary}>
+        <UnitTallyLine label="検査" tally={checkTally} />
+        {recheckEnabled ? (
+          <UnitTallyLine
+            label="再確認"
+            tally={recheckTally}
+            // 再確認の単位は検査が終わった範囲の指摘から作られるので、検査が残っている間は
+            // 総数が増えていく。「完了 3 / 全 3 件」を終わったと読まれないよう、そのことを添える。
+            note={recheckNote}
+          />
+        ) : (
+          <p className={styles.progressLine}>再確認なし</p>
+        )}
+      </div>
 
-      {recheckEnabled ? (
-        <UnitTallySection
-          label="再確認"
-          tally={recheckTally}
-          // 再確認の単位は検査が終わった範囲の指摘から作られるので、検査が残っている間は
-          // 総数が増えていく。「完了 3 / 全 3 件」を終わったと読まれないよう、そのことを添える。
-          note={
-            checkTally.done + checkTally.notApplicable < checkTally.total
-              ? "検査が進むと件数が増えます"
-              : null
-          }
-        />
-      ) : (
-        <p className={styles.progressLine}>再確認なし</p>
-      )}
-
-      {/*
-       * I-1（レビュー指摘）：「完了 n / 全 m 件」だけでは残りが「対象外」か「処理中」か
-       * 区別できない。決定 11「観点別：checkUnits を perspective で分け、状態別の件数を出す」
-       * と仕様 11 節 3 項「観点ごとの処理状態」に従い、検査・再確認と同じ `UnitTallySection`
-       * （状態別の内訳つき）を観点ごとに出す。`perspectiveTallies` が返す観点は常に 1 件以上の
-       * 単位を持つ（`units` に現れない観点は含まれない）ので、ここで `total === 0` の
-       * 「準備中」表示になることはない。
-       */}
-      {perspectives.length > 0 && (
-        <div className={styles.progressPerspectiveList}>
-          {perspectives.map(({ perspective, tally }) => (
-            <UnitTallySection
-              key={perspective}
-              label={PERSPECTIVE_LABELS[perspective]}
-              tally={tally}
-            />
-          ))}
-        </div>
-      )}
+      <details className={styles.progressDetails}>
+        <summary className={styles.progressDetailsSummary}>詳しい進捗</summary>
+        <UnitTallyBreakdown label="検査" tally={checkTally} />
+        {recheckEnabled && <UnitTallyBreakdown label="再確認" tally={recheckTally} />}
+        {/*
+         * I-1（レビュー指摘）：「完了 n / 全 m 件」だけでは残りが「対象外」か「処理中」か
+         * 区別できない。決定 11「観点別：checkUnits を perspective で分け、状態別の件数を出す」
+         * と仕様 11 節 3 項「観点ごとの処理状態」に従い、観点ごとに件数の行と状態別の内訳を
+         * 組で出す。`perspectiveTallies` が返す観点は常に 1 件以上の単位を持つ（`units` に
+         * 現れない観点は含まれない）ので、ここで `total === 0` の「準備中」になることはない。
+         */}
+        {perspectives.length > 0 && (
+          <div className={styles.progressPerspectiveList}>
+            {perspectives.map(({ perspective, tally }) => (
+              <div key={perspective} className={styles.progressSection}>
+                <UnitTallyLine label={PERSPECTIVE_LABELS[perspective]} tally={tally} />
+                <UnitTallyBreakdown tally={tally} />
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
 
       {slowUnitCount > 0 && (
         <p className={styles.progressSlowNotice}>
@@ -80,26 +87,35 @@ export function RunProgress(props: RunProgressProps) {
   );
 }
 
-function UnitTallySection(props: {
+function UnitTallyLine(props: {
   readonly label: string;
   readonly tally: UnitTally;
   /** 件数の後ろに括弧で添える補足。無ければ null か省略。 */
   readonly note?: string | null;
 }) {
   const { label, tally, note = null } = props;
-
   if (tally.total === 0) {
     return <p className={styles.progressLine}>{label}: 準備中</p>;
   }
-
   return (
-    <div className={styles.progressSection}>
-      <p className={styles.progressLine}>
-        {label}: {formatCount(tally)}
-        {note !== null && `（${note}）`}
-      </p>
-      {/* 決定 11：対象外（not-applicable）は分母に含めたうえで内訳として別に出す。ついでに
-          失敗・処理中・未処理も内訳として出す（割合ではなく件数のみ）。 */}
+    <p className={styles.progressLine}>
+      {label}: {formatCount(tally)}
+      {note !== null && `（${note}）`}
+    </p>
+  );
+}
+
+/**
+ * 状態別の内訳（決定 11：対象外は分母に含めたうえで内訳として別に出す。失敗・処理中・未処理も
+ * 件数のみ）。`label` を渡すと先頭に「検査」などの見出しを付ける（観点別の行では付けない）。
+ * `total === 0` のときは何も出さない（件数の行が「準備中」を出す）。
+ */
+function UnitTallyBreakdown(props: { readonly label?: string; readonly tally: UnitTally }) {
+  const { label, tally } = props;
+  if (tally.total === 0) return null;
+  return (
+    <div className={styles.progressBreakdown}>
+      {label !== undefined && <span className={styles.progressBreakdownLabel}>{label}</span>}
       <ul className={styles.progressDetailList}>
         <li>
           {UNIT_STATUS_LABELS.failed} {tally.failed} 件

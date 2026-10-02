@@ -54,6 +54,22 @@ export const DEFAULT_FINDING_FILTER: FindingFilter = {
   showWithdrawn: false,
 };
 
+/**
+ * 絞り込みが既定のまま（`DEFAULT_FINDING_FILTER` と同じ）か。折りたたんだ絞り込みに
+ * 「絞り込み中」を出すかどうかの判定に使う（UI の見直し 1 節）。全選択は `toggleFilterValue` が
+ * null に正規化するので、配列の中身を比べる必要はない。
+ */
+export function isDefaultFilter(filter: FindingFilter): boolean {
+  return (
+    filter.categories === null &&
+    filter.judgments === null &&
+    filter.recheckStates === null &&
+    filter.locateStates === null &&
+    filter.showSuppressed === DEFAULT_FINDING_FILTER.showSuppressed &&
+    filter.showWithdrawn === DEFAULT_FINDING_FILTER.showWithdrawn
+  );
+}
+
 export function recheckStateOf(finding: FindingDto): RecheckState {
   const { recheck } = finding;
   if (recheck === null) {

@@ -1191,7 +1191,7 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     }
   });
 
-  it("一覧の行をクリックすると移動し、本文の強調をクリックしたときは移動しない", async () => {
+  it("本文の強調をクリックすると一覧の行へ、一覧の行をクリックすると本文の強調へ移動する", async () => {
     const user = userEvent.setup();
     const finding1 = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一" });
     const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
@@ -1206,21 +1206,24 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     const highlight = document.querySelector('[data-findings~="finding-1"]') as HTMLElement;
     expect(highlight).not.toBeNull();
 
-    // 本文の強調をクリック：選択は変わる（詳細パネルが出る）が、移動はしない
-    // （すでに見えている場所なので画面を跳ねさせる必要が無いため）。
+    // 本文の強調をクリック：選択は変わる（詳細が出る）。本文の強調自体へは移動しない
+    // （すでに見えている場所なので）。代わりに一覧の該当行を見える位置へ送る（UI の見直し 1 節）。
     await user.click(highlight);
     await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
-    expect(scrollIntoView).not.toHaveBeenCalled();
+    const rowItem = document.querySelector('[data-finding-id="finding-1"]') as HTMLElement;
+    expect(rowItem).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    // `this`（呼び出された要素）を見るには `mock.contexts` を使う。`mock.instances` は
+    // `new` 呼び出しで生成されたインスタンスを記録する API で、通常の呼び出しでは意図した用途ではない。
+    expect(scrollIntoView.mock.contexts[0]).toBe(rowItem);
+    expect(scrollIntoView.mock.contexts).not.toContain(highlight);
 
-    // 一覧の行をクリック：同じ指摘を選び直すだけでも、正しい要素（強調）に対して移動する。
+    // 一覧の行をクリック：本文の強調へ移動する（既存の動き）。
     const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
     await user.click(row);
 
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    // `this`（呼び出された要素）を見るには `mock.contexts` を使う。`mock.instances` は
-    // `new` 呼び出しで生成されたインスタンスを記録する API で、通常の呼び出しでも実装上
-    // `this` が入ってしまうが、それは `contexts` の役割であり `instances` の意図した用途ではない。
-    expect(scrollIntoView.mock.contexts[0]).toBe(highlight);
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView.mock.contexts[1]).toBe(highlight);
   });
 
   it("詳細の『本文の該当箇所へ移動』を押すと移動する（位置未確定なら検査対象範囲の段落へ）", async () => {
@@ -2647,6 +2650,99 @@ describe("ResultsPage: Task 8 前タスクの申し送り 2・3", () => {
       expect(
         screen.queryByText("すでに実行中です。最新の状態を取得しました。"),
       ).not.toBeInTheDocument(),
+    );
+  });
+});
+
+describe("ResultsPage: 右の列の 2 段（UI の見直し 1 節）", () => {
+  function setup(findings: FindingDto[]) {
+    const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
+    const getManuscript = vi.fn(() => Promise.resolve(makeManuscript()));
+    const getFindings = vi.fn(() => Promise.resolve(findings));
+    const getFinding = vi.fn((id: string) => Promise.resolve(makeFindingDetail({ id })));
+    return makeClient({ getRun, getManuscript, getFindings, getFinding });
+  }
+
+  it("選んでいないときは詳細の位置に案内が出て、選ぶと詳細に替わる", async () => {
+    const user = userEvent.setup();
+    renderPage(setup([makeFinding({ id: "finding-1", quote: "一", range: { start: 0, end: 1 } })]));
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument();
+
+    await user.click(document.querySelector('[data-findings~="finding-1"]') as HTMLElement);
+    await waitFor(() =>
+      expect(
+        screen.queryByText("本文の強調か一覧から指摘を選んでください"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("詳細は絞り込みと一覧より前（上）にある", async () => {
+    const user = userEvent.setup();
+    renderPage(setup([makeFinding({ id: "finding-1", quote: "一", range: { start: 0, end: 1 } })]));
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    await user.click(document.querySelector('[data-findings~="finding-1"]') as HTMLElement);
+
+    const detailPane = document.querySelector(`.${findingListStyles.detailPane}`) as HTMLElement;
+    const filterDetails = document.querySelector(
+      `.${findingListStyles.filterDetails}`,
+    ) as HTMLElement;
+    expect(detailPane).not.toBeNull();
+    expect(filterDetails).not.toBeNull();
+    // detailPane が filterDetails より前にある
+    expect(
+      detailPane.compareDocumentPosition(filterDetails) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("絞り込みは閉じた状態で件数を出し、既定から変えると「絞り込み中」が付き、戻すと消える", async () => {
+    const user = userEvent.setup();
+    renderPage(setup([makeFinding({ id: "finding-1", quote: "一", range: { start: 0, end: 1 } })]));
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+
+    const filterDetails = document.querySelector(
+      `.${findingListStyles.filterDetails}`,
+    ) as HTMLDetailsElement;
+    expect(filterDetails.open).toBe(false);
+    expect(within(filterDetails).getByText(/を表示中/)).toBeInTheDocument();
+    expect(screen.queryByText("・絞り込み中")).not.toBeInTheDocument();
+
+    const toggle = within(filterDetails).getByRole("checkbox", {
+      name: "抑制された指摘も表示する",
+    });
+    await user.click(toggle);
+    expect(screen.getByText("・絞り込み中")).toBeInTheDocument();
+    await user.click(toggle);
+    expect(screen.queryByText("・絞り込み中")).not.toBeInTheDocument();
+  });
+
+  it("絞り込みで選択中の指摘が消えると、詳細の位置に案内が戻る", async () => {
+    const user = userEvent.setup();
+    renderPage(
+      setup([
+        makeFinding({
+          id: "finding-1",
+          quote: "一",
+          range: { start: 0, end: 1 },
+          category: "notation",
+        }),
+      ]),
+    );
+    await waitFor(() => expect(screen.getByText("1 / 1 件")).toBeInTheDocument());
+    await user.click(document.querySelector('[data-findings~="finding-1"]') as HTMLElement);
+    await waitFor(() =>
+      expect(
+        screen.queryByText("本文の強調か一覧から指摘を選んでください"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // 分類「誤字・表記」（notation）を外す
+    const filterDetails = document.querySelector(
+      `.${findingListStyles.filterDetails}`,
+    ) as HTMLElement;
+    await user.click(within(filterDetails).getByRole("checkbox", { name: "誤字・表記" }));
+    await waitFor(() =>
+      expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument(),
     );
   });
 });

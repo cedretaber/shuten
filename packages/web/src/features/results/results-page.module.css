@@ -14,8 +14,8 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
-  padding: var(--space-lg);
+  gap: var(--space-md);
+  height: 100%;
 }
 
 .error {
@@ -31,13 +31,30 @@
   gap: var(--space-xs);
 }
 
-.status {
+/* 1 行目：名前・状態・件数・操作。幅が足りなければ折り返す。 */
+.headerMain {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-md);
+}
+
+.headerTitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+/* 2 行目：モデルと時刻。小さめの文字で 1 行に並べる。 */
+.headerMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
 }
 
 .statusLine {
+  margin: 0;
   font-size: var(--font-size-md);
   color: var(--color-fg);
 }
@@ -64,14 +81,15 @@
  */
 .controlPanel {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-sm);
 }
 
 .controlButtons {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-sm);
 }
 
@@ -149,6 +167,34 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
+}
+
+/* 件数の行（検査・再確認）。ヘッダーの 1 行目に横並びで入る（UI の見直し 1 節）。 */
+.progressSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-md);
+}
+
+/* 状態別・観点別の内訳を畳む「詳しい進捗」。閉じているときは summary の 1 行だけになる。 */
+.progressDetails {
+  font-size: var(--font-size-sm);
+}
+
+.progressDetailsSummary {
+  cursor: pointer;
+  color: var(--color-fg-muted);
+}
+
+.progressBreakdown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-sm);
+}
+
+.progressBreakdownLabel {
+  color: var(--color-fg);
 }
 
 .progressSection {
@@ -252,34 +298,72 @@
 .layout {
   display: flex;
   gap: var(--space-lg);
-  align-items: flex-start;
+  flex: 1 1 auto;
+  /* ヘッダーや案内文が高くなっても、2 カラムが潰れきらない最低限の高さ。足りない分は
+     アプリの `main` がスクロールする（Review Focus 4）。 */
+  min-height: 20rem;
 }
 
 /*
- * 本文（左）と指摘一覧・詳細（右）を独立してスクロールさせる（Task 9、決定 15）。長い原稿で
- * 本文側を下まで送っても、右側の一覧・詳細が画面外に流れて見えなくならないようにするのが目的。
- *
- * 高さは実ブラウザで確認して決めた（jsdom の `getBoundingClientRect()` は常に 0 を返すため
- * テストでは検証できない）：アプリ共通のヘッダー（`app/header.module.css` の `.header`。
- * 1280×800 の実測で約 49px、折り返す幅ではもう少し高い）と、この画面自身の上端の余白
- * （`.page` の上下 `padding`）を差し引く。アプリのヘッダーは固定・追従しない（スクロールで
- * 画面外へ流れる）ため、実際に使える高さより少なめに見積もる形になるが、その分は 2 カラムの
- * 下に余白が残るだけで、独立スクロールの成立は妨げない。
+ * 本文（左）と右の列を独立してスクロールさせる（PR12a Task 9、決定 15）。UI の見直し 1 節で、
+ * 固定値の引き算（`calc(100vh - …)`）をやめ、`.page`（`main` の高さ）を縦 flex で埋める形にした。
+ * 右の列は全体ではなく、中の `.detailPane` と `.findingsPane` がそれぞれスクロールする。
  */
-.bodyColumn,
-.sideColumn {
-  height: calc(100vh - 3.5rem - (2 * var(--space-lg)));
-  overflow-y: auto;
-}
-
 .bodyColumn {
   flex: 1 1 60%;
   min-width: 0;
+  overflow-y: auto;
 }
 
 .sideColumn {
   flex: 1 1 40%;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* 詳細：右の列の上に固定。高さは列の半分に固定し、超えたらこの中だけでスクロール。
+   狭い画面でも採否のラジオまで枠に入るよう、高さに下限を付ける（1280×600 の実測で、列の半分では
+   202px になり採否が枠の外に出たため）。 */
+.detailPane {
+  flex: 0 0 auto;
+  height: 50%;
+  min-height: 16rem;
+  overflow-y: auto;
+}
+
+.detailEmpty {
+  margin: 0;
+  padding: var(--space-md);
+  border: 1px dashed var(--color-border);
+  border-radius: 4px;
+  color: var(--color-fg-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* 絞り込み＋一覧：詳細の下の残りの高さを使い、この中でスクロールする。 */
+.findingsPane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.filterDetails {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.filterSummary {
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.filterActive {
+  color: var(--color-accent);
+  font-weight: bold;
 }
 
 /*
@@ -383,7 +467,7 @@
 }
 
 /*
- * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.sideColumn` の中、`.findingsPanel` の下に置く。
+ * 選択した指摘の詳細（Task 7、決定 3・9・12）。`.detailPane` の中に置く。
  * 引用・修正案・理由・判断メモは `.findingQuote` と違い**折り返して全文を表示する**
  * （一覧の見出しと違い、詳細では省略しない。ブリーフの指示）。
  */
@@ -391,11 +475,39 @@
 .detail {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  gap: var(--space-sm);
   min-width: 0;
   border: 1px solid var(--color-border);
   border-radius: 4px;
-  padding: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+}
+
+/* 詳細の区画を詰める（PR14a。右の列の上の限られた高さで、採否まで見えるようにする）。
+   finding-detail.tsx の素の section / h3 / p にブラウザ既定の余白が付いていたため。項目と並び順は変えない。 */
+.detail section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.detail h3 {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}
+
+.detail p,
+.detail ul {
+  margin: 0;
+}
+
+.judgmentControl fieldset {
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.judgmentControl legend {
+  padding: 0;
 }
 
 /*

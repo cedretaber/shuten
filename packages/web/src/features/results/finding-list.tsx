@@ -66,7 +66,7 @@ function FindingListItem(props: {
     : styles.findingRow;
 
   return (
-    <li>
+    <li data-finding-id={finding.id}>
       <button
         type="button"
         className={rowClassName}

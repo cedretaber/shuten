@@ -27,7 +27,3 @@ header {
   border-bottom: 1px solid var(--color-border);
   padding: var(--space-md) var(--space-lg);
 }
-
-main {
-  padding: var(--space-lg);
-}
