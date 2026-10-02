@@ -323,12 +323,11 @@
   gap: var(--space-md);
 }
 
-/* 詳細：右の列の上に固定。高さは列のおよそ半分まで、超えたらこの中だけでスクロール。 */
+/* 詳細：右の列の上に固定。高さは列の半分に固定し、超えたらこの中だけでスクロール。 */
 .detailPane {
   flex: 0 0 auto;
-  max-height: 50%;
+  height: 50%;
   overflow-y: auto;
-  min-height: 0;
 }
 
 .detailEmpty {
@@ -502,6 +501,10 @@
 .judgmentControl fieldset {
   margin: 0;
   padding: var(--space-xs) var(--space-sm);
+}
+
+.judgmentControl legend {
+  padding: 0;
 }
 
 /*
