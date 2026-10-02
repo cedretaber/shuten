@@ -1,0 +1,17 @@
+/**
+ * アプリの枠（UI の見直し 1 節）。ヘッダーの下の `main` を残りの高さに収め、はみ出したら `main` の
+ * 中でスクロールさせる。結果画面はこの高さの中で 2 カラムを伸ばし、ページ全体をスクロールさせない。
+ * 他の画面は今までどおり `main` の中で縦にスクロールする。
+ */
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-lg);
+}
