@@ -1,8 +1,10 @@
-import type { FindingDto } from "@shuten/shared";
+import type { FindingCategory, FindingDto } from "@shuten/shared";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_FINDING_FILTER,
+  FILTER_CATEGORY_OPTIONS,
   type FindingFilter,
+  isDefaultFilter,
   matchesFilter,
   recheckStateOf,
   toggleFilterValue,
@@ -264,5 +266,28 @@ describe("toggleFilterValue", () => {
   it("空配列に 1 つ足すとその 1 要素の配列になる", () => {
     const empty: readonly (typeof all)[number][] = [];
     expect(toggleFilterValue(empty, all, "a")).toEqual(["a"]);
+  });
+});
+
+describe("isDefaultFilter", () => {
+  it("DEFAULT_FINDING_FILTER は既定とみなす", () => {
+    expect(isDefaultFilter(DEFAULT_FINDING_FILTER)).toBe(true);
+  });
+
+  it("各項目が 1 つでも既定と違えば既定ではない", () => {
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, categories: ["grammar"] })).toBe(false);
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, judgments: [] })).toBe(false);
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, recheckStates: ["done"] })).toBe(false);
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, locateStates: ["located"] })).toBe(false);
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, showSuppressed: true })).toBe(false);
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, showWithdrawn: true })).toBe(false);
+  });
+
+  it("toggleFilterValue で一度外して戻すと既定に戻る（全選択は null に正規化される）", () => {
+    const off = toggleFilterValue(null, FILTER_CATEGORY_OPTIONS, FILTER_CATEGORY_OPTIONS[0]);
+    const back = toggleFilterValue(off, FILTER_CATEGORY_OPTIONS, FILTER_CATEGORY_OPTIONS[0]) as
+      | readonly FindingCategory[]
+      | null;
+    expect(isDefaultFilter({ ...DEFAULT_FINDING_FILTER, categories: back })).toBe(true);
   });
 });
