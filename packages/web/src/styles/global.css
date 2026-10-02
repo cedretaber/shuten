@@ -45,6 +45,11 @@ a {
   color: var(--color-accent);
 }
 
+/* ラジオボタン・チェックボックスの選択中の色。ブラウザ既定の青を朱にそろえる。 */
+:root {
+  accent-color: var(--color-accent);
+}
+
 /* キーボードで移ったときの枠。ブラウザ既定の青を朱の線にそろえる（操作は足さない）。 */
 :focus-visible {
   outline: 2px solid var(--color-accent-line);

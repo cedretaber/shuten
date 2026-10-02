@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 作成日：2026-10-02
-状態：計画（ユーザー承認済み、2026-10-02）
+状態：実装済み（Windows のブラウザでの見え方はユーザーの確認待ち）
 
 **Goal:** 全画面の配色と部品の形を、朱筆（白地・朱・本文明朝）にそろえる。項目・文言・動きは変えない。
 
@@ -559,3 +559,27 @@ Run: `pnpm check` → PASS
 - 自動テスト：コントラスト比と CSS の書き方（Task 1）、各画面の部品の割り当て（Task 2・3）。
 - WSL2 の Chrome：配色、枠、「エラー」の出方、配置、`font-family` の指定（Task 4）。
 - Windows のブラウザ（ユーザー）：明朝体の見え方、朱と臙脂の色味、本文の強調と選択の見分け。
+
+## 実装時の調整
+
+- **手入力の欄の書体**：`controls.input` は `font: inherit` を持つ。原稿と検査設定の等幅の textarea は、
+  `textarea.textarea` と詳細度を上げて等幅を保った。
+- **最終レビューで直したこと**：
+  - 不適切と判定された修正案の注記は、元の小さい文字（`--font-size-sm`）に戻した。
+  - ボタンの `line-height` を 1.2 にした。`font: inherit` で body の 1.6 を受け継ぎ、ボタンが高くなっていたため。
+  - 本文の強調の角丸は 0 にした。地がなく下線だけなので、角丸を付けると下線の両端が細くなるため。
+  - 一覧の行のフォーカスの枠は、内側（`outline-offset: -2px`）に出した。スクロール領域の端で切れないようにするため。
+  - 再試行のボタン（決めたこと 4）のテストを足した。
+- **見送ったこと**：
+  - 「エラー」と本文の間の余白は、親の `gap` が足されるので、箇所によって少し違う。差が小さいので見送った。
+  - `style-guard.test.ts` は、名前付きの色（`red` など）や `border-*-radius` の直書きを検出しない。
+    今のコードには該当がないので見送った。
+- **足したこと**：ラジオボタンとチェックボックスがブラウザ既定の青のままだった。そのため、`:root` に
+  `accent-color: var(--color-accent)` を足して朱にそろえた（見た目だけ）。
+- **実ブラウザでの確認**（WSL2 の Chrome。PR14b と同じ DB の写しを使い、LLM は呼んでいない）：
+  - 1908×856 と 1280×600 のどちらでも、ページ全体はスクロールしなかった。
+  - 本文の強調は朱の下線、選択中の箇所は薄い朱の地になった。一覧の選択中の行も薄い朱の地になった。
+  - 主な操作（保存・確定・開始）は朱の塗り、ほかのボタンは朱の枠だけになった。
+  - `.errorBox::before` の `content` は「エラー」、文字と枠は臙脂になっていた。
+  - 本文の列と、詳細の原文・修正案の computed `font-family` は、明朝の並びになっていた。
+  - WSL2 には日本語フォントがないので、明朝体で描かれるかは確かめていない。
