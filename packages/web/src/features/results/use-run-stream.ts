@@ -82,7 +82,7 @@ function refreshKindOf(event: RunEventDto): RefreshKind | null {
 export function useRunStream(options: RunStreamOptions): void {
   const apiClient = useApiClient();
   // コールバックは依存に入れない（上記 1 の理由）。毎レンダー同期するだけの ref で渡す
-  // （`results-page.tsx` の `selectedFindingIdRef` と同じ流儀）。
+  // （`results-page.tsx` の `groupsRef`・`refreshDetailsRef` と同じ流儀）。
   const optionsRef = useRef(options);
   optionsRef.current = options;
 

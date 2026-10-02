@@ -75,7 +75,7 @@
  * 「一覧の行をクリックしたとき」（`handleSelectFindingFromList`）と「詳細の『本文の該当箇所へ
  * 移動』を押したとき」（`FindingDetail` の `onNavigate`）の 2 経路だけ。本文の強調をクリックして
  * 選んだとき（`handleSelectFinding`、`BodyView` に渡す方）は本文へ移動しない（すでに見えている場所なので
- * 画面を跳ねさせる必要が無い）。代わりに一覧の該当行を見える位置へ送る。詳細内の「関連する他の指摘」の
+ * 画面を跳ねさせる必要が無い）。代わりに一覧の該当行を見える位置へ送る。詳細内の「範囲が重なる他の指摘」の
  * リンク（`FindingDetail` の `onSelectFinding`）も同じ関数で選ぶので、同様に一覧の行を送る。
  * 該当する検査対象が `targets` に無い（`navigationTargetOf` が
  * `null` を返す）ときは `FindingDetail` に `onNavigate` を渡さず、移動の操作子そのものを出さない。
@@ -801,7 +801,7 @@ export function ResultsPage() {
   // 本文の強調から選んだときは、本文へは移動せず（すでに見えている場所をクリックしたので、画面を
   // 跳ねさせる必要が無い。本文へ移動する経路は `handleSelectFindingFromList` と `FindingDetail` の
   // `onNavigate` の 2 つだけ。Task 9）、一覧の該当行を見える位置へ送る（UI の見直し 1 節）。
-  // 詳細内の「関連する他の指摘」のリンクからも同じ関数で選ぶので、その場合も一覧の行を送る。
+  // 詳細内の「範囲が重なる他の指摘」のリンクからも同じ関数で選ぶので、その場合も一覧の行を送る。
   const handleSelectFinding = useCallback((findingId: string) => {
     // 同じ範囲の指摘はまとめの先頭を選択中とする（UI の見直し 2 節）。
     const headId = groupContaining(groupsRef.current, findingId)?.head.id ?? findingId;
@@ -853,13 +853,6 @@ export function ResultsPage() {
   const handleFilterChange = useCallback((next: FindingFilter) => {
     setFilter(next);
   }, []);
-
-  // 選ぶ指摘が変わったら、詳細の中のスクロールを先頭に戻す（前の指摘の途中の位置が残らないように）。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `selectedFindingId` の変化だけを合図に走らせる（effect の中では読まない）
-  useEffect(() => {
-    const pane = detailPaneRef.current;
-    if (pane !== null) pane.scrollTop = 0;
-  }, [selectedFindingId]);
 
   // 採否の保存に失敗した指摘の一覧（PR21 レビュー指摘 2）。`findingId` をキーにする——同じ指摘で
   // 保存をやり直せば、成功時にも新しい失敗時にもこのキーが上書き・削除されるので二重に残らない。
@@ -963,6 +956,19 @@ export function ResultsPage() {
     memberIds,
   );
   refreshDetailsRef.current = refreshDetails;
+
+  // 別のまとめを選んだら、詳細の中のスクロールを先頭に戻す（前のまとめの途中の位置が残らないように）。
+  // 先頭が絞り込みから外れて同じまとめの中で引き継いだとき・絞り込みを戻して先頭が増えたときは、
+  // メンバーが重なるので戻さない（useFindingDetails の「同じまとめ」と同じ判定）。
+  const previousMemberIdsRef = useRef<readonly string[]>([]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `memberIds` の変化だけを合図に走らせる（effect の中では読まない）
+  useEffect(() => {
+    const previous = previousMemberIdsRef.current;
+    previousMemberIdsRef.current = memberIds;
+    if (memberIds.some((id) => previous.includes(id))) return;
+    const pane = detailPaneRef.current;
+    if (pane !== null) pane.scrollTop = 0;
+  }, [memberIds]);
   const overlapping = useMemo(
     () => (selectedGroup === null ? EMPTY_GROUPS : overlappingGroups(selectedGroup, groups)),
     [selectedGroup, groups],

@@ -127,6 +127,16 @@ describe("useFindingDetails", () => {
     expect(result.current.entries.get("a")?.detail?.id).toBe("a");
   });
 
+  it("先頭が増えて重なりがあれば（b から a, b）同じまとめ。b の値を残し、a だけ取る", async () => {
+    const { load, calls } = controlledLoad();
+    const { result, rerender } = renderDetails(load, ["b"]);
+    await act(async () => calls[0]?.resolve(detailOf("b")));
+
+    rerender({ memberIds: ["a", "b"] });
+    expect(load.mock.calls.map(([id]) => id)).toEqual(["b", "a"]);
+    expect(result.current.entries.get("b")?.detail?.id).toBe("b");
+  });
+
   it("先頭が同じまま減ったら、減った分の値を捨て、遅れて届いた応答も捨てる", async () => {
     const { load, calls } = controlledLoad();
     const { result, rerender } = renderDetails(load, ["a", "b"]);

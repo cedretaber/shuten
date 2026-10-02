@@ -7,10 +7,11 @@
  *
  * 規則は `fetchDetail` のものを指摘ごとに広げた形にする。
  *
- * - 新しい先頭（`memberIds[0]`）が前の `memberIds` に入っていなければ選び直しとみなし、
+ * - 新しい `memberIds` が空か、前の `memberIds` と 1 件も重ならなければ選び直しとみなし、
  *   全部の値を捨てて全員分を取り直す（前の指摘の詳細を出したままにしない）。
- * - 入っていれば同じまとめの中身が変わっただけとみなし、減った分の値を捨て、増えた分だけ取る
- *   （先頭が絞り込みから外れて 2 件目が先頭になったときに、2 件目を取り直さない）。
+ * - 1 件でも重なれば同じまとめの中身が変わっただけとみなし（1 つの指摘は 1 つの範囲にしか
+ *   属さない）、減った分の値を捨て、増えた分だけ取る（先頭が絞り込みから外れて 2 件目が先頭に
+ *   なったときも、絞り込みを戻して先頭が増えたときも、残った指摘を取り直さない）。
  * - `refresh()` は全員分を取り直す。前の値を残したまま取りに行く（レビュー M-1。点滅させない）。
  *   失敗したら前の値を残して `error` を入れる（`finding-detail.tsx` が「更新できませんでした」の
  *   1 行を出す）。
@@ -83,8 +84,7 @@ export function useFindingDetails(
     const ids = idsKey === "" ? [] : idsKey.split(ID_SEPARATOR);
     const previous = idsRef.current;
     idsRef.current = ids;
-    const head = ids[0];
-    if (head === undefined || !previous.includes(head)) {
+    if (ids.length === 0 || !ids.some((id) => previous.includes(id))) {
       // 選び直し（別のまとめを選んだ、または選択を外した）。前の要求の応答はすべて捨て、
       // 全員分を取り直す。
       latestRef.current = new Map();
@@ -94,7 +94,7 @@ export function useFindingDetails(
       }
       return;
     }
-    // 同じまとめの中身だけが変わった（先頭が外れて 2 件目が先頭になった場合を含む）。
+    // 同じまとめの中身だけが変わった（先頭が増減した場合を含む）。
     const keep = new Set(ids);
     for (const findingId of Array.from(latestRef.current.keys())) {
       if (!keep.has(findingId)) {

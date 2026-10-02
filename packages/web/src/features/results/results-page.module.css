@@ -513,7 +513,8 @@
   gap: var(--space-xs);
 }
 
-.detail h3 {
+.detail h3,
+.detail h4 {
   margin: 0;
   font-size: var(--font-size-sm);
   color: var(--color-fg-muted);
@@ -522,6 +523,23 @@
 .detail p,
 .detail ul {
   margin: 0;
+}
+
+/* 同じ範囲の指摘のまとめ（PR14b）。指摘ごとの区画を線で区切る。案の見出し（h4）は、
+   `.detail h3, .detail h4` より詳細度を上げて通常の文字の大きさ・色にする。 */
+.groupMember {
+  padding-top: var(--space-sm);
+  border-top: 1px dashed var(--color-border);
+}
+
+.detail .groupMemberHeading {
+  font-size: var(--font-size-md);
+  color: var(--color-fg);
+}
+
+.hiddenSameRange {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
 }
 
 .judgmentControl fieldset {
@@ -763,19 +781,4 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-}
-
-/* 同じ範囲の指摘のまとめ（PR14b）。指摘ごとの区画を線で区切る。 */
-.groupMember {
-  padding-top: var(--space-sm);
-  border-top: 1px dashed var(--color-border);
-}
-
-.groupMemberHeading {
-  font-size: var(--font-size-md);
-}
-
-.hiddenSameRange {
-  font-size: var(--font-size-sm);
-  color: var(--color-fg-muted);
 }
