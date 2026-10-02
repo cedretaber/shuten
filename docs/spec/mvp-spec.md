@@ -1,8 +1,8 @@
 # 朱点（shuten）MVP仕様書
 
 - 作成日：2026-09-06
-- 改訂：2026-10-02 13節の未決事項を評価結果に基づき仮置き（v0.9.3）
-- 状態：実装前の仕様案（確定）
+- 改訂：2026-10-03 アプリ v1.0.0 のリリースに合わせて版を上げる（v1.0）
+- 状態：MVP として実装済み（アプリ v1.0.0）
 - 対象：Windows上のローカル環境、単一ユーザー
 
 ## 1. 目的
@@ -281,27 +281,50 @@ APIキーを検査履歴に含めない。再確認前の候補と撤回理由�
 
 ## 11. MVPの受け入れ条件
 
-- [ ] 実際のLM Studio環境でモデルを選択し、生成要求と結果取得ができる。
-- [ ] 貼り付けとUTF-8テキスト読み込みの両方から検査できる。
-- [ ] 全本文が検査対象として割り当てられ、選択した観点ごとの処理状態を確認できる。
-- [ ] 前後の参考文脈を付けた分割検査と、文脈を広げた再確認が動作する。
-- [ ] 再確認の有無を切り替えて比較でき、撤回候補も確認できる。
-- [ ] 指摘から原文の該当箇所に移動し、正しい範囲が強調される。
-- [ ] 同一引用の反復、段落境界、CRLF、異体字セレクタ、結合文字、絵文字を含む原稿で位置がずれず、書記素クラスタの途中で分割されない。
-- [ ] 短い会話段落が連続しても文字数基準の参考文脈が渡される。
-- [ ] 位置特定失敗が一覧に表示され、LLMの引用と診断候補（または候補なし）が保存される。診断候補は正式な位置に割り当てられない。
-- [ ] 許容語による表記訂正の抑制が機能し、登録語内の部分的な表記訂正も抑制され、文法・文脈上の問題は抑制されず、抑制候補を再閲覧できる。
-- [ ] 重複統合後に再確認され、初回判定を保持したまま最終判定が表示される。作者の採否は上書きされない。
-- [ ] 採用予定・却下・保留を変更して保存でき、本文は変化しない。
-- [ ] ブラウザの再読み込み後も結果と判断が保持される。
-- [ ] 中断後に初回検査・再確認の未完了分を同じ実行IDで再開でき、失敗を指摘ゼロと誤表示しない。
-- [ ] 同じ原稿版・設定で新規検査を開始すると別の実行IDになり、指摘・再確認結果・採否が実行間で混ざらない。
-- [ ] 複数タブ・複数原稿の操作でもLLM生成要求がバックエンド全体の単一キューで処理される。
-- [ ] 参考文脈内から始まる候補は採用されず診断記録に残り、検査対象内から始まり参考文脈へ続く引用は採用される。
-- [ ] 生成終了を確認できない場合に「復旧待ち」となり、自動で後続生成を送信しない。
-- [ ] 不正JSON、存在しない引用、出力打ち切りを検知でき、JSON内の `<think>` などの引用文字列を破壊しない。
-- [ ] 本文と指示の区切り、非追従の指示、出力検証を実装し、命令文を含む原稿での逸脱を評価・記録する。あらゆるインジェクションの防止を合格条件にはしない。
-- [ ] 実原稿で評価指標を記録し、品質上の制約を確認できる。
+v1.0 の時点で 21 件すべてを満たした。各項目の末尾に根拠を記す。「自動テストのみ」は、実機で該当する状況が起きなかったか、実機での確認をしていない項目である。機能の完成の判定であり、実用上十分な校正品質の判定（10 節）とは別である。
+
+- [x] 実際のLM Studio環境でモデルを選択し、生成要求と結果取得ができる。
+  （実機：`docs/decisions/0002-scaffold-conventions.md` の「検証状況」（2026-09-10、2026-10-02）、`docs/experiments/2026-10-02-browser-check/`）
+- [x] 貼り付けとUTF-8テキスト読み込みの両方から検査できる。
+  （自動テスト：`packages/server/src/api/manuscripts.test.ts`、`packages/web/src/features/manuscript/manuscript.test.tsx`。実機では貼り付けで確認）
+- [x] 全本文が検査対象として割り当てられ、選択した観点ごとの処理状態を確認できる。
+  （自動テスト：`packages/shared/src/chunk/plan.test.ts`、`packages/web/src/features/results/run-progress.test.tsx`。実機：`docs/decisions/0002-scaffold-conventions.md` の「検証状況」（2026-10-02））
+- [x] 前後の参考文脈を付けた分割検査と、文脈を広げた再確認が動作する。
+  （自動テスト：`packages/server/src/run/pipeline.test.ts`。実機：`docs/experiments/2026-10-02-browser-check/`）
+- [x] 再確認の有無を切り替えて比較でき、撤回候補も確認できる。
+  （検査設定の「再確認を行う」と、絞り込みの「撤回された指摘も表示する」。方式の比較は `docs/experiments/2026-09-13-real-manuscript-evaluation/`。2 つの実行を並べる画面は持たない）
+- [x] 指摘から原文の該当箇所に移動し、正しい範囲が強調される。
+  （自動テスト：`packages/web/src/features/results/navigate.test.ts`、`body-view.test.tsx`。実機：`docs/experiments/2026-10-02-browser-check/`、`docs/decisions/0002-scaffold-conventions.md` の「検証状況」（2026-10-02））
+- [x] 同一引用の反復、段落境界、CRLF、異体字セレクタ、結合文字、絵文字を含む原稿で位置がずれず、書記素クラスタの途中で分割されない。
+  （自動テストのみ：`packages/shared/src/locate/locate.test.ts`、`packages/shared/src/chunk/plan.test.ts`、`packages/shared/test/fixtures/`（Windows の CI でも実行））
+- [x] 短い会話段落が連続しても文字数基準の参考文脈が渡される。
+  （自動テスト：`packages/shared/src/chunk/plan.test.ts`）
+- [x] 位置特定失敗が一覧に表示され、LLMの引用と診断候補（または候補なし）が保存される。診断候補は正式な位置に割り当てられない。
+  （自動テストのみ：`packages/server/src/run/pipeline.test.ts`、`packages/server/src/db/repositories/diagnostics.test.ts`、`packages/web/src/features/results/finding-detail.test.tsx`。実原稿では位置特定失敗が 0 件で、実機では未確認）
+- [x] 許容語による表記訂正の抑制が機能し、登録語内の部分的な表記訂正も抑制され、文法・文脈上の問題は抑制されず、抑制候補を再閲覧できる。
+  （自動テストのみ：`packages/shared/src/merge/allowed-words.test.ts`、`packages/web/src/features/results/finding-filter.test.ts`。実原稿の評価では許容語を使っていない）
+- [x] 重複統合後に再確認され、初回判定を保持したまま最終判定が表示される。作者の採否は上書きされない。
+  （自動テスト：`packages/server/src/run/merge-store.test.ts`、`packages/server/src/api/findings.test.ts`）
+- [x] 採用予定・却下・保留を変更して保存でき、本文は変化しない。
+  （自動テスト：`packages/server/src/api/findings.test.ts`、`packages/web/src/features/results/judgment-control.test.tsx`）
+- [x] ブラウザの再読み込み後も結果と判断が保持される。
+  （実機：`docs/decisions/0002-scaffold-conventions.md` の「検証状況」（2026-09-10、2026-10-02））
+- [x] 中断後に初回検査・再確認の未完了分を同じ実行IDで再開でき、失敗を指摘ゼロと誤表示しない。
+  （自動テスト：`packages/server/src/run/pipeline.test.ts`、`packages/web/src/features/results/failed-units.test.tsx`。実機：`docs/experiments/2026-10-02-browser-check/`、`docs/decisions/0002-scaffold-conventions.md` の「検証状況」（2026-10-02））
+- [x] 同じ原稿版・設定で新規検査を開始すると別の実行IDになり、指摘・再確認結果・採否が実行間で混ざらない。
+  （自動テスト：`packages/server/src/run/orchestrator.start.test.ts`、`packages/server/src/db/schema.test.ts`）
+- [x] 複数タブ・複数原稿の操作でもLLM生成要求がバックエンド全体の単一キューで処理される。
+  （自動テストのみ：`packages/server/src/run/queue.test.ts`。キューはプロセスに 1 個だけ作る（`packages/server/src/index.ts`）。複数タブでの同時操作は実機で確かめていない）
+- [x] 参考文脈内から始まる候補は採用されず診断記録に残り、検査対象内から始まり参考文脈へ続く引用は採用される。
+  （自動テスト：`packages/shared/src/locate/locate.test.ts`、`packages/server/src/run/pipeline.test.ts`）
+- [x] 生成終了を確認できない場合に「復旧待ち」となり、自動で後続生成を送信しない。
+  （自動テスト：`packages/server/src/run/orchestrator.stop.test.ts`、`orchestrator.reconcile.test.ts`。実機：`docs/decisions/0002-scaffold-conventions.md` の「検証状況」（2026-10-02））
+- [x] 不正JSON、存在しない引用、出力打ち切りを検知でき、JSON内の `<think>` などの引用文字列を破壊しない。
+  （自動テスト：`packages/server/src/prompts/parse.test.ts`（P4〜P9、P17）、`packages/server/src/lmstudio/client.test.ts`、`packages/server/src/run/pipeline.test.ts`）
+- [x] 本文と指示の区切り、非追従の指示、出力検証を実装し、命令文を含む原稿での逸脱を評価・記録する。あらゆるインジェクションの防止を合格条件にはしない。
+  （実装：`packages/server/src/prompts/`。評価：`docs/experiments/2026-09-08-prompt-injection/`（2026-10-03 に採用モデルで取り直し））
+- [x] 実原稿で評価指標を記録し、品質上の制約を確認できる。
+  （`docs/experiments/2026-09-13-real-manuscript-evaluation/`、`docs/decisions/0004-evaluation-settings.md`。確認時間は未測定）
 
 ## 12. 次段階への拡張
 
@@ -331,6 +354,12 @@ APIキーを検査履歴に含めない。再確認前の候補と撤回理由�
 接続方式の参照先であり、実装時はインストール済みのLM Studioと対象モデルで対応を確認する。
 
 ## 15. 改訂記録
+
+### v1.0（2026-10-03）
+
+- アプリ v1.0.0 のリリースに合わせて版を v1.0 に上げ、状態を「MVP として実装済み」に改めた。
+- 11節の受け入れ条件を、根拠を添えて達成済みとした。命令文を含む原稿での逸脱は、採用モデルで取り直してから達成とした（`docs/experiments/2026-09-08-prompt-injection/` の追記）。
+- 要件の内容は v0.9.3 から変えていない。13節で仮置きとした事項は仮置きのままで、使用の中で見直す。
 
 ### v0.9.3（2026-10-02）
 
