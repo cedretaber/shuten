@@ -13,10 +13,6 @@
      改行を担う。white-space は継承されるので <p> 側では指定しない。 */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  /* 本文の 1 行を 40 字前後に抑え、列の中央に置く（日本語の本文で読みやすいとされる長さ。PR14c）。
-     列の幅（画面の 6 割）は変えず、余りは本文の左右の余白にする。 */
-  max-width: 40em;
-  margin-inline: auto;
   font-family: var(--font-family-serif);
   line-height: 1.7;
 }

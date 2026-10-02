@@ -270,8 +270,12 @@
  * 右の列は全体ではなく、中の `.detailPane` と `.findingsPane` がそれぞれスクロールする。
  */
 .bodyColumn {
-  flex: 1 1 60%;
+  /* 本文の 1 行を 40 字前後に抑える（日本語の本文で読みやすいとされる長さ。PR14c）。
+     40 字ぶんに、右の余白とスクロールバーのぶんを足した幅にし、残りは右の列が使う。
+     狭い画面では縮む。 */
+  flex: 0 1 calc(40em + var(--space-md) + 1rem);
   min-width: 0;
+  padding-right: var(--space-md);
   overflow-y: auto;
 }
 

@@ -37,6 +37,12 @@
   --font-size-lg: 1.25rem;
   --font-size-xl: 1.75rem;
 
+  /* アプリの中身の幅の上限。広い画面では中身を中央に置き、左右を余白にする */
+  --content-max-width: 1400px;
+  /* 中身を --content-max-width に収め、中央に置くための左右の余白（最小は lg）。
+     ヘッダーと main で同じ値を使い、左右の端をそろえる */
+  --content-padding-inline: max(var(--space-lg), calc((100% - var(--content-max-width)) / 2));
+
   /* 角丸 */
   --radius: 4px;
   --radius-pill: 999px;

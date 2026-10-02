@@ -4,7 +4,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-md);
-  padding: var(--space-sm) var(--space-lg);
+  padding: var(--space-sm) var(--content-padding-inline);
   border-bottom: 1px solid var(--color-border);
   background-color: var(--color-bg-muted);
 }
