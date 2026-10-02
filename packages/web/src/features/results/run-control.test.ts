@@ -324,9 +324,43 @@ describe("statusNotice", () => {
     expect(statusNotice(run)).toBe("一部の検査が失敗しました。未処理の範囲があります。");
   });
 
-  it("stopped の案内文", () => {
+  it("stopped の案内文（progress が無いときは可能性として書く）", () => {
     const run = makeRun({ status: "stopped", stopReason: "aborted" });
     expect(statusNotice(run)).toBe("停止中です。未処理の範囲が残っている可能性があります。");
+  });
+
+  it("stopped で検査の未処理・失敗が残っていれば言い切る", () => {
+    const run = makeRun({ status: "stopped", stopReason: "aborted" });
+    const counts = { pending: 0, running: 0, done: 3, failed: 0, "not-applicable": 0 };
+    expect(
+      statusNotice(run, {
+        checkUnits: { ...counts, pending: 9 },
+        recheckUnits: counts,
+      }),
+    ).toBe("停止中です。未処理の範囲があります。");
+    expect(
+      statusNotice(run, {
+        checkUnits: { ...counts, failed: 1 },
+        recheckUnits: { ...counts, pending: 2 },
+      }),
+    ).toBe("停止中です。未処理の範囲があります。");
+  });
+
+  it("stopped で検査は済み、再確認だけが残っていれば「範囲」とは書かない", () => {
+    const run = makeRun({ status: "stopped", stopReason: "aborted" });
+    const counts = { pending: 0, running: 0, done: 3, failed: 0, "not-applicable": 0 };
+    expect(
+      statusNotice(run, {
+        checkUnits: counts,
+        recheckUnits: { ...counts, failed: 1 },
+      }),
+    ).toBe("停止中です。再確認が済んでいない指摘があります。");
+  });
+
+  it("stopped で残りが無ければ「停止中です。」だけ", () => {
+    const run = makeRun({ status: "stopped", stopReason: "aborted" });
+    const counts = { pending: 0, running: 0, done: 3, failed: 0, "not-applicable": 1 };
+    expect(statusNotice(run, { checkUnits: counts, recheckUnits: counts })).toBe("停止中です。");
   });
 
   it("running・停止要求なしは null", () => {

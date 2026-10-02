@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDateTime } from "./format-date-time.ts";
+import { formatDateTime, formatTime } from "./format-date-time.ts";
 
 describe("formatDateTime", () => {
   it("offsetMinutes=0 なら Z 付きの ISO 文字列を UTC のまま整形する", () => {
@@ -39,5 +39,15 @@ describe("formatDateTime", () => {
   it("offsetMinutes=-300 で年をまたぐ（前年側）", () => {
     // UTC 2026-01-01 03:00:00 - 5h = 2025-12-31 22:00:00。
     expect(formatDateTime("2026-01-01T03:00:00.000Z", -300)).toBe("2025-12-31 22:00:00");
+  });
+});
+
+describe("formatTime", () => {
+  it("formatDateTime の時刻部分だけを返す", () => {
+    expect(formatTime("2026-10-02T01:23:41.000Z", 540)).toBe("10:23:41");
+  });
+
+  it("日付をまたいでも時刻だけを返す", () => {
+    expect(formatTime("2026-10-01T15:00:00.000Z", 540)).toBe("00:00:00");
   });
 });

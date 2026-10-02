@@ -69,7 +69,7 @@ export function RunHeader(props: RunHeaderProps) {
     failure,
   } = props;
   const settingsStop = isSettingsStop(run);
-  const notice = statusNotice(run);
+  const notice = statusNotice(run, progress);
 
   return (
     <div className={styles.header}>

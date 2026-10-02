@@ -13,6 +13,7 @@
 import type { ManuscriptVersionDto } from "@shuten/shared";
 import { countGraphemes } from "@shuten/shared";
 import { useMemo, useState } from "react";
+import { formatDateTime } from "../results/format-date-time.ts";
 import styles from "./manuscript.module.css";
 import { buildPreview } from "./preview.ts";
 
@@ -26,7 +27,7 @@ export function ManuscriptConfirmed(props: {
   const graphemeCount = useMemo(() => countGraphemes(version.body), [version.body]);
   const preview = useMemo(() => buildPreview(version.body), [version.body]);
   const createdAtLabel = useMemo(
-    () => new Date(version.createdAt).toLocaleString("ja-JP"),
+    () => formatDateTime(version.createdAt, -new Date(version.createdAt).getTimezoneOffset()),
     [version.createdAt],
   );
 
