@@ -39,10 +39,10 @@ LM Studio 上のローカル LLM を使い、Windows 上の単一ユーザー環
 
 まだ確かめていないことは次のとおり。
 
-- ローカルの Windows 環境で確かめたのは PR11 の 9 項目まで。PR11c 以降は実機で確認しておらず、
-  Windows では CI（`pnpm check`）だけが通っている。
-- 実 LLM を動かした画面の通し確認は、WSL2 上のサーバーと Chrome でだけ行った
-  （`docs/experiments/2026-10-02-browser-check/`）。Windows のブラウザでは表示だけを確かめた。
+- 実 LLM を動かした画面の通し確認は、WSL2 上のサーバーと Chrome
+  （`docs/experiments/2026-10-02-browser-check/`）と、Windows 上のサーバーと Chromium 系のブラウザ
+  （2026-10-02、`docs/decisions/0002-scaffold-conventions.md` の「検証状況」）で行った。
+  後者では、同じ範囲の指摘を 1 行にまとめる表示だけが、該当する指摘が出ず未確認のまま残っている。
 - 実原稿での評価（PR13b）では、命令文を含む原稿での取り直し、全文チャット方式の人手集計、
   確認時間の実測を行っていない。画面経由の実行は、採用モデル・既定の設定で 1 回行った。
 
@@ -116,8 +116,8 @@ LM Studio への接続を閉じ、DB を閉じてから終了する（`shutdown:
 終了コード 1 で落ちる。2 回目のシグナルは待たずに終了する。
 
 **Windows では `SIGTERM` が届かない。** 対象はコンソールの Ctrl+C（`SIGINT`）だけになる。
-なお Windows での動作確認は CI（`windows-latest` の `pnpm check`）でのみ行っており、**ローカルの
-Windows 環境では未確認**（`docs/guides/windows-verification.md` のチェックポイントで確認する）。
+この経路は CI を通らないため、ローカルの Windows 環境で `docs/guides/windows-verification.md` の手順に沿って
+確かめた（2026-09-10 と 2026-10-02。後者では実行中の Ctrl+C からの復旧まで通した）。
 
 ## 評価用 CLI（`packages/cli`）
 
