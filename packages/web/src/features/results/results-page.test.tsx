@@ -1191,7 +1191,7 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     }
   });
 
-  it("一覧の行をクリックすると移動し、本文の強調をクリックしたときは移動しない", async () => {
+  it("本文の強調をクリックすると一覧の行へ、一覧の行をクリックすると本文の強調へ移動する", async () => {
     const user = userEvent.setup();
     const finding1 = makeFinding({ id: "finding-1", range: { start: 0, end: 1 }, quote: "一" });
     const getRun = vi.fn(() => Promise.resolve(makeRunDetail({ status: "completed" })));
@@ -1206,21 +1206,24 @@ describe("ResultsPage: Task 9 指摘から本文への移動", () => {
     const highlight = document.querySelector('[data-findings~="finding-1"]') as HTMLElement;
     expect(highlight).not.toBeNull();
 
-    // 本文の強調をクリック：選択は変わる（詳細パネルが出る）が、移動はしない
-    // （すでに見えている場所なので画面を跳ねさせる必要が無いため）。
+    // 本文の強調をクリック：選択は変わる（詳細が出る）。本文の強調自体へは移動しない
+    // （すでに見えている場所なので）。代わりに一覧の該当行を見える位置へ送る（UI の見直し 1 節）。
     await user.click(highlight);
     await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-1"));
-    expect(scrollIntoView).not.toHaveBeenCalled();
+    const rowItem = document.querySelector('[data-finding-id="finding-1"]') as HTMLElement;
+    expect(rowItem).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    // `this`（呼び出された要素）を見るには `mock.contexts` を使う。`mock.instances` は
+    // `new` 呼び出しで生成されたインスタンスを記録する API で、通常の呼び出しでは意図した用途ではない。
+    expect(scrollIntoView.mock.contexts[0]).toBe(rowItem);
+    expect(scrollIntoView.mock.contexts).not.toContain(highlight);
 
-    // 一覧の行をクリック：同じ指摘を選び直すだけでも、正しい要素（強調）に対して移動する。
+    // 一覧の行をクリック：本文の強調へ移動する（既存の動き）。
     const row = document.querySelector(`.${findingListStyles.findingRow}`) as HTMLElement;
     await user.click(row);
 
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    // `this`（呼び出された要素）を見るには `mock.contexts` を使う。`mock.instances` は
-    // `new` 呼び出しで生成されたインスタンスを記録する API で、通常の呼び出しでも実装上
-    // `this` が入ってしまうが、それは `contexts` の役割であり `instances` の意図した用途ではない。
-    expect(scrollIntoView.mock.contexts[0]).toBe(highlight);
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView.mock.contexts[1]).toBe(highlight);
   });
 
   it("詳細の『本文の該当箇所へ移動』を押すと移動する（位置未確定なら検査対象範囲の段落へ）", async () => {

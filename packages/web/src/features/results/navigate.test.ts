@@ -9,7 +9,12 @@
 
 import type { FindingDto, RunTargetDto } from "@shuten/shared";
 import { describe, expect, it, vi } from "vitest";
-import { findTargetElement, navigationTargetOf, scrollIntoViewIfPossible } from "./navigate.ts";
+import {
+  findListRow,
+  findTargetElement,
+  navigationTargetOf,
+  scrollIntoViewIfPossible,
+} from "./navigate.ts";
 
 const RUN_ID = "run-1";
 
@@ -149,6 +154,29 @@ describe("findTargetElement", () => {
     const container = document.getElementById("container") as HTMLElement;
     expect(findTargetElement(container, { kind: "finding", findingId: "no-such-id" })).toBeNull();
     expect(findTargetElement(container, { kind: "paragraph", paragraphId: 0 })).toBeNull();
+  });
+});
+
+describe("findListRow", () => {
+  it("data-finding-id が一致する要素を返す", () => {
+    const container = document.createElement("div");
+    const row = document.createElement("li");
+    row.dataset.findingId = "finding-1";
+    container.append(row);
+    expect(findListRow(container, "finding-1")).toBe(row);
+  });
+
+  it("無ければ null を返す（絞り込みで一覧に無い指摘）", () => {
+    const container = document.createElement("div");
+    expect(findListRow(container, "finding-1")).toBeNull();
+  });
+
+  it("ID にセレクターの特殊文字が含まれても探せる", () => {
+    const container = document.createElement("div");
+    const row = document.createElement("li");
+    row.dataset.findingId = 'a"b';
+    container.append(row);
+    expect(findListRow(container, 'a"b')).toBe(row);
   });
 });
 

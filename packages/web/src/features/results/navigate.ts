@@ -73,6 +73,13 @@ export function findTargetElement(
   return container.querySelector<HTMLElement>(selector);
 }
 
+/** 一覧の行（`finding-list.tsx` の `<li data-finding-id>`）を探す。無ければ null（絞り込みで一覧に無い）。 */
+export function findListRow(container: HTMLElement, findingId: string): HTMLElement | null {
+  return container.querySelector<HTMLElement>(
+    `[data-finding-id="${escapeForSelector(findingId)}"]`,
+  );
+}
+
 /** jsdom には scrollIntoView が無い（申し送り 3）。有るときだけ呼ぶ。 */
 export function scrollIntoViewIfPossible(element: Element): void {
   if (typeof element.scrollIntoView === "function") {

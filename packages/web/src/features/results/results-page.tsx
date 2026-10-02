@@ -67,10 +67,10 @@
  * `findTargetElement` で要素を探し、`scrollIntoViewIfPossible` で移動する。移動するのは
  * 「一覧の行をクリックしたとき」（`handleSelectFindingFromList`）と「詳細の『本文の該当箇所へ
  * 移動』を押したとき」（`FindingDetail` の `onNavigate`）の 2 経路だけ。本文の強調をクリックして
- * 選んだとき（`handleSelectFinding`、`BodyView` に渡す方）と、詳細内の「関連する他の指摘」の
- * リンクをクリックしたとき（`FindingDetail` の `onSelectFinding`）は移動しない
- * （前者はすでに見えている場所なので画面を跳ねさせる必要が無いため。後者は仕様が求める 2 経路に
- * 含まれないため、範囲を広げない）。該当する検査対象が `targets` に無い（`navigationTargetOf` が
+ * 選んだとき（`handleSelectFinding`、`BodyView` に渡す方）は本文へ移動しない（すでに見えている場所なので
+ * 画面を跳ねさせる必要が無い）。代わりに一覧の該当行を見える位置へ送る。詳細内の「関連する他の指摘」の
+ * リンク（`FindingDetail` の `onSelectFinding`）も同じ関数で選ぶので、同様に一覧の行を送る。
+ * 該当する検査対象が `targets` に無い（`navigationTargetOf` が
  * `null` を返す）ときは `FindingDetail` に `onNavigate` を渡さず、移動の操作子そのものを出さない。
  *
  * 採否と判断メモ（Task 8、決定 13）：`putJudgment` の呼び出しはこのコンポーネント（`handleSaveJudgment`）
@@ -165,7 +165,12 @@ import { FindingFilterControls } from "./finding-filter.tsx";
 import { FindingList } from "./finding-list.tsx";
 import { RUN_STATUS_LABELS } from "./labels.ts";
 import type { NavigationTarget } from "./navigate.ts";
-import { findTargetElement, navigationTargetOf, scrollIntoViewIfPossible } from "./navigate.ts";
+import {
+  findListRow,
+  findTargetElement,
+  navigationTargetOf,
+  scrollIntoViewIfPossible,
+} from "./navigate.ts";
 import styles from "./results-page.module.css";
 import { type ControlFailure, controlFailureOf, type PendingControlAction } from "./run-control.ts";
 import { isSettingsStop, RunHeader } from "./run-header.tsx";
@@ -808,11 +813,20 @@ export function ResultsPage() {
 
   // 本文の強調（クリック）と一覧の行（クリック）の両方から同じ状態を更新する。参照を安定させ、
   // `BodyView` 側の `React.memo`（`paragraphPropsEqual`）の抑止が効くようにする。
-  // ここでは選択するだけで本文への移動はしない（本文の強調はすでに見えている場所をクリックした
-  // ものなので、画面を跳ねさせる必要が無い。移動する経路は `handleSelectFindingFromList` と
-  // `FindingDetail` の `onNavigate` の 2 つだけ。Task 9）。
+  // 本文の強調から選んだときは、本文へは移動せず（すでに見えている場所をクリックしたので、画面を
+  // 跳ねさせる必要が無い。本文へ移動する経路は `handleSelectFindingFromList` と `FindingDetail` の
+  // `onNavigate` の 2 つだけ。Task 9）、一覧の該当行を見える位置へ送る（UI の見直し 1 節）。
+  // 詳細内の「関連する他の指摘」のリンクからも同じ関数で選ぶので、その場合も一覧の行を送る。
+  // 右の列の「絞り込み＋一覧」の容器。一覧の行をここから探す。
+  const findingsPaneRef = useRef<HTMLDivElement | null>(null);
+
   const handleSelectFinding = useCallback((findingId: string) => {
     setSelectedFindingId(findingId);
+    const pane = findingsPaneRef.current;
+    if (pane === null) return;
+    // 絞り込みで一覧に無い指摘なら行は見つからず、何もしない。
+    const row = findListRow(pane, findingId);
+    if (row !== null) scrollIntoViewIfPossible(row);
   }, []);
 
   // 本文の容器（`.bodyColumn`）。移動先の要素をここから探す（Task 9）。
@@ -862,6 +876,13 @@ export function ResultsPage() {
     }
     fetchDetail(selectedFindingId, "select");
   }, [selectedFindingId, fetchDetail]);
+
+  // 選ぶ指摘が変わったら、詳細の中のスクロールを先頭に戻す（前の指摘の途中の位置が残らないように）。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `selectedFindingId` の変化だけを合図に走らせる（effect の中では読まない）
+  useEffect(() => {
+    const pane = detailPaneRef.current;
+    if (pane !== null) pane.scrollTop = 0;
+  }, [selectedFindingId]);
 
   // 採否の保存に失敗した指摘の一覧（PR21 レビュー指摘 2）。`findingId` をキーにする——同じ指摘で
   // 保存をやり直せば、成功時にも新しい失敗時にもこのキーが上書き・削除されるので二重に残らない。
@@ -1093,7 +1114,7 @@ export function ResultsPage() {
                     <p className={styles.detailEmpty}>本文の強調か一覧から指摘を選んでください</p>
                   )}
                 </div>
-                <div className={styles.findingsPane}>
+                <div className={styles.findingsPane} ref={findingsPaneRef}>
                   <FindingsPanel
                     run={state.run}
                     findings={state.findings}
