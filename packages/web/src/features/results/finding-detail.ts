@@ -2,8 +2,7 @@
  * 指摘詳細の表示規則（Task 7、決定 3・9・12。仕様書 5.4）の純関数。
  *
  * DOM は `finding-detail.tsx` の責務で、ここには「`FindingDto` から何を最終判定として見せるか」
- * 「修正案を有効な修正案として出してよいか」「選択中の指摘に関連する他の指摘をどう 2 群に分けるか」
- * という判断だけを置く。
+ * 「修正案を有効な修正案として出してよいか」という判断だけを置く。
  *
  * 決定 12 の表（`recheck` を軸にした 5 行）をそのまま `describeRecheck` に落とす。
  * 仕様書 5.4「初回判定は履歴に保持し、再確認待ち・失敗・無効の場合は未検証の初回判定とその状態を
@@ -122,44 +121,4 @@ export function describeRecheck(finding: FindingDto): RecheckDisplay {
     initialVerdict,
     suggestionUsable,
   };
-}
-
-/**
- * 決定 8 の 2 群を選択中の指摘から作る。自分自身は含めない。
- *
- * - 「同じ範囲の他の指摘」＝ `range.start` と `range.end` が完全に一致するもの。
- * - 「範囲が重なる他の指摘」＝重なるが一致しないもの（`[0,10)` と `[9,20)` は重なるが一致しない）。
- * - 隣接するだけ（`[0,10)` と `[10,20)`）はどちらにも含めない。
- *
- * `visible`（絞り込み後に見えている指摘）だけから作る。`selected` の位置が未確定
- * （`range === null`）のときも、`visible` の要素が位置未確定のときも対象にしない
- * （比較する範囲が無いため）。
- */
-export function relatedFindings(
-  selected: FindingDto,
-  visible: readonly FindingDto[],
-): { readonly sameRange: FindingDto[]; readonly overlapping: FindingDto[] } {
-  const sameRange: FindingDto[] = [];
-  const overlapping: FindingDto[] = [];
-  const selectedRange = selected.range;
-  if (selectedRange === null) {
-    return { sameRange, overlapping };
-  }
-
-  for (const finding of visible) {
-    if (finding.id === selected.id) {
-      continue;
-    }
-    const range = finding.range;
-    if (range === null) {
-      continue;
-    }
-    if (range.start === selectedRange.start && range.end === selectedRange.end) {
-      sameRange.push(finding);
-    } else if (range.start < selectedRange.end && selectedRange.start < range.end) {
-      overlapping.push(finding);
-    }
-  }
-
-  return { sameRange, overlapping };
 }

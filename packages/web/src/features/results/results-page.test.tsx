@@ -2293,7 +2293,7 @@ describe("ResultsPage: 最終レビュー Important 1 恒久的な切断の案�
   });
 });
 
-// レビュー M-1：`fetchDetail` が毎回 `setFindingDetail(null)` すると、実行中に
+// レビュー M-1：詳細の取得が毎回値を null に戻すと、実行中に
 // `check-finished` / `target-merged` が届くたびに元候補・位置診断の欄が点滅する。
 // 手動更新だけだった頃は目立たなかったが、自動更新では高頻度で起きる。
 describe("ResultsPage: Task 8 取り直しで詳細を点滅させない（レビュー M-1）", () => {
@@ -2893,5 +2893,122 @@ describe("ResultsPage: 同じ範囲の指摘のまとめ（PR14b）", () => {
     await waitFor(() =>
       expect(screen.getByText("本文の強調か一覧から指摘を選んでください")).toBeInTheDocument(),
     );
+  });
+
+  it("まとめた指摘は詳細に全部並び、getFinding はそれぞれの ID で 1 回ずつ呼ばれる", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup(
+      sameRangePair({ category: "grammar" }, { category: "particle" }),
+    );
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledTimes(2));
+    expect(getFinding).toHaveBeenCalledWith("finding-1");
+    expect(getFinding).toHaveBeenCalledWith("finding-2");
+    expect(screen.getByRole("region", { name: "案 1：文法" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "案 2：助詞" })).toBeInTheDocument();
+  });
+
+  it("2 件目の採否を保存すると、2 件目の ID で putJudgment が呼ばれ、一覧の要約が変わる", async () => {
+    const user = userEvent.setup();
+    const held: JudgmentDto = {
+      findingId: "finding-2",
+      status: "held",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(held));
+    const { client } = setup(sameRangePair({ category: "grammar" }, { category: "particle" }), {
+      putJudgment,
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    const second = await screen.findByRole("region", { name: "案 2：助詞" });
+    await user.click(within(second).getByRole("radio", { name: "保留" }));
+    await user.click(within(second).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(putJudgment).toHaveBeenCalledWith("finding-2", { status: "held" }));
+    await waitFor(() =>
+      expect(within(rows()[0] as HTMLElement).getByText("未判断 1・保留 1")).toBeInTheDocument(),
+    );
+  });
+
+  it("同じ範囲で絞り込みに隠れた指摘があれば、詳細の末尾に件数を出す", async () => {
+    const user = userEvent.setup();
+    const { client } = setup(sameRangePair({ category: "notation" }, { category: "grammar" }));
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "文法" }));
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+
+    expect(await screen.findByText("絞り込みで非表示：1 件")).toBeInTheDocument();
+  });
+
+  it("2 件目の判断メモを書きかけたまま先頭が絞り込みから外れても、書きかけは消えない", async () => {
+    const user = userEvent.setup();
+    const rejected: JudgmentDto = {
+      findingId: "finding-1",
+      status: "rejected",
+      note: null,
+      updatedAt: "2026-09-11T00:00:00.000Z",
+    };
+    const putJudgment = vi.fn(() => Promise.resolve(rejected));
+    const { client } = setup(sameRangePair({ category: "grammar" }, { category: "particle" }), {
+      putJudgment,
+    });
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("2 / 2 件")).toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: "採用予定" }));
+    await user.click(screen.getByRole("checkbox", { name: "却下" }));
+    await user.click(screen.getByRole("checkbox", { name: "保留" }));
+    await user.click(rows()[0] as HTMLElement);
+
+    const first = await screen.findByRole("region", { name: "案 1：文法" });
+    const second = screen.getByRole("region", { name: "案 2：助詞" });
+    await user.type(within(second).getByRole("textbox"), "書きかけ");
+    await user.click(within(first).getByRole("radio", { name: "却下" }));
+    await user.click(within(first).getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(screen.getByText("1 / 2 件")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "案 1：文法" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("書きかけ");
+  });
+
+  it("重なるまとめのリンクから選んでも、そのまとめの先頭が選ばれる", async () => {
+    const user = userEvent.setup();
+    const { client, getFinding } = setup([
+      makeFinding({ id: "finding-1", range: { start: 0, end: 2 }, quote: "一段" }),
+      makeFinding({
+        id: "finding-2",
+        range: { start: 1, end: 3 },
+        quote: "段落",
+        category: "grammar",
+      }),
+      makeFinding({
+        id: "finding-3",
+        range: { start: 1, end: 3 },
+        quote: "段落",
+        category: "particle",
+      }),
+    ]);
+    renderPage(client);
+
+    await waitFor(() => expect(screen.getByText("3 / 3 件")).toBeInTheDocument());
+    await user.click(rows()[0] as HTMLElement);
+    await user.click(await screen.findByRole("button", { name: "文法／助詞：段落（2 案）" }));
+
+    await waitFor(() => expect(getFinding).toHaveBeenCalledWith("finding-3"));
+    expect(rows()[1]?.getAttribute("aria-current")).toBe("true");
+    expect(rows()[1]?.closest("li")?.getAttribute("data-finding-id")).toBe("finding-2");
   });
 });

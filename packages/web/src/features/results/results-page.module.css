@@ -764,3 +764,18 @@
   flex-direction: column;
   gap: var(--space-sm);
 }
+
+/* 同じ範囲の指摘のまとめ（PR14b）。指摘ごとの区画を線で区切る。 */
+.groupMember {
+  padding-top: var(--space-sm);
+  border-top: 1px dashed var(--color-border);
+}
+
+.groupMemberHeading {
+  font-size: var(--font-size-md);
+}
+
+.hiddenSameRange {
+  font-size: var(--font-size-sm);
+  color: var(--color-fg-muted);
+}

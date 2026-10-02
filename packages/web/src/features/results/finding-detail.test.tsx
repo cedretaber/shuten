@@ -1,10 +1,10 @@
 /**
  * 指摘詳細パネル（`finding-detail.tsx`）の DOM テスト（Task 7、R4）。
  *
- * 純関数（`describeRecheck` / `relatedFindings`）の検査は `finding-detail.test.ts` の役割。
+ * 純関数（`describeRecheck`）の検査は `finding-detail.test.ts` の役割。
  * ここでは `FindingDetail` コンポーネントを直接描画し、決定 9（`paragraphId` を出さない）、
  * 位置確定時・位置特定失敗時の引用の出し分け、取得中・取得失敗の欄の出し分け、修正案の扱い、
- * 関連する他の指摘のリンク、`onNavigate` の有無での操作子の出し分けを検査する。
+ * 重なる他のまとめのリンク、`onNavigate` の有無での操作子の出し分けを検査する。
  *
  * 見出し（仕様 5.4「分類と短い見出し」。裁定：分類ラベル ＋ 原文を 1 行にする）の内容は、
  * 見出し本体（「原文」節）と同じ引用文字列を使うため、`getByText` の単純な一致は複数ヒットして
@@ -16,8 +16,9 @@ import type { CandidateDto, DiagnosticDto, FindingDetailDto, FindingDto } from "
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { FindingDetailProps } from "./finding-detail.tsx";
+import type { FindingDetailMember, FindingDetailProps } from "./finding-detail.tsx";
 import { FindingDetail } from "./finding-detail.tsx";
+import { groupFindings } from "./finding-group.ts";
 
 /** 「原文」または「LLM の引用（原文との一致未確認）」の見出しを含む `<section>` を返す。 */
 function quoteSection(headingText: string): HTMLElement {
@@ -103,17 +104,29 @@ function makeDiagnostic(overrides: Partial<DiagnosticDto> = {}): DiagnosticDto {
   };
 }
 
-function baseProps(overrides: Partial<FindingDetailProps> = {}): FindingDetailProps {
+function baseProps(
+  overrides: Partial<Omit<FindingDetailProps, "members">> & {
+    readonly finding?: FindingDto;
+    readonly detail?: FindingDetailDto | null;
+    readonly detailError?: string | null;
+    readonly members?: readonly FindingDetailMember[];
+  } = {},
+): FindingDetailProps {
+  const {
+    finding = makeFinding(),
+    detail = makeDetail(),
+    detailError = null,
+    members,
+    ...rest
+  } = overrides;
   return {
-    finding: makeFinding(),
-    detail: makeDetail(),
-    detailError: null,
+    members: members ?? [{ finding, detail, detailError }],
+    hiddenSameRangeCount: 0,
     body: BODY,
-    sameRange: [],
     overlapping: [],
     onSelectFinding: vi.fn(),
     onSaveJudgment: vi.fn(() => Promise.resolve()),
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -386,40 +399,115 @@ describe("FindingDetail: 抑制候補", () => {
   });
 });
 
-describe("FindingDetail: 関連する他の指摘（決定 8）", () => {
-  it("sameRange と overlapping を別の見出しで出し、クリックで onSelectFinding が呼ばれる", async () => {
+describe("FindingDetail: 範囲が重なる他の指摘", () => {
+  it("重なるまとめごとに 1 つのリンクを出し、2 件以上なら件数を添え、押すと先頭の ID で選ぶ", async () => {
     const user = userEvent.setup();
     const onSelectFinding = vi.fn();
-    const sameRangeFinding = makeFinding({ id: "finding-same", quote: "同じ範囲" });
-    const overlappingFinding = makeFinding({ id: "finding-overlap", quote: "重なる範囲" });
+    const overlapping = groupFindings([
+      makeFinding({ id: "o1", range: { start: 1, end: 3 }, quote: "重なる", category: "grammar" }),
+      makeFinding({ id: "o2", range: { start: 1, end: 3 }, quote: "重なる", category: "particle" }),
+      makeFinding({ id: "o3", range: { start: 2, end: 4 }, quote: "もう一つ" }),
+    ]);
+    render(<FindingDetail {...baseProps({ overlapping, onSelectFinding })} />);
 
-    render(
-      <FindingDetail
-        {...baseProps({
-          sameRange: [sameRangeFinding],
-          overlapping: [overlappingFinding],
-          onSelectFinding,
-        })}
-      />,
-    );
-
-    expect(screen.getByText("同じ範囲の他の指摘")).toBeInTheDocument();
     expect(screen.getByText("範囲が重なる他の指摘")).toBeInTheDocument();
-    // 「同じ箇所」という語は使わない（重なるが一致しない群をそう呼ばないため）。
-    expect(screen.queryByText(/同じ箇所/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /同じ範囲/ }));
-    expect(onSelectFinding).toHaveBeenCalledWith("finding-same");
-
-    await user.click(screen.getByRole("button", { name: /重なる範囲/ }));
-    expect(onSelectFinding).toHaveBeenCalledWith("finding-overlap");
+    expect(screen.queryByText("同じ範囲の他の指摘")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "文法／助詞：重なる（2 案）" }));
+    expect(onSelectFinding).toHaveBeenCalledWith("o1");
+    await user.click(screen.getByRole("button", { name: "誤字・表記：もう一つ" }));
+    expect(onSelectFinding).toHaveBeenCalledWith("o3");
   });
 
-  it("どちらも空なら見出しごと出さない", () => {
-    render(<FindingDetail {...baseProps({ sameRange: [], overlapping: [] })} />);
-
-    expect(screen.queryByText("同じ範囲の他の指摘")).not.toBeInTheDocument();
+  it("重なるまとめが無ければ見出しごと出さない", () => {
+    render(<FindingDetail {...baseProps({ overlapping: [] })} />);
     expect(screen.queryByText("範囲が重なる他の指摘")).not.toBeInTheDocument();
+  });
+});
+
+describe("FindingDetail: 同じ範囲の指摘のまとめ（PR14b）", () => {
+  function pair() {
+    const first = makeFinding({
+      id: "m1",
+      category: "grammar",
+      suggestion: "声が出た",
+      reasons: [{ candidateId: "c1", perspective: "typo", reason: "時制が合わない" }],
+    });
+    const second = makeFinding({
+      id: "m2",
+      category: "particle",
+      suggestion: "声が出る",
+      reasons: [{ candidateId: "c2", perspective: "typo", reason: "助詞の選び方" }],
+      judgment: {
+        findingId: "m2",
+        status: "rejected",
+        note: null,
+        updatedAt: "2026-09-10T00:00:00.000Z",
+      },
+    });
+    return [
+      { finding: first, detail: makeDetail({ ...first }), detailError: null },
+      { finding: second, detail: null, detailError: null },
+    ] as const;
+  }
+
+  it("見出しは分類の要約、原文は 1 回だけ出し、指摘ごとに「案 n：分類」の区画を並べる", () => {
+    render(<FindingDetail {...baseProps({ members: pair() })} />);
+
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toContain("文法／助詞");
+    expect(screen.getAllByRole("heading", { level: 3, name: "原文" })).toHaveLength(1);
+    const first = screen.getByRole("region", { name: "案 1：文法" });
+    const second = screen.getByRole("region", { name: "案 2：助詞" });
+    expect(within(first).getByText("声が出た")).toBeInTheDocument();
+    expect(within(first).getByText(/時制が合わない/)).toBeInTheDocument();
+    expect(within(second).getByText("声が出る")).toBeInTheDocument();
+    expect(within(second).getByText(/助詞の選び方/)).toBeInTheDocument();
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("採否は指摘ごとに持ち、保存はその指摘の ID で呼ぶ", async () => {
+    const user = userEvent.setup();
+    const onSaveJudgment = vi.fn(() => Promise.resolve());
+    render(<FindingDetail {...baseProps({ members: pair(), onSaveJudgment })} />);
+
+    const second = screen.getByRole("region", { name: "案 2：助詞" });
+    expect(within(second).getByRole("radio", { name: "却下" })).toBeChecked();
+    await user.click(within(second).getByRole("radio", { name: "保留" }));
+    await user.click(within(second).getByRole("button", { name: "保存" }));
+    expect(onSaveJudgment).toHaveBeenCalledWith("m2", "held", null, "これ");
+  });
+
+  it("元候補・位置診断は指摘ごとに出し、届いていない指摘だけ「読み込み中…」", () => {
+    render(<FindingDetail {...baseProps({ members: pair() })} />);
+    const first = screen.getByRole("region", { name: "案 1：文法" });
+    const second = screen.getByRole("region", { name: "案 2：助詞" });
+    expect(within(first).queryByText("読み込み中…")).not.toBeInTheDocument();
+    expect(within(second).getByText("読み込み中…")).toBeInTheDocument();
+  });
+
+  it("1 件だけなら「案 n」の見出しを出さず、見出しの階層も今のまま", () => {
+    render(<FindingDetail {...baseProps()} />);
+    expect(screen.queryByText(/^案 1/)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "修正案" })).toBeInTheDocument();
+  });
+
+  it("絞り込みで隠れた同じ範囲の指摘があれば、末尾に件数だけ出す", () => {
+    const { rerender } = render(<FindingDetail {...baseProps({ hiddenSameRangeCount: 1 })} />);
+    expect(screen.getByText("絞り込みで非表示：1 件")).toBeInTheDocument();
+    rerender(<FindingDetail {...baseProps({ hiddenSameRangeCount: 0 })} />);
+    expect(screen.queryByText(/絞り込みで非表示/)).not.toBeInTheDocument();
+  });
+
+  it("2 件から 1 件に減っても、残った指摘の書きかけの判断メモは消えない", async () => {
+    const user = userEvent.setup();
+    const [first, second] = pair();
+    const { rerender } = render(<FindingDetail {...baseProps({ members: [first, second] })} />);
+    const region = screen.getByRole("region", { name: "案 2：助詞" });
+    await user.type(within(region).getByRole("textbox"), "書きかけ");
+
+    rerender(<FindingDetail {...baseProps({ members: [second] })} />);
+    expect(screen.getByRole("textbox")).toHaveValue("書きかけ");
   });
 });
 
