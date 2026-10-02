@@ -14,7 +14,7 @@
   color: var(--color-danger);
   background-color: var(--color-danger-bg);
   padding: var(--space-xs) var(--space-sm);
-  border-radius: 4px;
+  border-radius: var(--radius);
 }
 
 .runList {
@@ -34,14 +34,14 @@
   width: 100%;
   padding: var(--space-sm) var(--space-md);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background-color: var(--color-bg);
   color: var(--color-fg);
   text-decoration: none;
 }
 
 .runRow:hover {
-  border-color: var(--color-accent);
+  border-color: var(--color-accent-line);
 }
 
 .runManuscriptName {

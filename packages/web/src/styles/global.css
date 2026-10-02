@@ -17,8 +17,7 @@ body {
   margin: 0;
   background-color: var(--color-bg);
   color: var(--color-fg);
-  font-family:
-    system-ui, -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-family: var(--font-family-sans);
   font-size: var(--font-size-md);
   line-height: 1.6;
 }
@@ -26,4 +25,28 @@ body {
 header {
   border-bottom: 1px solid var(--color-border);
   padding: var(--space-md) var(--space-lg);
+}
+
+/* 見出しの大きさと余白を全画面でそろえる（PR14c）。各画面は flex の gap で間を取るので、余白は 0 にする。
+   クラスを付けた見出し（結果画面のヘッダーや詳細）は、そちらの指定が優先する。 */
+h1 {
+  margin: 0;
+  font-size: var(--font-size-xl);
+  line-height: 1.3;
+}
+
+h2 {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  line-height: 1.4;
+}
+
+a {
+  color: var(--color-accent);
+}
+
+/* キーボードで移ったときの枠。ブラウザ既定の青を朱の線にそろえる（操作は足さない）。 */
+:focus-visible {
+  outline: 2px solid var(--color-accent-line);
+  outline-offset: 2px;
 }
