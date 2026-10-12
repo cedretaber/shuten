@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createDatabase } from "../client.ts";
 import { applyMigrations } from "../migrate.ts";
+import { judgments } from "../schema.ts";
 import { insertCheckUnit, listCheckUnits } from "./check-units.ts";
 import { deleteRunWithChildren } from "./delete-run.ts";
 import { insertDiagnostic, listDiagnostics } from "./diagnostics.ts";
@@ -222,6 +223,14 @@ describe("db/repositories/delete-run", () => {
     expect(result.deleted).toBe(true);
     expect(countRows(db, "r1")).toEqual(NONE);
     expect(countRows(db, "r2")).toEqual(FULL);
+    // `listJudgments` は指摘と結合して数えるので、判断の表そのものも数える（孤立した行が無い）。
+    expect(
+      db
+        .select()
+        .from(judgments)
+        .all()
+        .map((row) => row.findingId),
+    ).toEqual(["r2-f"]);
     expect(findManuscriptVersion(db, "mv2")).not.toBeNull();
     close();
   });
