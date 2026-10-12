@@ -1,7 +1,7 @@
 /**
  * A3：実行（`api/runs.test.ts`。決定 10・14・15）。
  *
- * 一覧・開始・詳細・単位・停止・再開・失敗単位の再試行を、`setupApi()` が組んだ実物のアプリ
+ * 一覧・開始・詳細・単位・停止・再開・失敗単位の再試行・削除を、`setupApi()` が組んだ実物のアプリ
  * （`app.request`）から見る。
  *
  * **ループを起こしたテストは必ず `waitSettled` で決着を待ってから終わること。** 待たずに終わると
@@ -18,12 +18,14 @@ import {
   MAX_TIMEOUT_MS,
   PROMPT_VERSION,
 } from "@shuten/shared";
+import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import type { RunRecord, UnitFailureRecord } from "../db/records.ts";
 import { insertCheckUnit } from "../db/repositories/check-units.ts";
-import { insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
+import { findManuscriptVersion, insertManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { findRun, insertRun, insertRunTarget, listRuns } from "../db/repositories/runs.ts";
+import { checkUnits, runs } from "../db/schema.ts";
 import type { ModelInfo } from "../lmstudio/types.ts";
 import type { ChatStep } from "../run/test-support.ts";
 import { SCRIPTED_LOADED_MODEL } from "../run/test-support.ts";
@@ -870,5 +872,205 @@ describe("POST /api/runs/:id/retry-failed", () => {
 
     expect(status).toBe(404);
     expect(errorCode(body)).toBe("not-found");
+  });
+});
+
+/** ---------------------------------------------------------------------- */
+/** 削除（仕様 8.3） */
+/** ---------------------------------------------------------------------- */
+
+/** `DELETE`。204 は本文を持たないので、本文は 204 以外のときだけ読む。 */
+async function deleteRequest(harness: ApiHarness, path: string): Promise<ApiResponse> {
+  const res = await harness.app.request(path, { method: "DELETE" });
+  return { status: res.status, body: res.status === 204 ? await res.text() : await res.json() };
+}
+
+describe("DELETE /api/runs/:id", () => {
+  it("204（本文なし）で消え、その後の詳細・単位・エクスポート・指摘・再開・再試行は 404", async () => {
+    const harness = open();
+    seedRun(harness, { runId: "r1", status: "stopped", stopReason: "aborted" });
+
+    const { status, body } = await deleteRequest(harness, "/api/runs/r1");
+
+    expect(status).toBe(204);
+    expect(body).toBe("");
+    expect(findRun(harness.db, "r1")).toBeNull();
+    // 他に参照する実行が無いので原稿版も消える。
+    expect((await getJson(harness, "/api/manuscripts/mv-r1")).status).toBe(404);
+    for (const path of [
+      "/api/runs/r1",
+      "/api/runs/r1/units",
+      "/api/runs/r1/export",
+      "/api/runs/r1/findings",
+    ]) {
+      expect((await getJson(harness, path)).status).toBe(404);
+    }
+    expect((await postJson(harness, "/api/runs/r1/resume", {})).status).toBe(404);
+    expect((await postEmpty(harness, "/api/runs/r1/retry-failed")).status).toBe(404);
+    expect((await getJson(harness, "/api/runs")).body).toEqual([]);
+  });
+
+  it("実行が無ければ 404", async () => {
+    const harness = open();
+
+    const { status, body } = await deleteRequest(harness, "/api/runs/missing");
+
+    expect(status).toBe(404);
+    expect(errorCode(body)).toBe("not-found");
+  });
+
+  it("status が running の実行は 409 run-active（行を消さない）", async () => {
+    const harness = open();
+    seedRun(harness, { runId: "r1", status: "running" });
+
+    const { status, body } = await deleteRequest(harness, "/api/runs/r1");
+
+    expect(status).toBe(409);
+    expect(errorCode(body)).toBe("run-active");
+    expect(findRun(harness.db, "r1")).not.toBeNull();
+  });
+
+  it("復旧待ちの実行は 409 run-active", async () => {
+    const harness = open();
+    seedRun(harness, { runId: "r1", status: "recovery-waiting" });
+
+    const { status, body } = await deleteRequest(harness, "/api/runs/r1");
+
+    expect(status).toBe(409);
+    expect(errorCode(body)).toBe("run-active");
+    expect(findRun(harness.db, "r1")).not.toBeNull();
+  });
+
+  it("復旧ゲートが掴んでいる実行は、status が stopped でも 409 run-active", async () => {
+    const harness = open();
+    seedRun(harness, { runId: "r1", status: "stopped", stopReason: "aborted" });
+    harness.gate.block("r1");
+
+    const { status, body } = await deleteRequest(harness, "/api/runs/r1");
+
+    expect(status).toBe(409);
+    expect(errorCode(body)).toBe("run-active");
+    expect(findRun(harness.db, "r1")).not.toBeNull();
+  });
+
+  it("ループが走っている実行は、停止要求の後でも、DB の status に関わらず 409 run-active", async () => {
+    const loading = deferred<ModelInfo>();
+    const harness = open({ ensureLoaded: () => loading.promise });
+    const manuscriptVersionId = await createManuscript(harness);
+    const started = await postJson(harness, "/api/runs", startRequest(manuscriptVersionId));
+    const runId = runOf(started.body).id;
+    await waitFor(() => harness.client.ensureLoadedCalls.length === 1, "ensureLoaded が呼ばれる");
+
+    // 停止を要求しても、生成の終了を確認するまで（ループが抜けるまで）は処理中。
+    expect((await postJson(harness, `/api/runs/${runId}/stop`, {})).status).toBe(202);
+    const afterStop = await deleteRequest(harness, `/api/runs/${runId}`);
+    expect(afterStop.status).toBe(409);
+    expect(errorCode(afterStop.body)).toBe("run-active");
+
+    // レジストリだけで判定できることを確かめる：DB の status を一時的に stopped に書き換えても 409。
+    harness.db.update(runs).set({ status: "stopped" }).where(eq(runs.id, runId)).run();
+    const registryOnly = await deleteRequest(harness, `/api/runs/${runId}`);
+    expect(registryOnly.status).toBe(409);
+    expect(errorCode(registryOnly.body)).toBe("run-active");
+    harness.db.update(runs).set({ status: "running" }).where(eq(runs.id, runId)).run();
+
+    loading.resolve(SCRIPTED_LOADED_MODEL);
+    const settled = await waitSettled(harness.hub, harness.db, runId);
+    expect(settled.status).toBe("stopped");
+
+    // `run-settled` はループの `finally`（レジストリから外す）より先に流れるので、外れるまで待つ。
+    await waitFor(() => !harness.orchestrator.isRunActive(runId), "レジストリから外れる");
+    // ループが抜けた後は消せる。
+    expect((await deleteRequest(harness, `/api/runs/${runId}`)).status).toBe(204);
+    expect(findRun(harness.db, runId)).toBeNull();
+  });
+
+  it("他の実行が参照する原稿版は残す", async () => {
+    const harness = open();
+    seedRun(harness, { runId: "r1", status: "completed" });
+    insertRun(harness.db, {
+      ...(findRun(harness.db, "r1") as RunRecord),
+      id: "r2",
+      startOperationId: "seed-r2",
+    });
+
+    expect((await deleteRequest(harness, "/api/runs/r1")).status).toBe(204);
+
+    expect((await getJson(harness, "/api/manuscripts/mv-r1")).status).toBe(200);
+    expect(findRun(harness.db, "r2")).not.toBeNull();
+  });
+});
+
+/** ---------------------------------------------------------------------- */
+/** 本文を読む間の削除（読み取りと書き込みの競合） */
+/** ---------------------------------------------------------------------- */
+
+/**
+ * 本文が `release` を呼ぶまで届かない POST を送る。送信直後に返るのは「要求を処理中の Promise」で、
+ * ハンドラーは `await readJson` で止まっている。
+ */
+function postWithPendingBody(
+  harness: ApiHarness,
+  path: string,
+): { response: Promise<Response>; release: (json: string) => void } {
+  const encoder = new TextEncoder();
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  const response = Promise.resolve(
+    harness.app.request(path, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: stream,
+      // Node の fetch はストリーム本文に `duplex` を要求する（型定義には無い）。
+      duplex: "half",
+    } as RequestInit),
+  );
+  return {
+    response,
+    release(json) {
+      controller?.enqueue(encoder.encode(json));
+      controller?.close();
+    },
+  };
+}
+
+describe("本文を読む間に実行が削除されても 404（500 にしない）", () => {
+  it("POST /api/runs/:id/retry-failed：単位は増えず、ループも起きない", async () => {
+    const harness = open({ steps: malformedSteps(4) });
+    const { targetId } = seedRun(harness, { runId: "r1", status: "partially-failed" });
+    seedUnit(harness, "r1", targetId, { id: "cu1", status: "failed", failure: MALFORMED_FAILURE });
+
+    const pending = postWithPendingBody(harness, "/api/runs/r1/retry-failed");
+    // 本文待ちの間に別のタブが削除する。
+    expect((await deleteRequest(harness, "/api/runs/r1")).status).toBe(204);
+    pending.release(JSON.stringify({ unitIds: ["cu1"] }));
+    const res = await pending.response;
+
+    expect(res.status).toBe(404);
+    expect(errorCode(await res.json())).toBe("not-found");
+    expect(harness.db.select().from(checkUnits).all()).toHaveLength(0);
+    expect(harness.orchestrator.isRunActive("r1")).toBe(false);
+    expect(harness.orchestrator.activeRunIds()).toEqual([]);
+  });
+
+  it("POST /api/runs：削除で原稿版も消えていれば 404 で、実行は作られない", async () => {
+    const harness = open();
+    seedRun(harness, { runId: "r1", status: "stopped", stopReason: "aborted" });
+
+    const pending = postWithPendingBody(harness, "/api/runs");
+    expect((await deleteRequest(harness, "/api/runs/r1")).status).toBe(204);
+    // 他に参照する実行が無いので、原稿版も一緒に消えている。
+    expect(findManuscriptVersion(harness.db, "mv-r1")).toBeNull();
+    pending.release(JSON.stringify(startRequest("mv-r1")));
+    const res = await pending.response;
+
+    expect(res.status).toBe(404);
+    expect(errorCode(await res.json())).toBe("not-found");
+    expect(listRuns(harness.db)).toEqual([]);
+    expect(harness.orchestrator.activeRunIds()).toEqual([]);
   });
 });

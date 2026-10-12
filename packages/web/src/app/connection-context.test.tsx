@@ -48,6 +48,7 @@ function makeFakeClient(checkConnection: ApiClient["checkConnection"]): ApiClien
     stopRun: notImplemented("stopRun"),
     resumeRun: notImplemented("resumeRun"),
     retryFailedUnits: notImplemented("retryFailedUnits"),
+    deleteRun: notImplemented("deleteRun"),
     getRecovery: notImplemented("getRecovery"),
     confirmRecovery: notImplemented("confirmRecovery"),
     getFindings: notImplemented("getFindings"),

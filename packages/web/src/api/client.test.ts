@@ -736,4 +736,38 @@ describe("createApiClient", () => {
 
     spy.mockRestore();
   });
+  it("deleteRun は DELETE /api/runs/:id を送り、本文の無い 204 で解決する", async () => {
+    const fetchImpl = fetchMock(new Response(null, { status: 204 }));
+    const client = createApiClient({ fetch: fetchImpl as unknown as typeof fetch });
+
+    await expect(client.deleteRun("run/1")).resolves.toBeUndefined();
+
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/runs/run%2F1");
+    expect(init.method).toBe("DELETE");
+    expect(init.body).toBeUndefined();
+  });
+
+  it("deleteRun の 409 はサーバーの code と message を持つ ApiRequestError になる", async () => {
+    const client = createApiClient({
+      fetch: fetchMock(
+        errorJsonResponse(409, "run-active", "処理中の実行は削除できません"),
+      ) as unknown as typeof fetch,
+    });
+
+    const error = await client.deleteRun("run-1").catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect((error as ApiRequestError).status).toBe(409);
+    expect((error as ApiRequestError).code).toBe("run-active");
+    expect((error as ApiRequestError).message).toBe("処理中の実行は削除できません");
+  });
+
+  it("deleteRun の通信失敗は ApiTransportError になる", async () => {
+    const client = createApiClient({
+      fetch: vi.fn(() => Promise.reject(new TypeError("failed"))) as unknown as typeof fetch,
+    });
+
+    await expect(client.deleteRun("run-1")).rejects.toBeInstanceOf(ApiTransportError);
+  });
 });

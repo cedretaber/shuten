@@ -153,6 +153,11 @@ export function registerFindingRoutes(router: Hono, deps: ApiDeps): void {
       throw notFound("指摘", id);
     }
     const body = putJudgmentRequestSchema.parse(await readJson(c));
+    // 本文を読む間に別のタブが実行ごと指摘を削除しうる（`DELETE /api/runs/:id`）。外部キー違反の 500 に
+    // しないよう、読み終えた後で確かめ直す。この確認と下の書き込みの間に `await` を挟まないこと。
+    if (findFinding(deps.db, id) === null) {
+      throw notFound("指摘", id);
+    }
     const judgment = setJudgment(deps.db, id, { status: body.status, note: body.note ?? null });
     return respond(c, judgmentDtoSchema, toJudgmentDto(judgment));
   });

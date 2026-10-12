@@ -36,7 +36,8 @@ import type { UnitFailureRecord } from "./records.ts";
  *
  * 保存単位ごとに 1 表を対応させる。原稿版・検査実行・検査対象・検査単位・元候補・指摘・
  * 再確認単位・位置診断・作者の判断の 9 表。すべて `id TEXT PRIMARY KEY`（決定 7）、
- * 外部キーに `ON DELETE` は指定しない（決定 13。MVP に削除機能がないため）。
+ * 外部キーに `ON DELETE` は指定しない（決定 13）。検査実行の削除（仕様 8.3）は
+ * `repositories/delete-run.ts` が子の表から順に明示的に消す。
  *
  * 実行をまたぐ参照は複合外部キー `(親 ID, run_id)` で塞ぐ（決定 16）。
  * 生成 SQL に `WHERE` 付きの部分索引・複合外部キーが実際に出るかは `db:generate` の出力で確認する

@@ -215,6 +215,13 @@ export interface Orchestrator {
    */
   activeRunIds(): readonly string[];
   /**
+   * 実行が処理中か（仕様 8.3。削除の可否の判定に使う）。このプロセスでループが走っている
+   * （レジストリにある。停止を要求したが生成の終了を確認できていない実行もここに入る）か、
+   * 復旧ゲートがこの実行を掴んでいれば true。DB の `status` は見ない（呼び出し元が見る）。
+   * DB に触れず同期に返るので、呼び出し元は判定と書き込みを同じ同期区間で行える。
+   */
+  isRunActive(runId: string): boolean;
+  /**
    * 復旧の確認（PR10 決定 11）。実行が無ければ null（HTTP は 404）。あれば
    * `markRecoveryConfirmed` を通して確認時刻を残し、復旧ゲートを開けて、読み直した実行を返す。
    * **実行の `status` は変えない**（再開は `resumeRun` の仕事）。冪等。
@@ -1122,6 +1129,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     return [...registry.keys()];
   }
 
+  /** 仕様 8.3：処理中か。レジストリ（走っているループ）と復旧ゲートの両方を見る。 */
+  function isRunActive(runId: string): boolean {
+    return registry.has(runId) || deps.recoveryGate.blockedRunIds.has(runId);
+  }
+
   /**
    * PR10 決定 11：復旧の確認。実行が無ければ null（HTTP は 404）。
    * `markRecoveryConfirmed` が確認時刻を書いてからゲートを開け、読み直した実行を返す
@@ -1158,6 +1170,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     retryFailedUnits,
     reconcileOnStartup,
     activeRunIds,
+    isRunActive,
     confirmRecovery,
   };
 }

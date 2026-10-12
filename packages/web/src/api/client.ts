@@ -2,7 +2,7 @@
  * `fetch` を注入できる薄い API クライアント（決定 14）。
  *
  * PR11・PR12a が呼ぶ口（実行の一覧・開始・詳細、原稿、接続設定、指摘の一覧・詳細・採否）に加え、
- * PR12b が足した停止・再開・再試行・復旧確認・SSE 購読の口を持つ。
+ * PR12b が足した停止・再開・再試行・復旧確認・SSE 購読の口と、検査実行の削除（仕様 8.3）の口を持つ。
  * 応答は `@shuten/shared` の zod スキーマで検証し、型注釈と実際の JSON のずれを実行時に検知する。
  */
 
@@ -67,6 +67,8 @@ export interface ApiClient {
   stopRun(runId: string): Promise<RunDto>;
   resumeRun(runId: string): Promise<RunDto>;
   retryFailedUnits(runId: string, body?: { unitIds: readonly string[] }): Promise<RunDto>;
+  /** 検査実行の削除（仕様 8.3）。204 で解決する。処理中なら 409 `run-active`。 */
+  deleteRun(runId: string): Promise<void>;
   getRecovery(options?: { signal?: AbortSignal }): Promise<RecoveryDto>;
   confirmRecovery(runId: string): Promise<RecoveryDto>;
   getFindings(runId: string, options?: { signal?: AbortSignal }): Promise<FindingDto[]>;
@@ -91,15 +93,14 @@ async function readResponseText(response: Response): Promise<string> {
 }
 
 /**
- * `fetch` を呼び、本文の読み取り → JSON の解析 → 状態コードによる分岐、の順で応答を扱う
- * （決定 14 のコードそのまま）。`JSON.parse` の失敗はその場で投げない。
+ * `fetch` を呼び、本文を読み、JSON として解析を試みる。非 2xx はここで `ApiRequestError` に写す
+ * （`request` と `requestNoContent` で同じ規則を使うため 1 か所に置く）。
  */
-async function request<T>(
+async function fetchAndRead(
   fetchImpl: typeof globalThis.fetch,
   input: string,
   init: RequestInit,
-  responseSchema: ResponseSchema<T>,
-): Promise<T> {
+): Promise<{ json: unknown; parsedAsJson: boolean }> {
   let response: Response;
   try {
     response = await fetchImpl(input, init);
@@ -130,6 +131,21 @@ async function request<T>(
     throw new ApiRequestError(response.status, "unknown", GENERIC_REQUEST_ERROR);
   }
 
+  return { json, parsedAsJson };
+}
+
+/**
+ * `fetch` を呼び、本文の読み取り → JSON の解析 → 状態コードによる分岐、の順で応答を扱う
+ * （決定 14 のコードそのまま）。`JSON.parse` の失敗はその場で投げない。
+ */
+async function request<T>(
+  fetchImpl: typeof globalThis.fetch,
+  input: string,
+  init: RequestInit,
+  responseSchema: ResponseSchema<T>,
+): Promise<T> {
+  const { json, parsedAsJson } = await fetchAndRead(fetchImpl, input, init);
+
   if (!parsedAsJson) {
     throw new ApiResponseError(); // 2xx なのに JSON でない
   }
@@ -139,6 +155,18 @@ async function request<T>(
   } catch (cause) {
     throw new ApiResponseError("応答がスキーマに一致しません", { cause });
   }
+}
+
+/**
+ * 本文を持たない 2xx（204）を返す口の要求（`DELETE /api/runs/:id`）。非 2xx の扱いは `request` と同じ。
+ * 2xx なら本文は見ない。
+ */
+async function requestNoContent(
+  fetchImpl: typeof globalThis.fetch,
+  input: string,
+  init: RequestInit,
+): Promise<void> {
+  await fetchAndRead(fetchImpl, input, init);
 }
 
 const JSON_HEADERS: HeadersInit = { "content-type": "application/json" };
@@ -300,6 +328,12 @@ export function createApiClient(deps?: {
         `/api/runs/${encodeURIComponent(runId)}/retry-failed`,
         init,
       );
+    },
+
+    deleteRun(runId) {
+      return requestNoContent(fetchImpl, `/api/runs/${encodeURIComponent(runId)}`, {
+        method: "DELETE",
+      });
     },
 
     getRecovery(options) {

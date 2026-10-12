@@ -204,3 +204,11 @@ export function respond<T>(
   }
   return c.json(parsed.data, { status });
 }
+
+/**
+ * 本文を持たない 204 を送る入口（仕様 8.3 の削除）。`respond` と並ぶ応答の出口で、
+ * ハンドラーは `c.body` を直接呼ばない。
+ */
+export function respondNoContent(c: Context): Response {
+  return c.body(null, 204);
+}

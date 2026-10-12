@@ -51,6 +51,7 @@ function makeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     stopRun: notImplemented("stopRun"),
     resumeRun: notImplemented("resumeRun"),
     retryFailedUnits: notImplemented("retryFailedUnits"),
+    deleteRun: notImplemented("deleteRun"),
     getRecovery: notImplemented("getRecovery"),
     confirmRecovery: notImplemented("confirmRecovery"),
     getFindings: notImplemented("getFindings"),
