@@ -1,7 +1,7 @@
 /**
  * 実行の口（PR10 決定 10・14・15）。
  *
- * 一覧・開始・詳細・単位・停止・再開・失敗単位の再試行。ハンドラーは「検証 → オーケストレーター／
+ * 一覧・開始・詳細・単位・停止・再開・失敗単位の再試行・削除（仕様 8.3）。ハンドラーは「検証 → オーケストレーター／
  * リポジトリ呼び出し → DTO 射影 → 状態コード」だけを行い、実行の意味（再開・再試行を受け付ける
  * 条件、停止の写像）は 1 行も書き写さない（決定 10）。
  *
@@ -16,6 +16,9 @@
  *   `retryFailedUnits` の `accepted: false` は 409 `run-rejected-<rejectReason>`（決定 10）。
  * - 実行が無い場合はハンドラーが先に `findRun` して 404 にする（オーケストレーターは例外を投げる）。
  * - 決定 15：絞り込み・ページングはサーバーでは行わない。クエリパラメーターを読まない。
+ * - `DELETE /api/runs/:id`（仕様 8.3）は処理中の実行を 409 `run-active` で拒む。処理中の判定と
+ *   削除のトランザクションは**同じ同期区間**で行う（ハンドラーを async にしない）。間に `await` を
+ *   挟むと、判定の後に再開・再試行がループを登録し、消した実行の行をループが書きにいける。
  */
 
 import {
@@ -32,13 +35,14 @@ import type { Context, Hono } from "hono";
 import { z } from "zod";
 
 import type { RunRecord } from "../db/records.ts";
+import { deleteRunWithChildren } from "../db/repositories/delete-run.ts";
 import { findManuscriptVersion } from "../db/repositories/manuscripts.ts";
 import { findRun, findRunByStartOperationId, listRuns } from "../db/repositories/runs.ts";
 import type { RunRejectReason } from "../run/orchestrator.ts";
 import { validateHardTimeouts } from "../run/timeouts.ts";
 import type { ApiDeps } from "./deps.ts";
 import { toRunDto, toRunSummaryDto } from "./dto.ts";
-import { ApiError, notFound, readJson, respond } from "./errors.ts";
+import { ApiError, notFound, readJson, respond, respondNoContent } from "./errors.ts";
 import { buildRunExport } from "./run-export.ts";
 import { buildRunDetail, buildRunUnits } from "./run-view.ts";
 
@@ -70,6 +74,12 @@ const REJECT_MESSAGES: Record<RunRejectReason, string> = {
   connection: "接続先が実行開始時と異なるため再開・再試行できません",
   status: "現在の状態からは再開・再試行できません",
 };
+
+/** 削除を拒む「処理中」の DB 上の状態（仕様 8.3「実行中」「復旧待ち」）。 */
+const ACTIVE_RUN_STATUSES: ReadonlySet<RunRecord["status"]> = new Set([
+  "running",
+  "recovery-waiting",
+]);
 
 function rejectedError(runId: string, reason: RunRejectReason): ApiError {
   return new ApiError(409, `run-rejected-${reason}`, `${REJECT_MESSAGES[reason]}: ${runId}`);
@@ -172,6 +182,24 @@ export function registerRunRoutes(router: Hono, deps: ApiDeps): void {
       throw rejectedError(id, requireRejectReason(result.rejectReason));
     }
     return respondRun(c, result.run);
+  });
+
+  // 仕様 8.3。同期のハンドラーにする（判定と削除の間に他の要求を割り込ませない）。
+  router.delete("/runs/:id", (c) => {
+    const run = requireRun(c.req.param("id"));
+    // 処理中：DB の状態が「実行中」「復旧待ち」か、このプロセスでループが走っている
+    // （停止を要求したが生成の終了を確認できていないもの）か、復旧ゲートが掴んでいる。
+    if (ACTIVE_RUN_STATUSES.has(run.status) || deps.orchestrator.isRunActive(run.id)) {
+      throw new ApiError(
+        409,
+        "run-active",
+        `処理中の実行は削除できません（停止して処理が終わってから削除してください）: ${run.id}`,
+      );
+    }
+    // 実行は終端状態でループも無いので、`run-settled` はすでに流れ、SSE の購読者は閉じている
+    // （`api/events.ts` の規則 3・4）。hub に実行ごとの状態は残らないので、ここでは触れない。
+    deleteRunWithChildren(deps.db, run.id);
+    return respondNoContent(c);
   });
 }
 

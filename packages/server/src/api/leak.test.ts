@@ -109,6 +109,7 @@ const ENDPOINTS: readonly EndpointSpec[] = [
   { key: "POST /api/runs/:id/stop", hasErrorForm: true },
   { key: "POST /api/runs/:id/resume", hasErrorForm: true },
   { key: "POST /api/runs/:id/retry-failed", hasErrorForm: true },
+  { key: "DELETE /api/runs/:id", hasErrorForm: true },
   { key: "GET /api/recovery", hasErrorForm: false },
   { key: "POST /api/recovery/confirm", hasErrorForm: true },
   { key: "GET /api/runs/:id/findings", hasErrorForm: true },
@@ -824,6 +825,30 @@ beforeAll(async () => {
       })
     ).status,
   ).toBe(404);
+
+  /** 削除（仕様 8.3） ------------------------------------------------------ */
+
+  // 復旧待ちの実行は処理中なので消せない（ゲートを開けても status は recovery-waiting のまま）。
+  expect(
+    (
+      await call("DELETE /api/runs/:id", "409 run-active", "/api/runs/run-recovery", {
+        method: "DELETE",
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await call("DELETE /api/runs/:id", "404", "/api/runs/run-missing", {
+        method: "DELETE",
+      })
+    ).status,
+  ).toBe(404);
+  // 実行 T は決着済み・レジストリの外。原稿の番兵を持つ指摘ごと消す（204 は本文なし）。
+  const deleted = await call("DELETE /api/runs/:id", "204", `/api/runs/${runT}`, {
+    method: "DELETE",
+  });
+  expect(deleted.status).toBe(204);
+  expect(deleted.text).toBe("");
 
   /** 接続設定の更新（最後。走っている実行が無くなってから） ---------------- */
 
