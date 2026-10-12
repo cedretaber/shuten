@@ -787,3 +787,50 @@ describe("PUT /api/findings/:id/judgment", () => {
     });
   });
 });
+
+/** ---------------------------------------------------------------------- */
+/** 本文を読む間の削除（読み取りと書き込みの競合） */
+/** ---------------------------------------------------------------------- */
+
+describe("PUT /api/findings/:id/judgment：本文を読む間に実行が削除された場合", () => {
+  it("404 で、判定の行は作られない（外部キー違反の 500 にしない）", async () => {
+    const harness = open();
+    const { targetId, checkUnitId, manuscriptVersionId } = seedRun(harness, "r1");
+    seedLocatedFinding(harness, {
+      runId: "r1",
+      manuscriptVersionId,
+      targetId,
+      checkUnitId,
+      findingId: "f1",
+      quote: "あいう",
+      range: { start: 0, end: 3 },
+    });
+
+    // 本文が届くまで止まる PUT。
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        controller = c;
+      },
+    });
+    const response = Promise.resolve(
+      harness.app.request("/api/findings/f1/judgment", {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: stream,
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    // 本文待ちの間に別のタブが実行を削除する（指摘も一緒に消える）。
+    const deleted = await harness.app.request("/api/runs/r1", { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    controller?.enqueue(new TextEncoder().encode(JSON.stringify({ status: "rejected" })));
+    controller?.close();
+    const res = await response;
+
+    expect(res.status).toBe(404);
+    expect(errorCode(await res.json())).toBe("not-found");
+    expect(harness.db.select().from(judgments).all()).toHaveLength(0);
+  });
+});

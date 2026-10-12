@@ -120,6 +120,8 @@ export function registerRunRoutes(router: Hono, deps: ApiDeps): void {
     }
 
     // 4：原稿版なしは 404（オーケストレーターは例外を投げるので、ハンドラーが先に弾く。決定 10）。
+    // 本文を読む間に実行の削除で原稿版ごと消えうるが、この確認から `startRun` までは `await` が無い
+    // （同期区間）ので、ここで見えた原稿版は `startRun` の時点でも残っている。ここに `await` を足さないこと。
     if (findManuscriptVersion(deps.db, request.manuscriptVersionId) === null) {
       throw notFound("原稿", request.manuscriptVersionId);
     }
@@ -174,6 +176,10 @@ export function registerRunRoutes(router: Hono, deps: ApiDeps): void {
     const id = requireRun(c.req.param("id")).id;
     // 本文なし・空本文は「全件」（決定 14 の `readJson` の `optional`）。空配列は zod が弾く（400 validation）。
     const body = retryFailedRequestSchema.parse(await readJson(c, { optional: true }));
+    // 本文を読む間に別のタブが実行を削除しうる（`DELETE /api/runs/:id`）。消えた実行をオーケストレーターに
+    // 渡すと例外になり 500 になるので、読み終えた後で確かめ直す。この確認と下の書き込みの間に
+    // `await` を挟まないこと（同期区間でなければ確認の意味がなくなる）。
+    requireRun(id);
     const result = deps.orchestrator.retryFailedUnits(
       id,
       body.unitIds === undefined ? undefined : { unitIds: body.unitIds },
