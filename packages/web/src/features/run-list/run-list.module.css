@@ -19,22 +19,42 @@
   gap: var(--space-xs);
 }
 
-/* 行全体を <Link> にする（決定 6 と同じ考え方：一覧の行は単一のタブ止まりにする）。 */
-.runRow {
+/* 行の枠。本体の <Link> と「削除」ボタンを兄弟として横に並べ、エラーは下の行に回す
+   （<a> の中に <button> を入れない。仕様 8.3）。 */
+.runItem {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-  width: 100%;
-  padding: var(--space-sm) var(--space-md);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  padding-right: var(--space-md);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background-color: var(--color-bg);
+}
+
+.runItem:hover {
+  border-color: var(--color-accent-line);
+}
+
+/* 行の本体を <Link> にする（決定 6 と同じ考え方：一覧の行の本体は単一のタブ止まりにする）。 */
+.runRow {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-md);
   color: var(--color-fg);
   text-decoration: none;
 }
 
-.runRow:hover {
-  border-color: var(--color-accent-line);
+.deleteButton {
+  flex: none;
+}
+
+.deleteError {
+  flex-basis: 100%;
+  margin: 0 0 var(--space-sm) var(--space-md);
 }
 
 .runManuscriptName {

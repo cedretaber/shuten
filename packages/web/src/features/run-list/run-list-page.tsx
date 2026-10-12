@@ -11,13 +11,21 @@
  * 持たないため、`results-page.tsx` の「404 だけを別扱いにする」分岐はここには無い（一覧の取得は
  * 404 になり得ない）。
  *
- * 行全体を `<Link>` にすることでキーボードで辿れるようにする（`runPath(id)`。決定 6 と同じ考え方：
- * 一覧の行は単一のタブ止まりにする）。接続先 URL・API キーはここでは扱わない（`RunSummaryDto` に
- * 含まれないため描画しようがない）。
+ * 行の本体を `<Link>` にすることでキーボードで辿れるようにする（`runPath(id)`。決定 6 と同じ考え方：
+ * 一覧の行の本体は単一のタブ止まりにする）。接続先 URL・API キーはここでは扱わない
+ * （`RunSummaryDto` に含まれないため描画しようがない）。
+ *
+ * 各行に「削除」ボタンを置く（仕様 8.3）。ボタンは `<Link>` の中に入れず兄弟に置く（`<a>` の中の
+ * `<button>` は HTML として不正で、クリックがリンクの遷移にも伝わる）。タブ順は行ごとに
+ * 「リンク → 削除」の 2 止まりになる。削除の前に `window.confirm` で確認を求める。
+ * 「実行中」「復旧待ち」の行はボタンを無効にするが、処理中かどうかの正本はサーバーである
+ * （停止を要求したが生成の終了を確認できていない実行は一覧上 `running` のまま見えるので、ここで
+ * 無効になる。それ以外の食い違いはサーバーの 409 の文言をそのまま見せる）。
+ * 成功したら一覧からその行を外す。失敗したら行を残し、その行にエラーを出す。
  */
 
 import type { RunSummaryDto } from "@shuten/shared";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useApiClient } from "../../api/context.tsx";
 import { ROUTES, runPath } from "../../app/routes.ts";
@@ -33,6 +41,35 @@ type RunListState =
 
 function errorMessageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "検査実行の取得に失敗しました";
+}
+
+function deleteErrorMessageFrom(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "検査実行の削除に失敗しました";
+}
+
+/** 削除できない状態（仕様 8.3「実行中」「復旧待ち」）。サーバー側の判定の一部を写しただけで、正本はサーバー。 */
+function isDeletionBlocked(run: RunSummaryDto): boolean {
+  return run.status === "running" || run.status === "recovery-waiting";
+}
+
+/** 行に出す開始日時。`RunListItem` の表示と確認の文言で同じ値を使う。 */
+function formatStartedAt(run: RunSummaryDto): string {
+  // 裁定（最終レビュー Important 3）：ローカル時刻で表示する。`run-header.tsx` と同じ
+  // 作法で、表示対象の瞬間ごとにオフセットを求める（`format-date-time.ts` 参照）。
+  // `startedAt` は null にならないので、`formatDateTime` も null を返さない（型を合わせるための既定値）。
+  return (
+    formatDateTime(run.startedAt, -new Date(run.startedAt).getTimezoneOffset()) ?? run.startedAt
+  );
+}
+
+/** 削除の確認文（仕様 8.3）。消えるもの・元に戻せないこと・原稿の本文の扱いを示す。 */
+function deleteConfirmMessage(run: RunSummaryDto): string {
+  return [
+    `「${run.manuscriptName}」（開始: ${formatStartedAt(run)}）の検査結果を削除します。`,
+    "指摘と採否・判断メモもすべて削除され、元に戻せません。",
+    "この原稿を使う検査結果がほかになければ、原稿の本文も削除されます。",
+    "削除してよろしいですか？",
+  ].join("\n");
 }
 
 /**
@@ -71,6 +108,15 @@ export function RunListPage() {
     );
   }, [apiClient]);
 
+  /** 削除に成功した行を一覧から外す。 */
+  const handleDeleted = useCallback((runId: string) => {
+    setState((current) =>
+      current.kind === "loaded"
+        ? { kind: "loaded", runs: current.runs.filter((run) => run.id !== runId) }
+        : current,
+    );
+  }, []);
+
   return (
     <div className={styles.page}>
       <h1>検査結果</h1>
@@ -87,7 +133,7 @@ export function RunListPage() {
         ) : (
           <ul className={styles.runList}>
             {state.runs.map((run) => (
-              <RunListItem key={run.id} run={run} />
+              <RunListItem key={run.id} run={run} onDeleted={handleDeleted} />
             ))}
           </ul>
         ))}
@@ -95,21 +141,41 @@ export function RunListPage() {
   );
 }
 
-function RunListItem(props: { readonly run: RunSummaryDto }) {
-  const { run } = props;
+function RunListItem(props: {
+  readonly run: RunSummaryDto;
+  readonly onDeleted: (runId: string) => void;
+}) {
+  const { run, onDeleted } = props;
+  const apiClient = useApiClient();
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const blocked = isDeletionBlocked(run);
+
+  function handleDelete(): void {
+    if (!window.confirm(deleteConfirmMessage(run))) return; // 取り消し：何もしない
+    setDeleting(true);
+    setDeleteError(null);
+    apiClient.deleteRun(run.id).then(
+      () => {
+        // 成功したら行ごと外れる（この部品はアンマウントされる）ので、自分の状態は戻さない。
+        onDeleted(run.id);
+      },
+      (cause: unknown) => {
+        // 失敗したら行を残し、理由を出す（409 ならサーバーの文言のまま）。
+        setDeleting(false);
+        setDeleteError(deleteErrorMessageFrom(cause));
+      },
+    );
+  }
 
   return (
-    <li>
+    <li className={styles.runItem}>
       <Link to={runPath(run.id)} className={styles.runRow}>
         <span className={styles.runManuscriptName}>{run.manuscriptName}</span>
         <span className={styles.runMeta}>
           <span>モデル: {run.modelId}</span>
           <span>{RUN_STATUS_LABELS[run.status]}</span>
-          {/* 裁定（最終レビュー Important 3）：ローカル時刻で表示する。`run-header.tsx` と同じ
-              作法で、表示対象の瞬間ごとにオフセットを求める（`format-date-time.ts` 参照）。 */}
-          <span>
-            開始: {formatDateTime(run.startedAt, -new Date(run.startedAt).getTimezoneOffset())}
-          </span>
+          <span>開始: {formatStartedAt(run)}</span>
           {run.finishedAt !== null && (
             <span>
               終了: {formatDateTime(run.finishedAt, -new Date(run.finishedAt).getTimezoneOffset())}
@@ -117,6 +183,25 @@ function RunListItem(props: { readonly run: RunSummaryDto }) {
           )}
         </span>
       </Link>
+      <button
+        type="button"
+        className={`${controls.secondaryButton} ${styles.deleteButton}`}
+        onClick={handleDelete}
+        disabled={blocked || deleting}
+        aria-label={`「${run.manuscriptName}」（開始: ${formatStartedAt(run)}）の検査結果を削除`}
+        title={
+          blocked
+            ? "処理中の検査は削除できません。停止して処理が終わってから削除してください"
+            : undefined
+        }
+      >
+        {deleting ? "削除中…" : "削除"}
+      </button>
+      {deleteError !== null && (
+        <p className={`${controls.errorBox} ${styles.deleteError}`} role="alert">
+          {deleteError}
+        </p>
+      )}
     </li>
   );
 }
